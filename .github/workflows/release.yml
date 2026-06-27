@@ -182,6 +182,9 @@ jobs:
           cache: false
       - name: Run Rust tests
         run: (cd tui && cargo test)
+      - uses: goto-bus-stop/setup-zig@abea47f85e598557f500fa1fd2ab7464fcb39406  # v2
+        with:
+          version: 0.14.0
       - name: Build musl native image + TUI
         run: |
           wget -q https://github.com/upx/upx/releases/download/v5.0.1/upx-5.0.1-amd64_linux.tar.xz
