@@ -1,0 +1,32 @@
+# Rust
+tui/target/
+
+# Scala / sbt
+engine/target/
+engine/project/target/
+engine/project/project/
+.bsp/
+.metals/
+.bloop/
+
+# npm / node
+wrapper/nodejs/node_modules/
+wrapper/nodejs/packages/chennai/LICENSE
+wrapper/nodejs/packages/chennai/README.md
+wrapper/nodejs/packages/chennai-jar/
+wrapper/nodejs/packages/chennai-linux-amd64/
+wrapper/nodejs/packages/chennai-linux-arm64/
+wrapper/nodejs/packages/chennai-linux-amd64-musl/
+wrapper/nodejs/packages/chennai-darwin-arm64/
+wrapper/nodejs/packages/chennai-windows-amd64/
+wrapper/nodejs/packages/*/bin/
+wrapper/nodejs/packages/*/plugins/
+wrapper/nodejs/packages/*/node_modules/
+wrapper/nodejs/downloaded-binaries/
+
+# CI caches
+.cache/
+
+# misc
+*.log
+.idea/

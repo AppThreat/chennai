@@ -1,0 +1,11 @@
+{
+  "name": "chennai-monorepo",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "test": "node --experimental-test-coverage test/*.test.js"
+  }
+}

@@ -1,0 +1,44 @@
+{
+  "name": "@appthreat/chennai",
+  "version": "3.0.0",
+  "description": "Interactive terminal UI for exploring AppThreat atom files with AI agent",
+  "exports": "./index.js",
+  "type": "module",
+  "bin": {
+    "chennai": "index.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AppThreat/chennai.git"
+  },
+  "keywords": [
+    "code",
+    "analysis",
+    "threat",
+    "tui",
+    "cpg"
+  ],
+  "author": "Team AppThreat <cloud@appthreat.com>",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/AppThreat/chennai/issues"
+  },
+  "homepage": "https://github.com/AppThreat/chennai#readme",
+  "files": [
+    "index.js",
+    "resolve.js",
+    "README.md",
+    "LICENSE"
+  ],
+  "optionalDependencies": {
+    "@appthreat/chennai-linux-amd64": "3.0.0",
+    "@appthreat/chennai-linux-arm64": "3.0.0",
+    "@appthreat/chennai-darwin-arm64": "3.0.0",
+    "@appthreat/chennai-windows-amd64": "3.0.0",
+    "@appthreat/chennai-linux-amd64-musl": "3.0.0",
+    "@appthreat/chennai-jar": "3.0.0"
+  }
+}

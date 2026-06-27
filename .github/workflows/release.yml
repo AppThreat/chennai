@@ -1,0 +1,435 @@
+name: release
+on:
+  push:
+    tags:
+      - 'v*'
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: appthreat/chennai
+
+jobs:
+  # ──────────────────────────────────────────────────────────────
+  # Linux amd64 (glibc): engine native-image + TUI (Rust)
+  # ──────────────────────────────────────────────────────────────
+  build-linux-amd64:
+    if: github.repository_owner == 'appthreat'
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Set up GraalVM
+        uses: graalvm/setup-graalvm@6f3fa030c4b8f77c1f554a860f593a654538fa38  # v1
+        with:
+          distribution: 'graalvm-community'
+          java-version: '25'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          native-image-job-reports: 'true'
+          cache: ''
+      - uses: sbt/setup-sbt@3afe9cf056c5d139bfc46579af1192d77a2f0821  # v1
+      - uses: coursier/setup-action@fd1707a76b027efdfb66ca79318b4d29b72e5a02  # v3
+        with:
+          apps: scala3 scalac
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659  # v1
+        with:
+          cache: false
+      - uses: oras-project/setup-oras@38de303aac69abb66f3e6255b7198bff35f323e3  # v2
+      - name: Build engine native image + TUI
+        run: |
+          wget -q https://github.com/upx/upx/releases/download/v5.0.1/upx-5.0.1-amd64_linux.tar.xz
+          tar -xJf upx-5.0.1-amd64_linux.tar.xz
+          chmod +x upx-5.0.1-amd64_linux/upx
+          sudo cp upx-5.0.1-amd64_linux/upx /usr/local/bin/
+          (cd engine && sbt -batch stage)
+          bash ci/native-image.sh
+          mv engine/target/graalvm-native-image/chennai-engine chennai-engine-amd64
+          upx -9 --lzma chennai-engine-amd64
+          chennai-engine-amd64 --help
+          sha512sum chennai-engine-amd64 > chennai-engine-amd64.sha512
+          (cd tui && cargo build --release)
+          cp tui/target/release/chennai chennai-amd64
+          sha512sum chennai-amd64 > chennai-amd64.sha512
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Upload to GHCR
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | oras login ghcr.io -u ${GITHUB_ACTOR} --password-stdin
+          oras push ghcr.io/${{ env.IMAGE_NAME }}:linux-amd64 \
+            --artifact-type application/vnd.appthreat.chennai.bundle.v1 \
+            chennai-engine-amd64:application/vnd.appthreat.chennai.engine.v1 \
+            chennai-engine-amd64.sha512:text/plain \
+            chennai-amd64:application/vnd.appthreat.chennai.tui.v1 \
+            chennai-amd64.sha512:text/plain
+      - name: Upload artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: chennai-linux-amd64
+          path: |
+            chennai-amd64
+            chennai-engine-amd64
+
+  # ──────────────────────────────────────────────────────────────
+  # Linux arm64 (glibc): engine native-image + TUI (Rust)
+  # ──────────────────────────────────────────────────────────────
+  build-linux-arm64:
+    if: github.repository_owner == 'appthreat'
+    runs-on: ubuntu-22.04-arm
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Set up GraalVM
+        uses: graalvm/setup-graalvm@6f3fa030c4b8f77c1f554a860f593a654538fa38  # v1
+        with:
+          distribution: 'graalvm-community'
+          java-version: '25'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          native-image-job-reports: 'true'
+          cache: ''
+      - uses: sbt/setup-sbt@3afe9cf056c5d139bfc46579af1192d77a2f0821  # v1
+      - uses: coursier/setup-action@fd1707a76b027efdfb66ca79318b4d29b72e5a02  # v3
+        with:
+          apps: scala3 scalac
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659  # v1
+        with:
+          cache: false
+      - uses: oras-project/setup-oras@38de303aac69abb66f3e6255b7198bff35f323e3  # v2
+      - name: Build engine native image + TUI
+        run: |
+          wget -q https://github.com/upx/upx/releases/download/v5.0.1/upx-5.0.1-arm64_linux.tar.xz
+          tar -xJf upx-5.0.1-arm64_linux.tar.xz
+          chmod +x upx-5.0.1-arm64_linux/upx
+          sudo cp upx-5.0.1-arm64_linux/upx /usr/local/bin/
+          (cd engine && sbt -batch stage)
+          bash ci/native-image.sh
+          mv engine/target/graalvm-native-image/chennai-engine chennai-engine-arm64
+          upx -9 --lzma chennai-engine-arm64
+          chennai-engine-arm64 --help
+          sha512sum chennai-engine-arm64 > chennai-engine-arm64.sha512
+          (cd tui && cargo build --release)
+          cp tui/target/release/chennai chennai-arm64
+          sha512sum chennai-arm64 > chennai-arm64.sha512
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Upload to GHCR
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | oras login ghcr.io -u ${GITHUB_ACTOR} --password-stdin
+          oras push ghcr.io/${{ env.IMAGE_NAME }}:linux-arm64 \
+            --artifact-type application/vnd.appthreat.chennai.bundle.v1 \
+            chennai-engine-arm64:application/vnd.appthreat.chennai.engine.v1 \
+            chennai-engine-arm64.sha512:text/plain \
+            chennai-arm64:application/vnd.appthreat.chennai.tui.v1 \
+            chennai-arm64.sha512:text/plain
+      - name: Upload artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: chennai-linux-arm64
+          path: |
+            chennai-arm64
+            chennai-engine-arm64
+
+  # ──────────────────────────────────────────────────────────────
+  # Linux amd64 (musl): engine native-image (musl) + TUI (Rust)
+  # ──────────────────────────────────────────────────────────────
+  build-linux-musl-amd64:
+    if: github.repository_owner == 'appthreat'
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: oras-project/setup-oras@38de303aac69abb66f3e6255b7198bff35f323e3  # v2
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659  # v1
+        with:
+          cache: false
+      - name: Build musl native image + TUI
+        run: |
+          wget -q https://github.com/upx/upx/releases/download/v5.0.1/upx-5.0.1-amd64_linux.tar.xz
+          tar -xJf upx-5.0.1-amd64_linux.tar.xz
+          chmod +x upx-5.0.1-amd64_linux/upx
+          sudo cp upx-5.0.1-amd64_linux/upx /usr/local/bin/
+          bash ci/native-image-musl.sh --arch amd64 --output target/chennai-engine-musl-amd64
+          upx -9 --lzma target/chennai-engine-musl-amd64
+          docker run --rm -v "$(pwd):/workspace" -w /workspace alpine:3.22 /bin/sh -c "./target/chennai-engine-musl-amd64 --help"
+          mv target/chennai-engine-musl-amd64 chennai-engine-musl-amd64
+          sha512sum chennai-engine-musl-amd64 > chennai-engine-musl-amd64.sha512
+          rustup target add x86_64-unknown-linux-musl
+          cargo install cargo-zigbuild
+          (cd tui && cargo zigbuild --release --target x86_64-unknown-linux-musl)
+          cp tui/target/x86_64-unknown-linux-musl/release/chennai chennai-musl-amd64
+          sha512sum chennai-musl-amd64 > chennai-musl-amd64.sha512
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Upload to GHCR
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | oras login ghcr.io -u ${GITHUB_ACTOR} --password-stdin
+          oras push ghcr.io/${{ env.IMAGE_NAME }}:linux-amd64-musl \
+            --artifact-type application/vnd.appthreat.chennai.bundle.v1 \
+            chennai-engine-musl-amd64:application/vnd.appthreat.chennai.engine.v1 \
+            chennai-engine-musl-amd64.sha512:text/plain \
+            chennai-musl-amd64:application/vnd.appthreat.chennai.tui.v1 \
+            chennai-musl-amd64.sha512:text/plain
+      - name: Upload artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: chennai-linux-amd64-musl
+          path: |
+            chennai-musl-amd64
+            chennai-engine-musl-amd64
+
+  # ──────────────────────────────────────────────────────────────
+  # Darwin arm64 (macOS Apple Silicon): engine native-image + TUI
+  # ──────────────────────────────────────────────────────────────
+  build-darwin-arm64:
+    if: github.repository_owner == 'appthreat'
+    runs-on: macos-15
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Set up GraalVM
+        uses: graalvm/setup-graalvm@6f3fa030c4b8f77c1f554a860f593a654538fa38  # v1
+        with:
+          distribution: 'graalvm-community'
+          java-version: '25'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          native-image-job-reports: 'true'
+          cache: ''
+      - uses: sbt/setup-sbt@3afe9cf056c5d139bfc46579af1192d77a2f0821  # v1
+      - uses: coursier/setup-action@fd1707a76b027efdfb66ca79318b4d29b72e5a02  # v3
+        with:
+          apps: scala3 scalac
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659  # v1
+        with:
+          cache: false
+      - uses: oras-project/setup-oras@38de303aac69abb66f3e6255b7198bff35f323e3  # v2
+      - name: Build engine native image + TUI
+        run: |
+          brew install coreutils
+          (cd engine && sbt -batch stage)
+          bash ci/native-image.sh
+          mv engine/target/graalvm-native-image/chennai-engine chennai-engine-darwin-arm64
+          chennai-engine-darwin-arm64 --help
+          sha512sum chennai-engine-darwin-arm64 > chennai-engine-darwin-arm64.sha512
+          (cd tui && cargo build --release)
+          cp tui/target/release/chennai chennai-darwin-arm64
+          sha512sum chennai-darwin-arm64 > chennai-darwin-arm64.sha512
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Upload to GHCR
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | oras login ghcr.io -u ${GITHUB_ACTOR} --password-stdin
+          oras push ghcr.io/${{ env.IMAGE_NAME }}:darwin-arm64 \
+            --artifact-type application/vnd.appthreat.chennai.bundle.v1 \
+            chennai-engine-darwin-arm64:application/vnd.appthreat.chennai.engine.v1 \
+            chennai-engine-darwin-arm64.sha512:text/plain \
+            chennai-darwin-arm64:application/vnd.appthreat.chennai.tui.v1 \
+            chennai-darwin-arm64.sha512:text/plain
+      - name: Upload artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: chennai-darwin-arm64
+          path: |
+            chennai-darwin-arm64
+            chennai-engine-darwin-arm64
+
+  # ──────────────────────────────────────────────────────────────
+  # Windows amd64: engine native-image + TUI (Rust MSVC)
+  # ──────────────────────────────────────────────────────────────
+  build-windows-amd64:
+    if: github.repository_owner == 'appthreat'
+    runs-on: windows-latest
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Set up GraalVM
+        uses: graalvm/setup-graalvm@6f3fa030c4b8f77c1f554a860f593a654538fa38  # v1
+        with:
+          distribution: 'graalvm-community'
+          java-version: '25'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          native-image-job-reports: 'true'
+          cache: ''
+      - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756  # v1
+        with:
+          arch: amd64
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659  # v1
+        with:
+          cache: false
+      - name: Build engine native image + TUI
+        run: |
+          Invoke-WebRequest -Uri https://github.com/upx/upx/releases/download/v5.0.1/upx-5.0.1-win64.zip -UseBasicParsing -OutFile upx-5.0.1-win64.zip
+          Expand-Archive -Path upx-5.0.1-win64.zip -DestinationPath . -Force
+          cd engine
+          sbt -batch stage
+          sbt "GraalVMNativeImage / packageBin"
+          cd ..
+          Move-Item engine/target/graalvm-native-image/chennai-engine.exe chennai-engine-win-amd64.exe
+          .\upx-5.0.1-win64\upx.exe -9 --lzma chennai-engine-win-amd64.exe
+          .\chennai-engine-win-amd64.exe --help
+          cd tui
+          cargo build --release
+          cd ..
+          Copy-Item tui/target/release/chennai.exe chennai-win-amd64.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Upload artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: chennai-windows-amd64
+          path: |
+            chennai-win-amd64.exe
+            chennai-engine-win-amd64.exe
+
+  # ──────────────────────────────────────────────────────────────
+  # NPM Publish: assemble all packages and publish
+  # ──────────────────────────────────────────────────────────────
+  npm-publish:
+    name: Publish NPM Packages
+    runs-on: ubuntu-24.04
+    needs:
+      - build-linux-amd64
+      - build-linux-arm64
+      - build-linux-musl-amd64
+      - build-darwin-arm64
+      - build-windows-amd64
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
+        with:
+          node-version: '24.x'
+          scope: '@appthreat'
+          registry-url: 'https://registry.npmjs.org'
+          package-manager-cache: false
+
+      - name: Install deps
+        run: |
+          (cd wrapper/nodejs && npm install)
+
+      - name: Download Native Binaries
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          path: wrapper/nodejs/downloaded-binaries
+
+      - name: Assemble platform packages
+        run: |
+          cd wrapper/nodejs
+
+          echo "=== Assemble linux-amd64 ==="
+          node scripts/assemble.mjs @appthreat/chennai-linux-amd64 \
+            downloaded-binaries/chennai-linux-amd64/chennai-amd64 \
+            downloaded-binaries/chennai-linux-amd64/chennai-engine-amd64
+
+          echo "=== Assemble linux-arm64 ==="
+          node scripts/assemble.mjs @appthreat/chennai-linux-arm64 \
+            downloaded-binaries/chennai-linux-arm64/chennai-arm64 \
+            downloaded-binaries/chennai-linux-arm64/chennai-engine-arm64
+
+          echo "=== Assemble linux-amd64-musl ==="
+          node scripts/assemble.mjs @appthreat/chennai-linux-amd64-musl \
+            downloaded-binaries/chennai-linux-amd64-musl/chennai-musl-amd64 \
+            downloaded-binaries/chennai-linux-amd64-musl/chennai-engine-musl-amd64
+
+          echo "=== Assemble darwin-arm64 ==="
+          node scripts/assemble.mjs @appthreat/chennai-darwin-arm64 \
+            downloaded-binaries/chennai-darwin-arm64/chennai-darwin-arm64 \
+            downloaded-binaries/chennai-darwin-arm64/chennai-engine-darwin-arm64
+
+          echo "=== Assemble windows-amd64 ==="
+          node scripts/assemble.mjs @appthreat/chennai-windows-amd64 \
+            downloaded-binaries/chennai-windows-amd64/chennai-win-amd64.exe \
+            downloaded-binaries/chennai-windows-amd64/chennai-engine-win-amd64.exe
+
+      - name: Run unit tests
+        run: |
+          cd wrapper/nodejs
+          npm run test
+
+      - name: NPM Dry-run Publish (Verify all packages)
+        run: |
+          cd wrapper/nodejs
+          for dir in packages/chennai-jar packages/chennai-linux-amd64 packages/chennai-linux-arm64 packages/chennai-linux-amd64-musl packages/chennai-darwin-arm64 packages/chennai-windows-amd64 packages/chennai; do
+            if [ -d "$dir" ]; then
+              echo "Dry-run publishing $dir..."
+              (cd "$dir" && npm publish --dry-run)
+            fi
+          done
+
+      - name: Publish all Packages (Sub-packages first, parent last)
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          cd wrapper/nodejs
+
+          for dir in packages/chennai-jar packages/chennai-linux-amd64 packages/chennai-linux-arm64 packages/chennai-linux-amd64-musl packages/chennai-darwin-arm64 packages/chennai-windows-amd64; do
+            if [ -d "$dir" ]; then
+              echo "Publishing $dir..."
+              (cd "$dir" && npm publish --provenance --access=public)
+            fi
+          done
+
+          echo "Publishing parent @appthreat/chennai..."
+          (cd packages/chennai && npm publish --provenance --access=public)
+
+  # ──────────────────────────────────────────────────────────────
+  # Post-publish smoke tests across platforms
+  # ──────────────────────────────────────────────────────────────
+  npm-release-tests:
+    name: Post-publish smoke test
+    runs-on: ${{ matrix.os }}
+    needs: npm-publish
+    if: startsWith(github.ref, 'refs/tags/')
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm, macos-15, windows-latest]
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
+        with:
+          node-version: '24.x'
+          package-manager-cache: false
+      - name: Install chennai from npm and verify
+        shell: bash
+        run: |
+          sleep 30
+          npm install -g @appthreat/chennai
+          chennai --help
