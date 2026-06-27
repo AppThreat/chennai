@@ -404,7 +404,8 @@ jobs:
 
       - name: Build engine JAR stage (for chennai-jar fallback)
         run: (cd engine && sbt -batch stage)
-
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Assemble platform packages
         run: |
           cd wrapper/nodejs
