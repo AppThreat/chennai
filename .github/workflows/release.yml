@@ -481,28 +481,25 @@ jobs:
           PARENT_TARBALL=$(ls /tmp/chennai-test/appthreat-chennai-*.tgz | grep -v linux-amd64)
 
           rm -rf /tmp/chennai-native-test
-          mkdir -p /tmp/chennai-native-test/node_modules/@appthreat/chennai-linux-amd64
-          tar -xzf "$PLATFORM_TARBALL" -C /tmp/chennai-native-test/node_modules/@appthreat/chennai-linux-amd64 --strip-components=1
-
+          mkdir -p /tmp/chennai-native-test
           cd /tmp/chennai-native-test
           npm init -y >/dev/null 2>&1
-          npm install "$PARENT_TARBALL" --no-optional 2>&1
+          # Install both tarballs together so npm doesn't prune the platform package
+          npm install "$PLATFORM_TARBALL" "$PARENT_TARBALL" --no-optional 2>&1
 
           echo "=== chennai --help (native) ==="
           ./node_modules/.bin/chennai --help
 
           # ── JAR fallback smoke test ──────────────────────────────
-          rm -rf /tmp/chennai-jar-test
           cd "$REPO_ROOT/wrapper/nodejs"
           npm pack --workspace packages/chennai-jar --pack-destination /tmp/chennai-jar-test 2>&1
           JAR_TARBALL=$(ls /tmp/chennai-jar-test/appthreat-chennai-jar-*.tgz)
 
-          mkdir -p /tmp/chennai-jar-test/node_modules/@appthreat/chennai-jar
-          tar -xzf "$JAR_TARBALL" -C /tmp/chennai-jar-test/node_modules/@appthreat/chennai-jar --strip-components=1
-
+          rm -rf /tmp/chennai-jar-test
+          mkdir -p /tmp/chennai-jar-test
           cd /tmp/chennai-jar-test
           npm init -y >/dev/null 2>&1
-          npm install "$PARENT_TARBALL" --no-optional 2>&1
+          npm install "$JAR_TARBALL" "$PARENT_TARBALL" --no-optional 2>&1
 
           echo "=== chennai --help (JAR fallback) ==="
           ./node_modules/.bin/chennai --help
