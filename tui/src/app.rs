@@ -3,6 +3,7 @@
 //! background thread and communicates back via an `mpsc` channel.
 
 use crate::agent::provider::AgentEvent;
+use crate::bom::BomStore;
 use crate::commands;
 use crate::engine::Engine;
 use crate::model::{Flow, FlowSet, NodeDetail, ResultTable, Summary};
@@ -243,9 +244,14 @@ pub struct App {
     pub agent_spinner: usize,
     /// Name of the most recently invoked tool (shown in the progress footer).
     pub agent_last_tool: Option<String>,
+
+    // BOM (CycloneDX SBOM) state.
+    pub bom_store: Option<BomStore>,
+    pub bom_generated: bool,
 }
 
 impl App {
+    #[allow(dead_code)]
     pub fn new(engine: Option<Arc<Mutex<Engine>>>, atom_path: String, summary: Summary) -> Self {
         App {
             engine,
@@ -311,6 +317,8 @@ impl App {
             agent_total_out: 0,
             agent_spinner: 0,
             agent_last_tool: None,
+            bom_store: None,
+            bom_generated: false,
         }
     }
 
@@ -451,6 +459,17 @@ impl App {
             return;
         }
 
+        // BOM command: show the software bill of materials as a table.
+        let lower = t.to_ascii_lowercase();
+        if lower == "bom" || lower == ":bom" || lower.starts_with("bom ") || lower.starts_with(":bom ") {
+            let filter = t.split_once(' ').map(|(_, rest)| rest.trim().to_string())
+                .filter(|s| !s.is_empty());
+            self.repl.record(&t, "BOM components loaded".into(), true);
+            self.show_bom_table(filter.as_deref());
+            self.status = format!("BOM: {} components", self.bom_store.as_ref().map(|s| s.total_components).unwrap_or(0));
+            return;
+        }
+
         // Free-text routing: when the agent is enabled and input doesn't look like a DSL command
         // or a flow expression, route to the agent.
         if self.agent_enabled && !self.agent_active && !looks_like_dsl_or_command(&t) {
@@ -474,7 +493,6 @@ impl App {
 
         // Data-flow expressions are routed to the structured `flows` command (master/detail view):
         // the bare `reachables`/`cryptos` presets, or any expression invoking the dataflow DSL.
-        let lower = t.to_ascii_lowercase();
         let flow_args = if t == "dataflows" || t == "reachables" || t == "cryptos" {
             Some(serde_json::json!({ "preset": t }))
         } else if lower.contains("reachablebyflows") || t.contains(".df(") {
@@ -701,6 +719,8 @@ impl App {
             Err(e) => (false, format!("flows failed: {e}")),
         }
     }
+
+
 
     /// Recompute which flows are visible after applying the sub-flow / mitigation filters.
     fn recompute_flow_visible(&mut self) {
@@ -1016,6 +1036,65 @@ impl App {
         }
     }
 
+    /// Build a ResultTable from the BOM store's components and show it in the output panel.
+    /// Optionally filter by a search query.
+    pub fn show_bom_table(&mut self, filter: Option<&str>) {
+        let loaded = self.bom_store.as_ref().map(|s| s.loaded).unwrap_or(false);
+        if !loaded {
+            self.status = "no BOM data available. Generate one with: cdxgen -o sbom-<lang>-<lifecycle>.cdx.json <source_dir>".into();
+            return;
+        }
+
+        // Clone the store to avoid borrow conflicts, then apply optional filter.
+        let mut cloned = self.bom_store.as_ref().unwrap().clone();
+        if let Some(q) = filter {
+            cloned.search_components(q);
+        }
+        self.show_bom_store_table(&cloned);
+    }
+
+    fn show_bom_store_table(&mut self, store: &BomStore) {
+        let mut rows = Vec::new();
+        for idx in &store.filtered_component_indices {
+            if let Some(row) = store.components.get(*idx) {
+                rows.push(vec![
+                    crate::model::Cell { v: row.type_display().to_string(), k: String::new() },
+                    crate::model::Cell { v: row.name_display().to_string(), k: String::new() },
+                    crate::model::Cell { v: row.version_display().to_string(), k: String::new() },
+                    crate::model::Cell { v: row.purl_display().to_string(), k: String::new() },
+                    crate::model::Cell { v: row.license_display().to_string(), k: String::new() },
+                ]);
+            }
+        }
+
+        let columns = vec![
+            "Type".into(),
+            "Name".into(),
+            "Version".into(),
+            "PURL".into(),
+            "License".into(),
+        ];
+
+        let table = ResultTable {
+            title: format!("BOM Components ({})", store.total_components),
+            columns,
+            rows,
+            total: store.total_components as i64,
+            offset: 0,
+        };
+
+        self.output = Some(table);
+        self.flows = None;
+        self.output_state = ListState::default();
+        self.table_filter.clear();
+        self.table_filter_edit = false;
+        self.table_sort = None;
+        self.recompute_table_view();
+        self.status = format!("BOM: {} components, {} dependencies, {} services",
+            store.total_components, store.total_dependencies, store.total_services);
+        self.focus = Panel::Output;
+    }
+
     /// Cancel the running agent.
     pub fn cancel_agent(&mut self) {
         if let Some(ref cancel) = self.agent_cancel {
@@ -1318,12 +1397,17 @@ impl App {
 /// - A flow-preset word (`dataflows`, `reachables`, `cryptos`)
 /// - A flow expression containing `reachablebyflows` or `.df(`
 /// - A `=prefix` that forces raw-DSL mode
+/// - The `bom` command
 fn looks_like_dsl_or_command(t: &str) -> bool {
     // `=prefix` forces raw-DSL mode.
     if t.starts_with('=') {
         return true;
     }
     let lower = t.to_ascii_lowercase();
+    // BOM command.
+    if lower == "bom" || lower.starts_with("bom ") || lower == ":bom" || lower.starts_with(":bom ") {
+        return true;
+    }
     // DSL prefix.
     if t.starts_with("atom.") {
         return true;
@@ -1464,6 +1548,14 @@ mod tests {
         app.on_click(5, 3);
         assert_eq!(app.repl.text(), "atom.method");
         assert_eq!(app.repl.entries.len(), 1);
+    }
+
+    #[test]
+    fn looks_like_dsl_recognises_bom_command() {
+        assert!(looks_like_dsl_or_command("bom"));
+        assert!(looks_like_dsl_or_command(":bom"));
+        assert!(looks_like_dsl_or_command("bom express"));
+        assert!(looks_like_dsl_or_command(":bom lodash"));
     }
 
     #[test]

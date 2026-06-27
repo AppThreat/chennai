@@ -3,6 +3,7 @@ package io.appthreat.chennai.engine
 import io.appthreat.chennai.engine.handlers.{
     AlgoHandler,
     DetailHandler,
+    EnrichHandler,
     EvalHandler,
     FlowHandler,
     QueryHandler,
@@ -40,6 +41,7 @@ final class Server(session: AtomSession, in: BufferedReader, out: PrintStream):
         case "eval"     => handleEval(req)
         case "detail"   => handleDetail(req)
         case "algo"     => handleAlgo(req)
+        case "enrich"   => handleEnrich(req)
         case "ping"     => Response.ok(req.id, Json.obj("pong" -> Json.True))
         case other      => Response.error(req.id, s"unknown command: $other")
 
@@ -135,6 +137,17 @@ final class Server(session: AtomSession, in: BufferedReader, out: PrintStream):
           )
       )
   end handleDetail
+
+  private def handleEnrich(req: Request): Json =
+    val bomPath = req.args.hcursor.get[String]("bom").toOption
+    bomPath match
+      case None => Response.error(req.id, "enrich requires a 'bom' argument (path to SBOM file)")
+      case Some(path) =>
+          withCpg(req)(cpg =>
+              EnrichHandler.enrich(cpg, path) match
+                case Right(json) => Response.ok(req.id, json)
+                case Left(err)   => Response.error(req.id, err)
+          )
 
   private def handleAlgo(req: Request): Json =
       withCpg(req)(cpg =>

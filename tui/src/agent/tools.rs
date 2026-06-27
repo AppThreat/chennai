@@ -15,6 +15,7 @@ pub fn all_tool_definitions() -> Vec<Value> {
         atom_flows_through(),
         atom_detail(),
         atom_algorithms(),
+        bom_query(),
         ripgrep_tool(),
         read_file_tool(),
         git_diff_tool(),
@@ -332,6 +333,26 @@ fn git_show_tool() -> Value {
                 }
             },
             "required": ["rev"]
+        }
+    })
+}
+
+fn bom_query() -> Value {
+    json!({
+        "name": "bom_query",
+        "description": "Query the CycloneDX SBOM (Software Bill of Materials) for project dependencies. Returns components filtered by an optional search term. Use this to identify third-party libraries, their versions, licenses, and PURLs.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Optional case-insensitive search term to filter components by name, type, version, PURL, or license. Omit to list all components."
+                },
+                "type_filter": {
+                    "type": "string",
+                    "description": "Optional component type filter (e.g., 'library', 'framework', 'container', 'application', 'cryptographic-asset')"
+                }
+            }
         }
     })
 }

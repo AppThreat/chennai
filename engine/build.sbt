@@ -18,6 +18,7 @@ lazy val engine = (project in file("."))
     libraryDependencies ++= Seq(
       "io.appthreat" %% "dataflowengineoss" % chenVersion,
       "io.appthreat" %% "semanticcpg"       % chenVersion,
+      "io.appthreat" %% "x2cpg"             % chenVersion,
       "org.scala-lang" %% "scala3-compiler" % scalaVersion.value,
       "org.scala-lang" %% "scala3-repl"     % scalaVersion.value,
       "io.circe"     %% "circe-core"        % circeVersion,

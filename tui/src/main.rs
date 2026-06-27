@@ -1,5 +1,6 @@
 mod agent;
 mod app;
+mod bom;
 mod commands;
 mod config;
 mod engine;
@@ -9,6 +10,7 @@ mod ui;
 
 use agent::AgentCtx;
 use app::{App, Panel};
+use bom::{find_existing_boms, BomStore};
 use config::Config;
 use engine::Engine;
 use model::{OpenInfo, Summary};
@@ -26,7 +28,7 @@ use crossterm::{
 use ratatui::backend::{Backend, CrosstermBackend};
 use serde_json::json;
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -97,11 +99,84 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Wrap engine in Arc<Mutex> so both the TUI and agent can share it.
     let engine_arc = Arc::new(Mutex::new(eng));
 
+    // Load existing .cdx.json BOM files — never auto-generate at startup.
+    // cdxgen is invoked on demand if reachables returns empty and no BOM exists.
+    let source_path = source_root.as_ref().map(PathBuf::from);
+    let reports_dir = args.reports_dir.unwrap_or_else(|| {
+        let base = source_root.clone().unwrap_or_else(|| {
+            atom.parent().map(|p| p.to_string_lossy().to_string()).unwrap_or_else(|| ".".into())
+        });
+        PathBuf::from(base).join(".chen").join("chennai-reports")
+    });
+
+    let bom_store = find_existing_boms(reports_dir.as_path());
+    let mut bom_store = if bom_store.loaded { bom_store } else {
+        find_existing_boms(source_path.as_deref().unwrap_or(Path::new(".")))
+    };
+
+    // If no BOM was found via directory scan, check the atom for .cdx.json config
+    // files (a cheaper query than directory scanning). If none exist either, try
+    // cdxgen on demand. If cdxgen is unavailable, show a reminder.
+    let mut bom_tip = String::new();
+    if !bom_store.loaded {
+        let has_cdx_config = engine_arc.lock().unwrap()
+            .request::<serde_json::Value>("eval", json!({"expr": "atom.configFiles.name(\".*cdx\\\\.json\").toJson"}))
+            .map(|r| r.get("total").and_then(|v| v.as_i64()).unwrap_or(0) > 0)
+            .unwrap_or(false);
+
+        if !has_cdx_config {
+            let sdir = source_path.as_deref().unwrap_or(Path::new("."));
+            let odir = reports_dir.as_path();
+            let language = bom::detect_language(sdir);
+            let mut generated = false;
+            for lifecycle in bom::LIFECYCLES {
+                if let Ok(path) = bom::generate_bom(sdir, odir, lifecycle, language.as_deref()) {
+                    // Load the BOM into the Rust store for display.
+                    let mut store = BomStore::new();
+                    if store.load_path(&path).is_ok() {
+                        // Enrich the open atom by running CdxPass + EasyTagsPass.
+                        let bom_str = path.to_string_lossy().to_string();
+                        match engine_arc.lock().unwrap().request::<serde_json::Value>(
+                            "enrich", json!({"bom": bom_str}),
+                        ) {
+                            Ok(resp) => {
+                                if resp.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
+                                    eprintln!("Atom enriched with SBOM dependency data");
+                                }
+                            }
+                            Err(e) => {
+                                eprintln!("Warning: failed to enrich atom with SBOM data: {e}");
+                            }
+                        }
+                        bom_store = store;
+                        generated = true;
+                        break;
+                    }
+                }
+            }
+            if !generated {
+                bom_tip = "No SBOM found. Generate one with: cdxgen -o sbom-<lang>-<lifecycle>.cdx.json <source_dir> (npm install -g @cyclonedx/cdxgen)".into();
+                eprintln!("Tip: {bom_tip}");
+            }
+        }
+    }
+
     // Build optional agent context for the TUI.
     let agent_ctx = if config.enabled {
+        // Compute BOM summary strings for the system prompt before bom_store is moved.
+        let bom_summary = if bom_store.loaded { bom_store.summary() } else { String::new() };
+        let bom_components = if bom_store.loaded && !bom_store.components.is_empty() {
+            let top: Vec<String> = bom_store.components.iter().take(20).map(|r| {
+                format!("  - {} {} ({}) {}", r.type_display(), r.name_display(), r.version_display(), r.purl_display())
+            }).collect();
+            Some(top.join("\n"))
+        } else { None };
         match agent::create_provider(&config) {
             Ok(provider) => {
-                let system_prompt = AgentCtx::build_system_prompt(&summary.language, &summary.version, &summary.rows);
+                let system_prompt = AgentCtx::build_system_prompt(
+                    &summary.language, &summary.version, &summary.rows,
+                    Some(&bom_summary), bom_components.as_deref(),
+                );
                 eprintln!("AI agent enabled: {} ({})", config.provider, config.model);
                 Some(AgentCtx {
                     provider,
@@ -129,19 +204,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         app.enable_agent();
     }
 
+    if bom_store.loaded {
+        app.bom_store = Some(bom_store);
+        app.bom_generated = false;
+        app.status = format!("BOM loaded ({} components) — type 'bom' to view", app.bom_store.as_ref().map(|s| s.total_components).unwrap_or(0));
+        eprintln!("{}", app.status);
+    } else if !bom_tip.is_empty() {
+        app.status = bom_tip;
+    }
+
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = ratatui::Terminal::new(backend)?;
-
-    // Determine reports directory: prefer CLI arg, then source root, then atom parent.
-    let reports_dir = args.reports_dir.unwrap_or_else(|| {
-        let base = source_root.clone().unwrap_or_else(|| {
-            atom.parent().map(|p| p.to_string_lossy().to_string()).unwrap_or_else(|| ".".into())
-        });
-        PathBuf::from(base).join(".chen").join("chennai-reports")
-    });
 
     let result = run_app(&mut terminal, &mut app, &theme, agent_ctx, config, source_root, reports_dir);
 
@@ -164,7 +240,7 @@ fn run_headless_agent(
         std::process::exit(1);
     }
     let provider = agent::create_provider(&config).map_err(|e| format!("provider: {e}"))?;
-    let system_prompt = AgentCtx::build_system_prompt(&summary.language, &summary.version, &summary.rows);
+    let system_prompt = AgentCtx::build_system_prompt(&summary.language, &summary.version, &summary.rows, None, None);
     let ctx = AgentCtx {
         provider,
         engine: Some(Arc::new(Mutex::new(engine))),
@@ -211,8 +287,18 @@ fn run_app<B: Backend>(
             // Recreate agent context if it was consumed by a previous run.
             if agent_ctx.is_none() && config.enabled
                 && let Ok(provider) = agent::create_provider(&config) {
+                    let bom_summary = app.bom_store.as_ref().map(|s| s.summary());
+                    let bom_components_summary = app.bom_store.as_ref().and_then(|s| {
+                        if s.loaded && !s.components.is_empty() {
+                            let top: Vec<String> = s.components.iter().take(20).map(|r| {
+                                format!("  - {} {} ({}) {}", r.type_display(), r.name_display(), r.version_display(), r.purl_display())
+                            }).collect();
+                            Some(top.join("\n"))
+                        } else { None }
+                    });
                     let system_prompt = AgentCtx::build_system_prompt(
                         &app.summary.language, &app.summary.version, &app.summary.rows,
+                        bom_summary.as_deref(), bom_components_summary.as_deref(),
                     );
                     let cancel = Arc::new(AtomicBool::new(false));
                     app.agent_cancel = Some(cancel.clone());

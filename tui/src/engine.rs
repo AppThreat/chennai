@@ -41,13 +41,12 @@ impl Engine {
             }
         }
         // Look relative to the TUI binary (npm/bundled layout: bin/chennai + bin/chennai-engine)
-        if let Ok(exe) = std::env::current_exe() {
-            if let Some(parent) = exe.parent() {
+        if let Ok(exe) = std::env::current_exe()
+            && let Some(parent) = exe.parent() {
                 let sibling = parent.join("chennai-engine");
                 if sibling.exists() {
                     return Some(sibling);
                 }
-            }
         }
         let candidates = [
             "engine/target/universal/stage/bin/chennai-engine",

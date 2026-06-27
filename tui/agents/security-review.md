@@ -1,7 +1,7 @@
 ---
 name: security-review
 description: Reachability-grounded vulnerability review of the open atom
-tools: [atom_summary, atom_query, atom_dsl_eval, atom_flows, atom_flows_through, atom_detail, atom_algorithms, ripgrep, read_file, git_diff]
+tools: [atom_summary, atom_query, atom_dsl_eval, atom_flows, atom_flows_through, atom_detail, atom_algorithms, bom_query, ripgrep, read_file, git_diff]
 effort: high
 ---
 

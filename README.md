@@ -34,6 +34,27 @@ After installation the `chennai` command is available globally.
 chennai <path-to-atom-file-or-directory> [options]
 ```
 
+## Software Bill of Materials
+
+chennai integrates with [cdxgen](https://github.com/AppThreat/cdxgen) to automatically generate and load CycloneDX SBOMs for deeper dependency-aware analysis. When you invoke chennai with a source or reports directory, it first looks for any existing `.cdx.json` files. If none are found, it invokes cdxgen to create a BOM with the naming convention `sbom-<language>-<lifecycle>.cdx.json`.
+
+### Installing cdxgen (recommended for best experience)
+
+```
+npm install -g @cyclonedx/cdxgen
+```
+
+cdxgen will be auto-detected in PATH. You can also set the `CDXGEN` environment variable to point to a custom location. Once installed, chennai will automatically generate BOMs on startup when a source directory is available.
+
+### BOM commands
+
+| Command       | Description                                                    |
+| ------------- | -------------------------------------------------------------- |
+| `bom`         | Display all BOM components as a searchable, sortable table     |
+| `bom <query>` | Filter BOM components by name, type, version, PURL, or license |
+
+The BOM data is also injected into AI agent prompts for security and code reviews, improving the LLM's understanding of third-party dependencies, their licenses, and known vulnerabilities.
+
 ### Options
 
 | Option               | Default               | Description                                         |
@@ -46,7 +67,7 @@ chennai <path-to-atom-file-or-directory> [options]
 | `--model STR`        | claude-opus-4-8       | LLM model name                                      |
 | `--api-key STR`      | env var               | API key for the LLM provider                        |
 | `--base-url STR`     | --                    | Custom API base URL for OpenAI-compatible endpoints |
-| `--reports-dir PATH` | .chen/chennai-reports | Directory for markdown reports                      |
+| `--reports-dir PATH` | .chen/chennai-reports | Directory for markdown reports and BOM files        |
 | `--no-thinking`      | false                 | Omit thinking blocks from the LLM request           |
 | `--effort STR`       | high                  | Reasoning effort (low, medium, high, xhigh, max)    |
 
@@ -178,7 +199,7 @@ When an API key is configured (via environment variable or config file), the sla
 | `/trace`           | Prove or disprove a taint path between a given source and sink. Uses `high` effort.                                                                 |
 | `/help`            | List available slash commands.                                                                                                                      |
 
-Free text input (without a slash) is also routed to the agent for ad hoc questions. The agent has access to twelve tools: atom_summary, atom_query, atom_dsl_eval, atom_flows, atom_flows_through, atom_detail, atom_algorithms, ripgrep, read_file, git_diff, git_log, and git_show.
+Free text input (without a slash) is also routed to the agent for ad hoc questions. The agent has access to thirteen tools: atom_summary, atom_query, atom_dsl_eval, atom_flows, atom_flows_through, atom_detail, atom_algorithms, bom_query, ripgrep, read_file, git_diff, git_log, and git_show.
 
 The agent uses the streaming API of the configured provider and renders thinking blocks, text deltas, and tool calls in real time. Tool results are truncated to 48 KiB to stay within model token limits. When the agent produces flow results they are automatically installed into the flow view for interactive exploration.
 

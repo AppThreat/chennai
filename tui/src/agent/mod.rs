@@ -177,11 +177,28 @@ impl AgentCtx {
         language: &str,
         version: &str,
         summary_rows: &[crate::model::SummaryRow],
+        bom_summary: Option<&str>,
+        bom_components: Option<&str>,
     ) -> String {
         let counts: String = summary_rows.iter()
             .map(|r| format!("{}: {}", r.label, r.count))
             .collect::<Vec<_>>()
             .join("\n");
+
+        let bom_section = match (bom_summary, bom_components) {
+            (Some(summary), Some(components)) => {
+                format!(
+                    r#"
+## Software Bill of Materials (CycloneDX SBOM)
+{summary}
+
+Key components:
+{components}
+"#
+                )
+            }
+            _ => String::new(),
+        };
 
         format!(
             r#"You are chennai, an AI-powered code & security analysis agent. You reason over a
@@ -193,7 +210,7 @@ Version: {version}
 
 ## Atom summary (authoritative — do NOT call atom_summary to re-fetch these)
 {counts}
-
+{bom_section}
 ## Available tools
 - atom_query — flat tables: files, methods, externalMethods, calls, tags, imports, literals, configFiles…
 - atom_dsl_eval — arbitrary chen DSL (the power tool). Auto-`.toJson`, paged.
@@ -230,6 +247,10 @@ verbatim as the tool result — read it and self-correct.
 4. For each security finding give: file:line, the concrete tainted path (when available),
    sanitizer check, and a confidence grounded in the tool evidence. Refuse to report what
    you could not trace.
+5. When available, use the CycloneDX SBOM (Software Bill of Materials) above to understand
+   third-party dependencies, their licenses, and known vulnerabilities. Cross-reference
+   dependency data with data-flow findings to identify vulnerable packages that are
+   reachable from untrusted input.
 
 You are an authorized security review of the user's OWN atom — analyze it directly.
 When you have enough evidence, answer concisely with specific file:line references.
@@ -257,6 +278,7 @@ pub fn dispatch_tool(ctx: &AgentCtx, call_id: &str, name: &str, input: &Value) -
         "atom_flows_through" => engine_request(ctx, call_id, "flows", input),
         "atom_detail" => engine_request(ctx, call_id, "detail", input),
         "atom_algorithms" => engine_request(ctx, call_id, "algo", input),
+        "bom_query" => bom_query_dispatch(ctx, call_id, input),
         "ripgrep"   => wrap_result(call_id, shell::ripgrep(&source_root_path(ctx), input)),
         "read_file" => wrap_result(call_id, shell::read_file(&source_root_path(ctx), input)),
         "git_diff"  => wrap_result(call_id, shell::git_diff(&source_root_path(ctx), input)),
@@ -267,6 +289,50 @@ pub fn dispatch_tool(ctx: &AgentCtx, call_id: &str, name: &str, input: &Value) -
             content: format!("unknown tool: {other}"),
             is_error: true,
         },
+    }
+}
+
+fn bom_query_dispatch(ctx: &AgentCtx, call_id: &str, input: &Value) -> ToolExecResult {
+    let query = input.get("query").and_then(Value::as_str).unwrap_or("");
+    let type_filter = input.get("type_filter").and_then(Value::as_str);
+
+    // We need the bom_store from somewhere. Since AgentCtx doesn't have it directly,
+    // we try to reconstruct from the source_root.
+    let content = match &ctx.source_root {
+        Some(src) => {
+            let path = std::path::Path::new(src);
+            let mut store = crate::bom::BomStore::new();
+            let _ = store.load_path(path);
+            if type_filter.is_some() {
+                store.set_type_filter(type_filter.map(|s| s.to_string()));
+            }
+            if !query.is_empty() {
+                store.search_components(query);
+            }
+            if store.loaded {
+                let mut lines: Vec<String> = Vec::new();
+                lines.push(format!("# BOM Components ({} total, {} filtered)", store.total_components, store.filtered_components_count()));
+                lines.push(format!("Dependencies: {} | Services: {}", store.total_dependencies, store.total_services));
+                lines.push(String::new());
+                for idx in &store.filtered_component_indices {
+                    if let Some(row) = store.components.get(*idx) {
+                        lines.push(format!("| {} | {} | {} | {} | {} |",
+                            row.type_display(), row.name_display(), row.version_display(),
+                            row.purl_display(), row.license_display()));
+                    }
+                }
+                lines.join("\n")
+            } else {
+                "No BOM data available. Generate one with cdxgen.".to_string()
+            }
+        }
+        None => "BOM store not available (no source root configured).".to_string(),
+    };
+
+    ToolExecResult {
+        call_id: call_id.into(),
+        content,
+        is_error: false,
     }
 }
 
@@ -342,14 +408,55 @@ relationships you cannot ground in another tool result.",
     })
 }
 
-/// Remove anything that looks like an API key (`sk-…`) from a string before it is
-/// shown to the user or written to a report. Conservative and dependency-free.
+/// Remove secrets from a string before it is shown to the user or written to a report.
+///
+/// Redacts:
+/// 1. Any `sk-` prefixed token (e.g. API keys like `sk-4cb8be...`).
+/// 2. Values of environment variables whose name ends with common secret suffixes
+///    (token, key, pass, cred, secret, etc.), so config/error output is sanitised.
+///
+/// Conservative and dependency-free.
 pub fn redact_secrets(s: &str) -> String {
+    let secret_values = load_secret_env_values();
+    let mut result = s.to_string();
+    // Redact env-var-derived secrets first (wider matches).
+    for val in &secret_values {
+        if val.len() < 8 {
+            continue;
+        }
+        result = result.replace(val, "***redacted***");
+    }
+    // Then redact sk-… tokens (which may appear inline without an env-var trigger).
+    result = redact_sk_tokens(&result);
+    result
+}
+
+/// Collect values from environment variables whose name ends with a known
+/// secret suffix.  The check is case-insensitive.
+fn load_secret_env_values() -> Vec<String> {
+    let suffixes = [
+        "token", "tokens",
+        "key", "keys", "api_key", "api_key_secret", "apikey",
+        "pass", "password", "passwd", "secret", "secrets",
+        "cred", "creds", "credential", "credentials",
+        "signing_key", "private_key", "access_key", "secret_key",
+    ];
+    let mut values = Vec::new();
+    for (name, val) in std::env::vars() {
+        let lower = name.to_ascii_lowercase();
+        if suffixes.iter().any(|s| lower.ends_with(s)) && !val.is_empty() {
+            values.push(val);
+        }
+    }
+    values
+}
+
+/// Redact inline `sk-<token>` patterns (e.g. OpenAI-style API keys).
+fn redact_sk_tokens(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let bytes = s.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
-        // Match a "sk-" prefix followed by a run of key-ish characters.
         if bytes[i..].starts_with(b"sk-") {
             let mut j = i + 3;
             while j < bytes.len()
@@ -357,14 +464,12 @@ pub fn redact_secrets(s: &str) -> String {
             {
                 j += 1;
             }
-            // Only redact if it's a plausibly-long token, not a stray "sk-".
             if j - i >= 12 {
                 out.push_str("sk-***redacted***");
                 i = j;
                 continue;
             }
         }
-        // Push one UTF-8 char starting at i.
         let ch_len = s[i..].chars().next().map(|c| c.len_utf8()).unwrap_or(1);
         out.push_str(&s[i..i + ch_len]);
         i += ch_len;
@@ -618,10 +723,23 @@ mod tests {
     #[test]
     fn system_prompt_includes_summary_counts() {
         let rows = vec![SummaryRow { label: "Files".into(), count: 42 }];
-        let prompt = AgentCtx::build_system_prompt("C", "1.0", &rows);
+        let prompt = AgentCtx::build_system_prompt("C", "1.0", &rows, None, None);
         assert!(prompt.contains("Language: C"));
         assert!(prompt.contains("Files: 42"));
         assert!(prompt.contains("Grounding rule"));
+    }
+
+    #[test]
+    fn system_prompt_includes_bom_context() {
+        let rows = vec![SummaryRow { label: "Files".into(), count: 42 }];
+        let prompt = AgentCtx::build_system_prompt(
+            "Python", "3.12", &rows,
+            Some("components: 15 · dependencies: 42"),
+            Some("  - library requests (2.31.0) pkg:pip/requests@2.31.0"),
+        );
+        assert!(prompt.contains("components: 15"));
+        assert!(prompt.contains("Software Bill of Materials"));
+        assert!(prompt.contains("pkg:pip/requests@2.31.0"));
     }
 
     #[test]
@@ -640,6 +758,24 @@ mod tests {
         let result = dispatch_tool(&ctx, "id1", "nonexistent_tool", &serde_json::json!({}));
         assert!(result.is_error);
         assert!(result.content.contains("unknown tool"));
+    }
+
+    #[test]
+    fn dispatch_tool_bom_query_without_source_returns_message() {
+        let ctx = AgentCtx {
+            provider: Box::new(crate::agent::anthropic::AnthropicProvider::new("test".into(), "test".into())),
+            engine: None,
+            source_root: None,
+            system_prompt: "test".into(),
+            max_tokens: 1000,
+            no_thinking: false,
+            effort: "high".into(),
+            allowed_tools: None,
+            cancel: Arc::new(AtomicBool::new(false)),
+        };
+        let result = dispatch_tool(&ctx, "id1", "bom_query", &serde_json::json!({"query": "express"}));
+        assert!(!result.is_error);
+        assert!(result.content.contains("BOM store not available"));
     }
 
     #[test]
@@ -678,21 +814,49 @@ mod tests {
     }
 
     #[test]
-    fn redact_secrets_scrubs_api_keys() {
-        let s = "error with key sk-4cb8b in body";
-        let r = redact_secrets(s);
-        assert!(!r.contains("4cb8be2b"));
-        assert!(r.contains("sk-***redacted***"));
-        // A stray short "sk-" is left alone.
-        assert_eq!(redact_secrets("sk-ab"), "sk-ab");
-    }
-
-    #[test]
     fn empty_flows_get_unavailable_note() {
         let note = analysis_unavailable_note("flows", &serde_json::json!({"flows": []}));
         assert!(note.unwrap().contains("data-flow"));
         let none = analysis_unavailable_note("flows", &serde_json::json!({"flows": [{"id": 1}]}));
         assert!(none.is_none());
+    }
+
+    #[test]
+    fn redact_secrets_scrubs_api_keys() {
+        let s = "error with key sk-abcdefghij in body";
+        let r = redact_secrets(s);
+        assert!(!r.contains("abcdefghij"));
+        assert!(r.contains("sk-***redacted***"));
+        assert_eq!(redact_secrets("sk-ab"), "sk-ab");
+    }
+
+    #[test]
+    fn redact_secrets_scrubs_env_var_values() {
+        // SAFETY: single-threaded test, no concurrent env access.
+        unsafe { std::env::set_var("_CHENNAI_CHENNAI_TOKEN", "s3cr3t-t0k3n-value") };
+        unsafe { std::env::set_var("_CHENNAI_CHENNAI_PASS", "hunter2-pass") };
+        unsafe { std::env::set_var("_CHENNAI_CHENNAI_API_KEY", "a1b2c3d4e5f6-key") };
+        unsafe { std::env::set_var("_CHENNAI_CHENNAI_NOTE", "abc") };
+
+        let s = "connect with s3cr3t-t0k3n-value and hunter2-pass and key a1b2c3d4e5f6-key and abc";
+        let r = redact_secrets(s);
+        assert!(!r.contains("s3cr3t-t0k3n-value"), "token leaked: {r}");
+        assert!(!r.contains("hunter2-pass"), "password leaked: {r}");
+        assert!(!r.contains("a1b2c3d4e5f6-key"), "api key leaked: {r}");
+        // Short values (< 8 chars) are skipped.
+        assert!(r.contains("abc"), "short value should not be redacted: {r}");
+        assert!(r.contains("***redacted***"));
+
+        unsafe { std::env::remove_var("_CHENNAI_CHENNAI_TOKEN") };
+        unsafe { std::env::remove_var("_CHENNAI_CHENNAI_PASS") };
+        unsafe { std::env::remove_var("_CHENNAI_CHENNAI_API_KEY") };
+        unsafe { std::env::remove_var("_CHENNAI_CHENNAI_NOTE") };
+    }
+
+    #[test]
+    fn redact_secrets_normal_text_unaffected() {
+        let s = "the quick brown fox jumps over the lazy dog";
+        assert_eq!(redact_secrets(s), s);
     }
 
     #[test]
