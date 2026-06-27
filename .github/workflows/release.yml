@@ -60,7 +60,7 @@ jobs:
           bash ci/native-image.sh
           mv engine/target/graalvm-native-image/chennai-engine chennai-engine-amd64
           upx -9 --lzma chennai-engine-amd64
-          chennai-engine-amd64 --help
+          ./chennai-engine-amd64 --help
           sha512sum chennai-engine-amd64 > chennai-engine-amd64.sha512
           (cd tui && cargo build --release)
           cp tui/target/release/chennai chennai-amd64
@@ -124,7 +124,7 @@ jobs:
           bash ci/native-image.sh
           mv engine/target/graalvm-native-image/chennai-engine chennai-engine-arm64
           upx -9 --lzma chennai-engine-arm64
-          chennai-engine-arm64 --help
+          ./chennai-engine-arm64 --help
           sha512sum chennai-engine-arm64 > chennai-engine-arm64.sha512
           (cd tui && cargo build --release)
           cp tui/target/release/chennai chennai-arm64
@@ -237,7 +237,7 @@ jobs:
           (cd engine && sbt -batch stage)
           bash ci/native-image.sh
           mv engine/target/graalvm-native-image/chennai-engine chennai-engine-darwin-arm64
-          chennai-engine-darwin-arm64 --help
+          ./chennai-engine-darwin-arm64 --help
           sha512sum chennai-engine-darwin-arm64 > chennai-engine-darwin-arm64.sha512
           (cd tui && cargo build --release)
           cp tui/target/release/chennai chennai-darwin-arm64
