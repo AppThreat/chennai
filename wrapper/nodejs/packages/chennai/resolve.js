@@ -200,8 +200,16 @@ export function locateChennaiBinary(opts = {}) {
     if (debug) console.error(`[chennai] check ${binaryPath} -> ${fs.existsSync(binaryPath)}`);
     if (fs.existsSync(binaryPath)) {
       const engineName = platform === "win32" ? "chennai-engine.exe" : "chennai-engine";
-      const enginePath = join(pkgDir, "bin", engineName);
-      return { kind: "native", pkg, binPath: binaryPath, enginePath: fs.existsSync(enginePath) ? enginePath : null, pkgDir };
+      let enginePath = null;
+      if (isNative) {
+        enginePath = join(pkgDir, "bin", engineName);
+        enginePath = fs.existsSync(enginePath) ? enginePath : null;
+      } else {
+        // JAR fallback: engine launcher lives under plugins/bin/
+        const jarEnginePath = join(pkgDir, "plugins", "bin", engineName);
+        enginePath = fs.existsSync(jarEnginePath) ? jarEnginePath : null;
+      }
+      return { kind: isNative ? "native" : "jar", pkg, binPath: binaryPath, enginePath, pkgDir };
     }
     return null;
   };

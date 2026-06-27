@@ -3,7 +3,7 @@
 # Usage: bash scripts/build-local.sh
 set -euo pipefail
 
-root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 wrapper="$root/wrapper/nodejs"
 
 echo "==> Building engine (sbt stage)"

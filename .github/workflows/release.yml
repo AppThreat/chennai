@@ -50,6 +50,10 @@ jobs:
         with:
           cache: false
       - uses: oras-project/setup-oras@38de303aac69abb66f3e6255b7198bff35f323e3  # v2
+      - name: Run Scala tests
+        run: (cd engine && sbt -batch test)
+      - name: Run Rust tests
+        run: (cd tui && cargo test)
       - name: Build engine native image + TUI
         run: |
           wget -q https://github.com/upx/upx/releases/download/v5.0.1/upx-5.0.1-amd64_linux.tar.xz
@@ -115,6 +119,10 @@ jobs:
         with:
           cache: false
       - uses: oras-project/setup-oras@38de303aac69abb66f3e6255b7198bff35f323e3  # v2
+      - name: Run Scala tests
+        run: (cd engine && sbt -batch test)
+      - name: Run Rust tests
+        run: (cd tui && cargo test)
       - name: Build engine native image + TUI
         run: |
           wget -q https://github.com/upx/upx/releases/download/v5.0.1/upx-5.0.1-arm64_linux.tar.xz
@@ -168,6 +176,8 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659  # v1
         with:
           cache: false
+      - name: Run Rust tests
+        run: (cd tui && cargo test)
       - name: Build musl native image + TUI
         run: |
           wget -q https://github.com/upx/upx/releases/download/v5.0.1/upx-5.0.1-amd64_linux.tar.xz
@@ -234,6 +244,10 @@ jobs:
         with:
           cache: false
       - uses: oras-project/setup-oras@38de303aac69abb66f3e6255b7198bff35f323e3  # v2
+      - name: Run Scala tests
+        run: (cd engine && sbt -batch test)
+      - name: Run Rust tests
+        run: (cd tui && cargo test)
       - name: Build engine native image + TUI
         run: |
           brew install coreutils
@@ -287,12 +301,26 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           native-image-job-reports: 'true'
           cache: ''
+      - uses: sbt/setup-sbt@3afe9cf056c5d139bfc46579af1192d77a2f0821  # v1
+      - uses: coursier/setup-action@fd1707a76b027efdfb66ca79318b4d29b72e5a02  # v3
+        with:
+          apps: scala3 scalac
       - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756  # v1
         with:
           arch: amd64
       - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659  # v1
         with:
           cache: false
+      - name: Run Scala tests
+        shell: pwsh
+        run: |
+          cd engine
+          sbt -batch test
+      - name: Run Rust tests
+        shell: pwsh
+        run: |
+          cd tui
+          cargo test
       - name: Build engine native image + TUI
         shell: pwsh
         run: |
