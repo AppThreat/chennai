@@ -22,7 +22,8 @@ object Main:
       opt[Unit]("serve").action((_, c) => c.copy(serve = true)).text("run the NDJSON stdio server"),
       opt[String]("atom").action((p, c) => c.copy(atom = Some(p))).text(
         "path to an existing .atom file to open"
-      )
+      ),
+      help("help").text("print this usage text")
     )
 
   def main(args: Array[String]): Unit =
