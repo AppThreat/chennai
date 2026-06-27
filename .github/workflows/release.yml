@@ -473,6 +473,7 @@ jobs:
           cd "$REPO_ROOT/wrapper/nodejs"
 
           # ── Native (linux-amd64) smoke test ──────────────────────
+          mkdir -p /tmp/chennai-test
           npm pack --workspace packages/chennai-linux-amd64 --pack-destination /tmp/chennai-test 2>&1
           npm pack --workspace packages/chennai --pack-destination /tmp/chennai-test 2>&1
 
