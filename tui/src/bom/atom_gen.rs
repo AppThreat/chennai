@@ -8,10 +8,7 @@
 //! # Lookup order for the atom binary
 //!
 //! 1. `ATOM_CMD` environment variable
-//! 2. [`atom`](PATH)
-//! 3. `<tui-binary-dir>/node_modules/.bin/atom`
-//! 4. `<tui-binary-dir>/../node_modules/.bin/atom`
-//! 5. npm global prefix → `bin/atom` or `lib/node_modules/@appthreat/atom/index.js`
+//! 2. `atom` on `PATH`
 //!
 //! # Auto-install
 //!
@@ -136,13 +133,8 @@ fn has_glob(dir: &Path, pattern: &str) -> bool {
 ///
 /// Checks, in order:
 /// 1. `ATOM_CMD` environment variable
-/// 2. `atom` in PATH
-/// 3. `node_modules/.bin/atom` relative to the TUI binary
-/// 4. `../node_modules/.bin/atom` relative to the TUI binary
-/// 5. `atom.sh` (the sbt-stage launcher) from common clone locations
-/// 6. npm global prefix — `bin/atom` or `lib/node_modules/@appthreat/atom/index.js`
+/// 2. `atom` on `PATH`
 pub fn find_atom() -> Result<PathBuf, String> {
-    // 1. ATOM_CMD environment variable.
     if let Ok(path) = std::env::var("ATOM_CMD") {
         let pb = PathBuf::from(&path);
         if pb.is_file() {
@@ -150,69 +142,8 @@ pub fn find_atom() -> Result<PathBuf, String> {
         }
     }
 
-    // 2. PATH.
     if let Some(path) = which("atom") {
         return Ok(path);
-    }
-
-    // 3 + 4. Relative to the TUI binary.
-    if let Ok(exe) = std::env::current_exe()
-        && let Some(parent) = exe.parent() {
-            let candidates = [
-                parent.join("node_modules").join(".bin").join("atom"),
-                parent.join("..").join("node_modules").join(".bin").join("atom"),
-            ];
-            for c in &candidates {
-                if c.is_file() {
-                    return Ok(c.clone());
-                }
-            }
-    }
-
-    // 5. `atom.sh` launcher from sbt-stage — check relative to TUI binary and
-    //    common clone paths (`../atom/atom.sh`, `./atom/atom.sh`).
-    if let Ok(exe) = std::env::current_exe()
-        && let Some(parent) = exe.parent() {
-            let shell_candidates = [
-                parent.join("atom").join("atom.sh"),
-                parent.join("..").join("atom").join("atom.sh"),
-                parent.join("..").join("..").join("atom").join("atom.sh"),
-            ];
-            for c in &shell_candidates {
-                if c.is_file() {
-                    return Ok(c.clone());
-                }
-            }
-    }
-
-    // 6. npm global prefix.
-    if let Some(prefix) = npm_global_prefix() {
-        let bin_candidate = prefix.join("bin").join("atom");
-        if bin_candidate.is_file() {
-            return Ok(bin_candidate);
-        }
-        let index_candidate = prefix
-            .join("lib")
-            .join("node_modules")
-            .join("@appthreat")
-            .join("atom")
-            .join("index.js");
-        if index_candidate.is_file() {
-            return Ok(index_candidate);
-        }
-        // 5b. atom may be installed as a transitive dependency of cdxgen.
-        let via_cdxgen = prefix
-            .join("lib")
-            .join("node_modules")
-            .join("@cyclonedx")
-            .join("cdxgen")
-            .join("node_modules")
-            .join("@appthreat")
-            .join("atom")
-            .join("index.js");
-        if via_cdxgen.is_file() {
-            return Ok(via_cdxgen);
-        }
     }
 
     Err(
@@ -224,24 +155,6 @@ pub fn find_atom() -> Result<PathBuf, String> {
 /// Check whether `npm` is available on PATH.
 pub fn find_npm() -> Option<PathBuf> {
     which("npm").or_else(|| which("npm.cmd"))
-}
-
-/// Return the npm global prefix by running `npm prefix -g`.
-fn npm_global_prefix() -> Option<PathBuf> {
-    let npm = find_npm()?;
-    std::process::Command::new(npm)
-        .args(["prefix", "-g"])
-        .output()
-        .ok()
-        .and_then(|out| {
-            if out.status.success() {
-                let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
-                if !s.is_empty() {
-                    return Some(PathBuf::from(s));
-                }
-            }
-            None
-        })
 }
 
 // ---------------------------------------------------------------------------
@@ -408,14 +321,6 @@ mod tests {
         }
         // If npm is not on PATH the test simply passes — the function
         // gracefully returns None.
-    }
-
-    #[test]
-    fn test_npm_global_prefix_returns_valid_path_when_available() {
-        if let Some(prefix) = npm_global_prefix() {
-            assert!(prefix.is_dir(), "npm prefix must be an existing directory");
-        }
-        // If npm is not available the test simply passes.
     }
 
     #[test]

@@ -48,11 +48,11 @@ This runs `npm install -g --ignore-scripts @cyclonedx/cdxgen @appthreat/atom @ap
 
 chennai auto-detects these tools in the following order:
 
-| Tool   | Env var    | Search path                                              |
-| ------ | ---------- | -------------------------------------------------------- |
-| cdxgen | `CDXGEN`   | PATH → `node_modules/.bin/cdxgen` → npm global           |
-| atom   | `ATOM_CMD` | PATH → `node_modules/.bin/atom` → `atom.sh` → npm global |
-| npm    | —          | PATH                                                     |
+| Tool   | Env var    | Search path                                    |
+| ------ | ---------- | ---------------------------------------------- |
+| cdxgen | `CDXGEN`   | PATH → `node_modules/.bin/cdxgen` → npm global |
+| atom   | `ATOM_CMD` | `ATOM_CMD` → PATH                              |
+| npm    | —          | PATH                                           |
 
 ### Atom auto-generation
 

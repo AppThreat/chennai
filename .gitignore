@@ -17,8 +17,11 @@ wrapper/nodejs/packages/chennai-jar/
 wrapper/nodejs/packages/chennai-linux-amd64/
 wrapper/nodejs/packages/chennai-linux-arm64/
 wrapper/nodejs/packages/chennai-linux-amd64-musl/
+wrapper/nodejs/packages/chennai-linux-arm64-musl/
 wrapper/nodejs/packages/chennai-darwin-arm64/
+wrapper/nodejs/packages/chennai-darwin-amd64/
 wrapper/nodejs/packages/chennai-windows-amd64/
+wrapper/nodejs/packages/chennai-windows-arm64/
 wrapper/nodejs/packages/*/bin/
 wrapper/nodejs/packages/*/plugins/
 wrapper/nodejs/packages/*/node_modules/

@@ -12,6 +12,17 @@ ThisBuild / resolvers ++= Seq(
   "Sonatype OSS" at "https://oss.sonatype.org/content/repositories/public"
 )
 
+githubOwner                      := "appthreat"
+githubRepository                 := "atom"
+githubSuppressPublicationWarning := true
+credentials +=
+  Credentials(
+    "GitHub Package Registry",
+    "maven.pkg.github.com",
+    "appthreat",
+    sys.env.getOrElse("GITHUB_TOKEN", "N/A")
+  )
+
 lazy val engine = (project in file("."))
   .enablePlugins(JavaAppPackaging, GraalVMNativeImagePlugin)
   .settings(

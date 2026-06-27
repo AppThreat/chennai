@@ -37,8 +37,10 @@
     "@appthreat/chennai-linux-amd64": "3.0.0",
     "@appthreat/chennai-linux-arm64": "3.0.0",
     "@appthreat/chennai-darwin-arm64": "3.0.0",
+    "@appthreat/chennai-darwin-amd64": "3.0.0",
     "@appthreat/chennai-windows-amd64": "3.0.0",
+    "@appthreat/chennai-windows-arm64": "3.0.0",
     "@appthreat/chennai-linux-amd64-musl": "3.0.0",
-    "@appthreat/chennai-jar": "3.0.0"
+    "@appthreat/chennai-linux-arm64-musl": "3.0.0"
   }
 }

@@ -47,6 +47,21 @@ const packagesInfo = [
     description: "Linux x64 (musl) native binary for @appthreat/chennai",
   },
   {
+    name: "@appthreat/chennai-linux-arm64-musl",
+    kind: "jar",
+    os: ["linux"],
+    cpu: ["arm64"],
+    libc: ["musl"],
+    description: "Universal JAR fallback package for @appthreat/chennai",
+  },
+  {
+    name: "@appthreat/chennai-darwin-amd64",
+    kind: "jar",
+    os: ["darwin"],
+    cpu: ["x64"],
+    description: "Universal JAR fallback package for @appthreat/chennai",
+  },
+  {
     name: "@appthreat/chennai-darwin-arm64",
     kind: "native",
     os: ["darwin"],
@@ -59,6 +74,13 @@ const packagesInfo = [
     os: ["win32"],
     cpu: ["x64"],
     description: "Windows x64 native binary for @appthreat/chennai",
+  },
+  {
+    name: "@appthreat/chennai-windows-arm64",
+    kind: "jar",
+    os: ["win32"],
+    cpu: ["arm64"],
+    description: "Universal JAR fallback package for @appthreat/chennai",
   },
 ];
 
