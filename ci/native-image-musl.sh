@@ -95,14 +95,14 @@ echo "Building linux/${ARCH} musl native image..."
 exec java -Xms512M -Xmx4G -jar /usr/local/bin/sbt-launch.jar "$@"
 SBT
     chmod +x /usr/local/bin/sbt
-    sbt "GraalVMNativeImage / packageBin"
+    cd /workspace/engine && sbt "GraalVMNativeImage / packageBin"
   '
 
-if [[ ! -f "${REPO_ROOT}/target/graalvm-native-image/chennai-engine" ]]; then
-  echo "native-image build did not produce target/graalvm-native-image/chennai-engine" >&2
+if [[ ! -f "${REPO_ROOT}/engine/target/graalvm-native-image/chennai-engine" ]]; then
+  echo "native-image build did not produce engine/target/graalvm-native-image/chennai-engine" >&2
   exit 1
 fi
 
-cp "${REPO_ROOT}/target/graalvm-native-image/chennai-engine" "${OUTPUT_ABS}"
+cp "${REPO_ROOT}/engine/target/graalvm-native-image/chennai-engine" "${OUTPUT_ABS}"
 chmod +x "${OUTPUT_ABS}"
 echo "Created ${OUTPUT}"

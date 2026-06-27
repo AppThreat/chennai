@@ -48,11 +48,11 @@ This runs `npm install -g --ignore-scripts @cyclonedx/cdxgen @appthreat/atom @ap
 
 chennai auto-detects these tools in the following order:
 
-| Tool   | Env var    | Search path                                    |
-| ------ | ---------- | ---------------------------------------------- |
-| cdxgen | `CDXGEN`   | PATH → `node_modules/.bin/cdxgen` → npm global |
-| atom   | `ATOM_CMD` | `ATOM_CMD` → PATH                              |
-| npm    | —          | PATH                                           |
+| Tool   | Env var      | Search path                                    |
+| ------ | ------------ | ---------------------------------------------- |
+| cdxgen | `CDXGEN_CMD` | PATH → `node_modules/.bin/cdxgen` → npm global |
+| atom   | `ATOM_CMD`   | `ATOM_CMD` → PATH                              |
+| npm    | —            | PATH                                           |
 
 ### Atom auto-generation
 
@@ -80,7 +80,7 @@ chennai integrates with [cdxgen](https://github.com/AppThreat/cdxgen) to automat
 npm install -g @cyclonedx/cdxgen
 ```
 
-cdxgen will be auto-detected in PATH. You can also set the `CDXGEN` environment variable to point to a custom location. Once installed, chennai will automatically generate BOMs on startup when a source directory is available.
+cdxgen will be auto-detected in PATH. You can also set the `CDXGEN_CMD` environment variable to point to a custom location. Once installed, chennai will automatically generate BOMs on startup when a source directory is available.
 
 ### BOM commands
 
@@ -112,7 +112,7 @@ The BOM data is also injected into AI agent prompts for security and code review
 - `CHENNAI_ENGINE`: Path to the engine binary. Overrides auto-detection.
 - `ANTHROPIC_API_KEY`: API key for Anthropic provider.
 - `OPENAI_API_KEY`: API key for OpenAI-compatible providers.
-- `CDXGEN`: Path to the cdxgen binary.
+- `CDXGEN_CMD`: Path to the cdxgen binary.
 - `ATOM_CMD`: Path to the atom CLI binary (e.g. `/path/to/atom/atom.sh`).
 - `CHENNAI_DEBUG`: Set to any value to enable resolver diagnostics.
 

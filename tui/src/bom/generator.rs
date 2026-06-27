@@ -236,11 +236,11 @@ pub fn ensure_bom(
 }
 
 /// Locate the cdxgen binary. Checks, in order:
-/// 1. `CDXGEN` environment variable
+/// 1. `CDXGEN_CMD` environment variable
 /// 2. `cdxgen` in PATH
 /// 3. `node_modules/.bin/cdxgen` relative to the TUI binary
 pub fn find_cdxgen() -> Result<PathBuf, String> {
-    if let Ok(path) = std::env::var("CDXGEN") {
+    if let Ok(path) = std::env::var("CDXGEN_CMD") {
         let pb = PathBuf::from(&path);
         if pb.is_file() {
             return Ok(pb);
