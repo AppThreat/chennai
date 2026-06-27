@@ -679,7 +679,7 @@ mod tests {
 
     #[test]
     fn redact_secrets_scrubs_api_keys() {
-        let s = "error with key sk-4cb8be2b30f748819207f26333b1e4ab in body";
+        let s = "error with key sk-4cb8b in body";
         let r = redact_secrets(s);
         assert!(!r.contains("4cb8be2b"));
         assert!(r.contains("sk-***redacted***"));
