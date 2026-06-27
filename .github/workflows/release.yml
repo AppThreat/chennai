@@ -388,6 +388,11 @@ jobs:
           registry-url: 'https://registry.npmjs.org'
           package-manager-cache: false
 
+      - uses: sbt/setup-sbt@3afe9cf056c5d139bfc46579af1192d77a2f0821  # v1
+      - uses: coursier/setup-action@fd1707a76b027efdfb66ca79318b4d29b72e5a02  # v3
+        with:
+          apps: scala3 scalac
+
       - name: Install deps
         run: |
           (cd wrapper/nodejs && npm install)
@@ -396,6 +401,9 @@ jobs:
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
           path: wrapper/nodejs/downloaded-binaries
+
+      - name: Build engine JAR stage (for chennai-jar fallback)
+        run: (cd engine && sbt -batch stage)
 
       - name: Assemble platform packages
         run: |
@@ -426,10 +434,54 @@ jobs:
             downloaded-binaries/chennai-windows-amd64/chennai-win-amd64.exe \
             downloaded-binaries/chennai-windows-amd64/chennai-engine-win-amd64.exe
 
+          echo "=== Assemble chennai-jar (JAR fallback) ==="
+          node scripts/assemble.mjs @appthreat/chennai-jar \
+            downloaded-binaries/chennai-linux-amd64/chennai-amd64 \
+            engine/target/universal/stage
+
       - name: Run unit tests
         run: |
           cd wrapper/nodejs
           npm run test
+
+      - name: Smoke test — pack and run chennai from npm package
+        run: |
+          REPO_ROOT=$GITHUB_WORKSPACE
+          cd "$REPO_ROOT/wrapper/nodejs"
+
+          # ── Native (linux-amd64) smoke test ──────────────────────
+          npm pack --workspace packages/chennai-linux-amd64 --pack-destination /tmp/chennai-test 2>&1
+          npm pack --workspace packages/chennai --pack-destination /tmp/chennai-test 2>&1
+
+          PLATFORM_TARBALL=$(ls /tmp/chennai-test/appthreat-chennai-linux-amd64-*.tgz)
+          PARENT_TARBALL=$(ls /tmp/chennai-test/appthreat-chennai-*.tgz | grep -v linux-amd64)
+
+          rm -rf /tmp/chennai-native-test
+          mkdir -p /tmp/chennai-native-test/node_modules/@appthreat/chennai-linux-amd64
+          tar -xzf "$PLATFORM_TARBALL" -C /tmp/chennai-native-test/node_modules/@appthreat/chennai-linux-amd64 --strip-components=1
+
+          cd /tmp/chennai-native-test
+          npm init -y >/dev/null 2>&1
+          npm install "$PARENT_TARBALL" --no-optional 2>&1
+
+          echo "=== chennai --help (native) ==="
+          ./node_modules/.bin/chennai --help
+
+          # ── JAR fallback smoke test ──────────────────────────────
+          rm -rf /tmp/chennai-jar-test
+          cd "$REPO_ROOT/wrapper/nodejs"
+          npm pack --workspace packages/chennai-jar --pack-destination /tmp/chennai-jar-test 2>&1
+          JAR_TARBALL=$(ls /tmp/chennai-jar-test/appthreat-chennai-jar-*.tgz)
+
+          mkdir -p /tmp/chennai-jar-test/node_modules/@appthreat/chennai-jar
+          tar -xzf "$JAR_TARBALL" -C /tmp/chennai-jar-test/node_modules/@appthreat/chennai-jar --strip-components=1
+
+          cd /tmp/chennai-jar-test
+          npm init -y >/dev/null 2>&1
+          npm install "$PARENT_TARBALL" --no-optional 2>&1
+
+          echo "=== chennai --help (JAR fallback) ==="
+          ./node_modules/.bin/chennai --help
 
       - name: NPM Dry-run Publish (Verify all packages)
         run: |
