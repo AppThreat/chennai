@@ -491,6 +491,15 @@ impl App {
             return;
         }
 
+        // Free-text without AI: agent is disabled, so the engine's eval can't handle natural language.
+        // Show a helpful message instead of making the user parse a raw Scala error.
+        if !self.agent_enabled && !looks_like_dsl_or_command(&t) {
+            let msg = "AI agent not enabled; set ANTHROPIC_API_KEY or OPENAI_API_KEY for AI assistance, or use DSL commands like `atom.<query>.toJson`".into();
+            self.repl.record(&t, msg, false);
+            self.status = "agent not enabled".into();
+            return;
+        }
+
         // Data-flow expressions are routed to the structured `flows` command (master/detail view):
         // the bare `reachables`/`cryptos` presets, or any expression invoking the dataflow DSL.
         let flow_args = if t == "dataflows" || t == "reachables" || t == "cryptos" {

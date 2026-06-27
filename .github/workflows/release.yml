@@ -400,7 +400,7 @@ jobs:
         run: |
           cd wrapper/nodejs
 
-          for dir in packages/chennai-jar packages/chennai-linux-amd64 packages/chennai-linux-arm64 packages/chennai-linux-amd64-musl packages/chennai-darwin-arm64 packages/chennai-windows-amd64; do
+          for dir in packages/chennai-jar packages/chennai-linux-amd64 packages/chennai-linux-arm64 packages/chennai-linux-amd64-musl packages/chennai-linux-arm64-musl packages/chennai-darwin-arm64 packages/chennai-darwin-amd64 packages/chennai-windows-amd64 packages/chennai-windows-arm64; do
             if [ -d "$dir" ]; then
               echo "Publishing $dir..."
               (cd "$dir" && npm publish --provenance --access=public)

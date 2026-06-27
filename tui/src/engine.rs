@@ -104,6 +104,13 @@ impl Engine {
                 .and_then(Value::as_str)
                 .unwrap_or("unknown error")
                 .to_string();
+            // Strip the Scala REPL's "-- Error: " prefix so the actual error shows directly.
+            let msg = msg
+                .strip_prefix("-- Error: ")
+                .or_else(|| msg.strip_prefix("-- Error:\n"))
+                .or_else(|| msg.strip_prefix("-- "))
+                .map(|s| s.to_string())
+                .unwrap_or(msg);
             Err(EngineError::Remote(msg))
         }
     }
