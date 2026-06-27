@@ -117,6 +117,7 @@ impl Drop for Engine {
 }
 
 /// Given a user-supplied path (a directory or an `.atom` file), resolve the atom file to open.
+#[allow(dead_code)]
 pub fn resolve_atom(path: &Path) -> Result<PathBuf, EngineError> {
     if path.is_file() {
         return Ok(path.to_path_buf());

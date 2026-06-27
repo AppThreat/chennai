@@ -27,7 +27,7 @@ use crossterm::{
 };
 use ratatui::backend::{Backend, CrosstermBackend};
 use serde_json::json;
-use std::io;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
@@ -37,7 +37,10 @@ use std::thread;
 #[derive(Parser, Debug)]
 #[command(name = "chennai", version)]
 struct Args {
-    path: PathBuf,
+    /// Project path (directory or .atom file) to analyse.
+    /// Omit this to run a subcommand (e.g. `chennai setup`).
+    #[arg()]
+    path: Option<PathBuf>,
     #[arg(long)]
     engine: Option<String>,
     #[arg(long, default_value = "dark")]
@@ -68,14 +71,35 @@ struct Args {
     /// Defaults to `high`. Ignored by providers that don't support it.
     #[arg(long)]
     effort: Option<String>,
+    /// Subcommand to run instead of launching the TUI.
+    #[command(subcommand)]
+    command: Option<CliCommand>,
+}
+
+/// Subcommands for auxiliary operations.
+#[derive(Parser, Debug)]
+enum CliCommand {
+    /// Install or reinstall the analysis tools (cdxgen, atom, atom-parsetools) via npm.
+    Setup,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
+
+    // Check for subcommands before anything else.
+    if let Some(cmd) = &args.command {
+        return run_subcommand(cmd);
+    }
+
+    // The TUI requires a path; make sure one was provided.
+    let path = args.path.as_ref().ok_or(
+        "a project path (directory or .atom file) is required — use `chennai setup` to install tools"
+    )?;
+
     let config = Config::load_with_base_url(args.provider.as_deref(), args.model.as_deref(), args.api_key.as_deref(), args.base_url.as_deref(), args.no_thinking, args.effort.as_deref());
     let theme = match args.theme.as_str() { "light" => Theme::light(), _ => Theme::dark() };
 
-    let atom = engine::resolve_atom(&args.path)?;
+    let atom = resolve_or_generate_atom(path, &args.source, args.ask.is_some())?;
     let atom_str = atom.to_string_lossy().to_string();
     let command = Engine::resolve_command(args.engine.as_deref()).ok_or(
         "engine binary not found; build it with `sbt stage` in engine/, or set CHENNAI_ENGINE",
@@ -569,5 +593,168 @@ fn handle_mouse(app: &mut App, m: crossterm::event::MouseEvent) {
         MouseEventKind::ScrollDown => app.scroll_at(m.column, m.row, true),
         MouseEventKind::ScrollUp   => app.scroll_at(m.column, m.row, false),
         _ => {}
+    }
+}
+
+/// Resolve an atom file from the user-supplied path.  If the path is a directory that does not
+/// contain any `.atom` file, interactively offer to generate one (SBOM + atom CLI).
+///
+/// The function blocks on stderr/stdin **before** the TUI starts, so it can render a plain-text
+/// prompt.  In headless mode (`headless = true`, i.e. `--ask` was passed) it fails immediately
+/// instead.
+fn resolve_or_generate_atom(
+    path: &Path,
+    source_root: &Option<String>,
+    headless: bool,
+) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    // Fast path: the path is already an atom file.
+    if path.is_file() {
+        return Ok(path.to_path_buf());
+    }
+
+    // Fast path: there is an atom file inside the directory.
+    if let Ok(atoms) = std::fs::read_dir(path)
+        .map(|entries| {
+            entries
+                .filter_map(|e| e.ok().map(|e| e.path()))
+                .filter(|p| p.extension().map(|e| e == "atom").unwrap_or(false))
+                .collect::<Vec<_>>()
+        })
+        .and_then(|mut v| {
+            v.sort();
+            if v.is_empty() {
+                Err(std::io::Error::new(std::io::ErrorKind::NotFound, "no atom"))
+            } else {
+                Ok(v.into_iter().next().unwrap())
+            }
+        })
+    {
+        return Ok(atoms);
+    }
+
+    // No atom found.  If this is a headless run we cannot prompt — bail out.
+    if headless {
+        return Err(format!(
+            "no .atom file in {} — generate one first with: atom --with-data-deps <source_dir>",
+            path.display()
+        )
+        .into());
+    }
+
+    let source_dir = source_root
+        .as_ref()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| path.to_path_buf());
+
+    // ----- tools availability -----------------------------------------------
+    let has_atom = bom::find_atom().is_ok();
+    let has_cdxgen = bom::find_cdxgen().is_ok();
+    let has_npm = bom::find_npm().is_some();
+
+    // ----- auto-install prompt (both tools missing, but npm is available) ----
+    if !has_atom && !has_cdxgen && has_npm {
+        let msg = format!(
+            "No .atom file found in {d}\n\
+             Required tools (cdxgen, atom) are not installed.\n\
+             Install them automatically via npm?",
+            d = path.display()
+        );
+        if !bom::prompt_yes_no(&msg) {
+            eprintln!("Tip: install manually: npm install -g @cyclonedx/cdxgen @appthreat/atom @appthreat/atom-parsetools");
+            return Err("atom generation cancelled by user".into());
+        }
+        eprint!("Installing cdxgen, atom, and atom-parsetools... ");
+        let _ = std::io::stderr().flush();
+        bom::auto_install_npm()?;
+        eprintln!("done.");
+    } else if !has_atom || !has_cdxgen {
+        let missing = if !has_atom && !has_cdxgen {
+            "cdxgen and atom CLI"
+        } else if !has_atom {
+            "atom CLI"
+        } else {
+            "cdxgen"
+        };
+        eprintln!(
+            "Tip: {missing} not found. Install with: npm install -g @cyclonedx/cdxgen @appthreat/atom @appthreat/atom-parsetools"
+        );
+        return Err(format!(
+            "no .atom file in {} and {missing} is required for generation",
+            path.display()
+        )
+        .into());
+    }
+
+    // ----- generation prompt ------------------------------------------------
+    let msg = format!(
+        "No .atom file found in {d}\n\
+         Generate one for analysis?  This will:\n\
+          └ 1. Run cdxgen to produce a CycloneDX SBOM\n\
+          └ 2. Run atom --with-data-deps to build the atom file\n\
+         \nSource: {src}",
+        d = path.display(),
+        src = source_dir.display()
+    );
+    if !bom::prompt_yes_no(&msg) {
+        eprintln!("Tip: generate manually: atom --with-data-deps <source_dir>");
+        return Err("atom generation cancelled by user".into());
+    }
+
+    // ----- step 1: SBOM -----------------------------------------------------
+    // Use atom_gen's language detection since atom supports a smaller set of
+    // languages than cdxgen. cdxgen auto-detects internally regardless of the
+    // --type flag, so passing a slightly broader tag for the filename is fine.
+    let language = bom::atom_gen::detect_language(&source_dir).map(|s| s.to_string());
+    let language_for_atom = language.as_deref().unwrap_or("all");
+    let mut bom_generated = false;
+    for lifecycle in bom::LIFECYCLES {
+        eprint!("Generating SBOM ({lifecycle})... ");
+        let _ = std::io::stderr().flush();
+        match bom::generate_bom(&source_dir, &source_dir, lifecycle, language.as_deref()) {
+            Ok(_path) => {
+                eprintln!("done.");
+                bom_generated = true;
+                break;
+            }
+            Err(e) => {
+                eprintln!("failed ({e})");
+            }
+        }
+    }
+    if !bom_generated {
+        eprintln!("Warning: SBOM generation failed — proceeding with atom generation anyway.");
+    }
+
+    // ----- step 2: atom -----------------------------------------------------
+    let atom_path = bom::atom_output_path(&source_dir);
+    eprintln!("Building atom with data-dependencies...");
+    let generated_atom = bom::generate_atom(&source_dir, &atom_path, language_for_atom)?;
+    eprintln!("Atom generated: {}", generated_atom.display());
+
+    // Verify the file is valid by reading a few bytes.
+    let _metadata = std::fs::metadata(&generated_atom)
+        .map_err(|e| format!("generated atom is not readable: {e}"))?;
+
+    Ok(generated_atom)
+}
+
+/// Dispatch a subcommand (`setup`, etc.) and exit.
+fn run_subcommand(cmd: &CliCommand) -> Result<(), Box<dyn std::error::Error>> {
+    match cmd {
+        CliCommand::Setup => {
+            let npm = bom::find_npm()
+                .ok_or_else::<Box<dyn std::error::Error>, _>(|| "npm not found on PATH. Install Node.js first.".into())?;
+            eprintln!("Using npm: {}", npm.display());
+            eprintln!("Installing cdxgen, atom, and atom-parsetools...");
+            let result = bom::auto_install_npm();
+            match result {
+                Ok(_) => {
+                    eprintln!("\nSetup complete. You can now run chennai on a project directory.");
+                    eprintln!("  chennai /path/to/project");
+                    Ok(())
+                }
+                Err(e) => Err(format!("npm install failed:\n{e}").into()),
+            }
+        }
     }
 }

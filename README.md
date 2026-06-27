@@ -34,11 +34,47 @@ After installation the `chennai` command is available globally.
 chennai <path-to-atom-file-or-directory> [options]
 ```
 
-## Software Bill of Materials
+## Setup
+
+The `chennai setup` command installs or updates the required analysis tools (cdxgen, atom, atom-parsetools) via npm:
+
+```
+chennai setup
+```
+
+This runs `npm install -g --ignore-scripts @cyclonedx/cdxgen @appthreat/atom @appthreat/atom-parsetools`.
+
+### Tool discovery
+
+chennai auto-detects these tools in the following order:
+
+| Tool   | Env var    | Search path                                              |
+| ------ | ---------- | -------------------------------------------------------- |
+| cdxgen | `CDXGEN`   | PATH → `node_modules/.bin/cdxgen` → npm global           |
+| atom   | `ATOM_CMD` | PATH → `node_modules/.bin/atom` → `atom.sh` → npm global |
+| npm    | —          | PATH                                                     |
+
+### Atom auto-generation
+
+When you point chennai at a project directory that has no `.atom` file, it will prompt you to generate one interactively:
+
+```
+$ chennai /path/to/project
+No .atom file found in /path/to/project
+Generate one for analysis?  This will:
+  └ 1. Run cdxgen to produce a CycloneDX SBOM
+  └ 2. Run atom --with-data-deps to build the atom file
+
+Source: /path/to/project [Y/n]
+```
+
+If the tools are not installed but `npm` is available, chennai offers to install them automatically before proceeding.
+
+### Software Bill of Materials
 
 chennai integrates with [cdxgen](https://github.com/AppThreat/cdxgen) to automatically generate and load CycloneDX SBOMs for deeper dependency-aware analysis. When you invoke chennai with a source or reports directory, it first looks for any existing `.cdx.json` files. If none are found, it invokes cdxgen to create a BOM with the naming convention `sbom-<language>-<lifecycle>.cdx.json`.
 
-### Installing cdxgen (recommended for best experience)
+#### Installing cdxgen (recommended for best experience)
 
 ```
 npm install -g @cyclonedx/cdxgen
@@ -76,6 +112,8 @@ The BOM data is also injected into AI agent prompts for security and code review
 - `CHENNAI_ENGINE`: Path to the engine binary. Overrides auto-detection.
 - `ANTHROPIC_API_KEY`: API key for Anthropic provider.
 - `OPENAI_API_KEY`: API key for OpenAI-compatible providers.
+- `CDXGEN`: Path to the cdxgen binary.
+- `ATOM_CMD`: Path to the atom CLI binary (e.g. `/path/to/atom/atom.sh`).
 - `CHENNAI_DEBUG`: Set to any value to enable resolver diagnostics.
 
 ### Platform support
