@@ -52,6 +52,8 @@ jobs:
       - uses: oras-project/setup-oras@38de303aac69abb66f3e6255b7198bff35f323e3  # v2
       - name: Run Scala tests
         run: (cd engine && sbt -batch test)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Run Rust tests
         run: (cd tui && cargo test)
       - name: Build engine native image + TUI
@@ -121,6 +123,8 @@ jobs:
       - uses: oras-project/setup-oras@38de303aac69abb66f3e6255b7198bff35f323e3  # v2
       - name: Run Scala tests
         run: (cd engine && sbt -batch test)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Run Rust tests
         run: (cd tui && cargo test)
       - name: Build engine native image + TUI
@@ -246,6 +250,8 @@ jobs:
       - uses: oras-project/setup-oras@38de303aac69abb66f3e6255b7198bff35f323e3  # v2
       - name: Run Scala tests
         run: (cd engine && sbt -batch test)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Run Rust tests
         run: (cd tui && cargo test)
       - name: Build engine native image + TUI
@@ -316,6 +322,8 @@ jobs:
         run: |
           cd engine
           sbt -batch test
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Run Rust tests
         shell: pwsh
         run: |
