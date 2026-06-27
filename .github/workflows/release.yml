@@ -442,10 +442,25 @@ jobs:
             downloaded-binaries/chennai-windows-amd64/chennai-win-amd64.exe \
             downloaded-binaries/chennai-windows-amd64/chennai-engine-win-amd64.exe
 
-          echo "=== Assemble chennai-jar (JAR fallback) ==="
+          echo "=== Assemble chennai-jar (universal JAR fallback) ==="
           node scripts/assemble.mjs @appthreat/chennai-jar \
             downloaded-binaries/chennai-linux-amd64/chennai-amd64 \
-            engine/target/universal/stage
+            ../../engine/target/universal/stage
+
+          echo "=== Assemble chennai-darwin-amd64 (JAR fallback) ==="
+          node scripts/assemble.mjs @appthreat/chennai-darwin-amd64 \
+            downloaded-binaries/chennai-darwin-arm64/chennai-darwin-arm64 \
+            ../../engine/target/universal/stage
+
+          echo "=== Assemble chennai-linux-arm64-musl (JAR fallback) ==="
+          node scripts/assemble.mjs @appthreat/chennai-linux-arm64-musl \
+            downloaded-binaries/chennai-linux-arm64/chennai-arm64 \
+            ../../engine/target/universal/stage
+
+          echo "=== Assemble chennai-windows-arm64 (JAR fallback) ==="
+          node scripts/assemble.mjs @appthreat/chennai-windows-arm64 \
+            downloaded-binaries/chennai-windows-amd64/chennai-win-amd64.exe \
+            ../../engine/target/universal/stage
 
       - name: Run unit tests
         run: |
@@ -494,7 +509,7 @@ jobs:
       - name: NPM Dry-run Publish (Verify all packages)
         run: |
           cd wrapper/nodejs
-          for dir in packages/chennai-jar packages/chennai-linux-amd64 packages/chennai-linux-arm64 packages/chennai-linux-amd64-musl packages/chennai-darwin-arm64 packages/chennai-windows-amd64 packages/chennai; do
+          for dir in packages/chennai-jar packages/chennai-linux-amd64 packages/chennai-linux-arm64 packages/chennai-linux-amd64-musl packages/chennai-darwin-arm64 packages/chennai-darwin-amd64 packages/chennai-linux-arm64-musl packages/chennai-windows-amd64 packages/chennai-windows-arm64 packages/chennai; do
             if [ -d "$dir" ]; then
               echo "Dry-run publishing $dir..."
               (cd "$dir" && npm publish --dry-run)
