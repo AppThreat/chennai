@@ -65,6 +65,7 @@ jobs:
           (cd tui && cargo build --release)
           cp tui/target/release/chennai chennai-amd64
           sha512sum chennai-amd64 > chennai-amd64.sha512
+          ./chennai-amd64 --help
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Upload to GHCR
@@ -129,6 +130,7 @@ jobs:
           (cd tui && cargo build --release)
           cp tui/target/release/chennai chennai-arm64
           sha512sum chennai-arm64 > chennai-arm64.sha512
+          ./chennai-arm64 --help
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Upload to GHCR
@@ -182,6 +184,7 @@ jobs:
           (cd tui && cargo zigbuild --release --target x86_64-unknown-linux-musl)
           cp tui/target/x86_64-unknown-linux-musl/release/chennai chennai-musl-amd64
           sha512sum chennai-musl-amd64 > chennai-musl-amd64.sha512
+          ./chennai-musl-amd64 --help
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Upload to GHCR
@@ -242,6 +245,7 @@ jobs:
           (cd tui && cargo build --release)
           cp tui/target/release/chennai chennai-darwin-arm64
           sha512sum chennai-darwin-arm64 > chennai-darwin-arm64.sha512
+          ./chennai-darwin-arm64 --help
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Upload to GHCR
@@ -290,20 +294,23 @@ jobs:
         with:
           cache: false
       - name: Build engine native image + TUI
+        shell: pwsh
         run: |
+          $ErrorActionPreference = 'Stop'
           Invoke-WebRequest -Uri https://github.com/upx/upx/releases/download/v5.0.1/upx-5.0.1-win64.zip -UseBasicParsing -OutFile upx-5.0.1-win64.zip
           Expand-Archive -Path upx-5.0.1-win64.zip -DestinationPath . -Force
           cd engine
           sbt -batch stage
           sbt "GraalVMNativeImage / packageBin"
           cd ..
-          Move-Item engine/target/graalvm-native-image/chennai-engine.exe chennai-engine-win-amd64.exe
+          Move-Item engine/target/graalvm-native-image/chennai-engine.exe chennai-engine-win-amd64.exe -ErrorAction Stop
           .\upx-5.0.1-win64\upx.exe -9 --lzma chennai-engine-win-amd64.exe
           .\chennai-engine-win-amd64.exe --help
           cd tui
           cargo build --release
           cd ..
           Copy-Item tui/target/release/chennai.exe chennai-win-amd64.exe
+          .\chennai-win-amd64.exe --help
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Upload artifacts

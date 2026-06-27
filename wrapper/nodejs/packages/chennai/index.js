@@ -55,18 +55,7 @@ export const executeChennai = (chennaiArgs) => {
   process.exit(result.status !== null ? result.status : 1);
 };
 
-let isMain = false;
 if (process.argv[1]) {
-  try {
-    const mainPath = realpathSync(process.argv[1]);
-    const thisPath = realpathSync(fileURLToPath(import.meta.url));
-    isMain = mainPath === thisPath;
-  } catch (e) {
-    // Ignore
-  }
-}
-
-if (isMain) {
   const argv = process.argv.slice(2);
   executeChennai(argv);
 }
