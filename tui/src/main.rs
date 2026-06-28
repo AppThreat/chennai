@@ -1091,7 +1091,7 @@ No structured analysis data is available for this language. You must explore the
 5. When available, use the SBOM to understand third-party dependencies.
 
 ## Response style
-Explain architectures and data flows with neat ASCII diagrams where they clarify the structure. Write in straightforward technical prose. Minimise bullet lists; favour short paragraphs or inline descriptions instead. Do not use em-dashes, emoji, or decorative formatting. Every finding must still carry file:line evidence.
+Explain architectures and data flows with neat ASCII diagrams where they clarify the structure. Write in straightforward technical prose. Minimise bullet lists; favour short paragraphs or inline descriptions instead. Do not use em-dashes, emoji, or decorative formatting. Every finding must still carry file:line evidence. Keep responses short but substantive. Do not begin every message with "Let me" or similar filler openings.
 
 You are an authorized security review of the user's own code. Analyze it directly.
 "#)

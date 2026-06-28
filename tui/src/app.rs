@@ -852,6 +852,7 @@ impl App {
         self.output = Some(table);
         self.flows = None;
         self.flow_state = ListState::default();
+        self.recompute_table_view();
         (true, status)
     }
 
@@ -1583,29 +1584,8 @@ impl App {
                         }
                     break;
                 }
-                // Backend flow result (golem_flows, rusi_flows, etc.) — show text in output panel.
-                if name.ends_with("_flows") || name.ends_with("_callgraph") {
-                    if let Some(res) = result {
-                        let title = name.replace('_', " ").to_uppercase();
-                        let rows: Vec<Vec<crate::model::Cell>> = res
-                            .lines()
-                            .filter(|l| !l.trim().is_empty())
-                            .map(|l| vec![crate::model::Cell { v: l.to_string(), k: String::new() }])
-                            .collect();
-                        let total = rows.len() as i64;
-                        let table = ResultTable {
-                            title,
-                            columns: vec![String::new()],
-                            rows,
-                            total,
-                            offset: 0,
-                        };
-                        self.output = Some(table);
-                        self.flows = None;
-                        self.flow_state = ListState::default();
-                    }
-                    break;
-                }
+                // Backend tool results are already visible in the agent transcript.
+                // Do not hijack the output panel with a raw table.
             }
         }
     }

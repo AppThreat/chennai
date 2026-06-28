@@ -514,7 +514,7 @@ fn render_output_table(frame: &mut Frame, app: &mut App, theme: &Theme, area: Re
     let viewport = inner.height.saturating_sub(1) as usize; // minus header
     app.output_state.visible = viewport;
     let len = app.table_visible.len();
-    let scroll = app.output_state.scroll;
+    let scroll = if len == 0 { 0 } else { app.output_state.scroll.min(len.saturating_sub(1)) };
     let end = (scroll + viewport).min(len);
 
     // Header labels carry a sort arrow on the active sort column.
@@ -1147,18 +1147,8 @@ fn build_agent_lines<'a>(app: &'a App, theme: &Theme, _line_counts: &[usize], wi
             AgentEntry::Error(msg) => {
                 lines.push(Line::from(Span::styled(format!("✗ {msg}"), Style::default().fg(theme.error))));
             }
-            AgentEntry::Usage { input_tokens, output_tokens } => {
-                lines.push(Line::from(Span::styled(
-                    format!("  {input_tokens} in / {output_tokens} out"),
-                    Style::default().fg(theme.muted),
-                )));
-            }
-            AgentEntry::StopReason(reason) => {
-                lines.push(Line::from(Span::styled(
-                    format!("  stop: {reason}"),
-                    Style::default().fg(theme.muted),
-                )));
-            }
+            // Usage and StopReason entries are internal bookkeeping; do not render them.
+            AgentEntry::Usage { .. } | AgentEntry::StopReason(_) => {}
             AgentEntry::Done => {
                 lines.push(Line::from(Span::styled("  ✓ done", Style::default().fg(theme.num))));
             }
@@ -1422,7 +1412,8 @@ fn entry_line_count(entry: &AgentEntry) -> usize {
         AgentEntry::ToolCall { result, .. } => {
             if result.is_none() { 1 } else { 0 }
         }
-        AgentEntry::Error(_) | AgentEntry::Usage { .. } | AgentEntry::StopReason(_) | AgentEntry::Done => 1,
+        AgentEntry::Error(_) | AgentEntry::Done => 1,
+        AgentEntry::Usage { .. } | AgentEntry::StopReason(_) => 0,
     }
 }
 
