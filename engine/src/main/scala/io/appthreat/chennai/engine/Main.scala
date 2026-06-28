@@ -18,7 +18,7 @@ object Main:
     import builder.*
     OParser.sequence(
       programName("chennai-engine"),
-      head("chennai-engine", "0.2.0"),
+      head("chennai-engine", "0.3.0"),
       opt[Unit]("serve").action((_, c) => c.copy(serve = true)).text("run the NDJSON stdio server"),
       opt[String]("atom").action((p, c) => c.copy(atom = Some(p))).text(
         "path to an existing .atom file to open"
