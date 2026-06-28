@@ -1,7 +1,17 @@
 ---
 name: explain
 description: Explain a method or data-flow in plain language
-tools: [atom_summary, atom_query, atom_dsl_eval, atom_detail, atom_flows, atom_algorithms, ripgrep, read_file]
+tools:
+  [
+    atom_summary,
+    atom_query,
+    atom_dsl_eval,
+    atom_detail,
+    atom_flows,
+    atom_algorithms,
+    ripgrep,
+    read_file,
+  ]
 effort: medium
 ---
 

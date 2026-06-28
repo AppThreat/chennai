@@ -1,7 +1,20 @@
 ---
 name: security-review
 description: Reachability-grounded vulnerability review of the open atom
-tools: [atom_summary, atom_query, atom_dsl_eval, atom_flows, atom_flows_through, atom_detail, atom_algorithms, bom_query, ripgrep, read_file, git_diff]
+tools:
+  [
+    atom_summary,
+    atom_query,
+    atom_dsl_eval,
+    atom_flows,
+    atom_flows_through,
+    atom_detail,
+    atom_algorithms,
+    bom_query,
+    ripgrep,
+    read_file,
+    git_diff,
+  ]
 effort: high
 ---
 
@@ -34,10 +47,11 @@ Perform a thorough, tool-grounded security review of this codebase. Every findin
 Use this structure for each finding:
 
 ### [CRITICAL|HIGH|MEDIUM|LOW] Finding title
+
 - **File:** `path/file.ext:line`
 - **Type:** SQLi / XSS / Command Injection / ...
 - **Source:** `method()` at `file:line` — user-controlled input enters here
-- **Sink:** `dangerous_call()` at `file:line` — untrusted data reaches here  
+- **Sink:** `dangerous_call()` at `file:line` — untrusted data reaches here
 - **Flow:**
   ```
   source (file:line) → step2 (file:line) → ... → sink (file:line)

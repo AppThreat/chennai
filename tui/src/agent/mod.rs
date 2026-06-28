@@ -35,11 +35,11 @@ const PROMPT_CODE_REVIEW: &str = include_str!("../../agents/code-review.md");
 
 /// Full traversal reference docs, compiled into the binary so the agent can look up
 /// any traversal root or step method on demand without bloating the system prompt.
-const TRAVERSAL_DOCS: &str = include_str!("../../../../chen/docs/TRAVERSAL.md");
+const TRAVERSAL_DOCS: &str = include_str!("../../docs/TRAVERSAL.md");
 
 /// Generic DSL operations reference (filter, where, repeat, collect, path tracking, etc.)
 /// that can be chained on any traversal.
-const DSL_OPERATIONS: &str = include_str!("../../../../chen/docs/DSL_OPERATIONS.md");
+const DSL_OPERATIONS: &str = include_str!("../../docs/DSL_OPERATIONS.md");
 
 /// A parsed slash-command template: a prompt body plus an optional toolset
 /// allowlist and effort override, sourced from the markdown-with-frontmatter

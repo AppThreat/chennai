@@ -1,7 +1,20 @@
 ---
 name: code-review
 description: Review code changes or a specific method for correctness and security
-tools: [atom_summary, atom_query, atom_dsl_eval, atom_detail, atom_algorithms, bom_query, ripgrep, read_file, git_diff, git_log, git_show]
+tools:
+  [
+    atom_summary,
+    atom_query,
+    atom_dsl_eval,
+    atom_detail,
+    atom_algorithms,
+    bom_query,
+    ripgrep,
+    read_file,
+    git_diff,
+    git_log,
+    git_show,
+  ]
 effort: medium
 ---
 

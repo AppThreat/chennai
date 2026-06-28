@@ -1,7 +1,8 @@
 ---
 name: trace
 description: Prove or disprove a taint path between a source and sink
-tools: [atom_summary, atom_dsl_eval, atom_flows, atom_flows_through, atom_detail]
+tools:
+  [atom_summary, atom_dsl_eval, atom_flows, atom_flows_through, atom_detail]
 effort: high
 ---
 
