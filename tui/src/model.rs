@@ -2,6 +2,15 @@
 
 use serde::Deserialize;
 
+/// A clickable starter question shown in the empty Output panel.
+#[derive(Debug, Clone)]
+pub struct StarterQuestion {
+    /// Short display label (shown to the user).
+    pub label: String,
+    /// Full command text sent to the agent/REPL when clicked.
+    pub command: String,
+}
+
 /// A single row of the atom summary table.
 #[derive(Debug, Clone, Deserialize)]
 pub struct SummaryRow {

@@ -6,7 +6,7 @@ use crate::agent::provider::AgentEvent;
 use crate::bom::BomStore;
 use crate::commands;
 use crate::engine::Engine;
-use crate::model::{Flow, FlowSet, NodeDetail, ResultTable, Summary};
+use crate::model::{Flow, FlowSet, NodeDetail, ResultTable, StarterQuestion, Summary};
 use crate::repl::Repl;
 use crate::shared::backend::Backend;
 
@@ -69,19 +69,31 @@ pub enum Panel {
 }
 
 impl Panel {
-    pub fn next(self) -> Panel {
+    pub fn next(self, non_atom: bool) -> Panel {
+        if non_atom {
+            return match self {
+                Panel::Repl => Panel::Output,
+                _ => Panel::Repl,
+            };
+        }
+        match self {
+            Panel::Summary => Panel::Output,
+            Panel::Output => Panel::Repl,
+            Panel::Repl => Panel::Summary,
+        }
+    }
+
+    pub fn prev(self, non_atom: bool) -> Panel {
+        if non_atom {
+            return match self {
+                Panel::Output => Panel::Repl,
+                _ => Panel::Output,
+            };
+        }
         match self {
             Panel::Summary => Panel::Repl,
             Panel::Repl => Panel::Output,
             Panel::Output => Panel::Summary,
-        }
-    }
-
-    pub fn prev(self) -> Panel {
-        match self {
-            Panel::Summary => Panel::Output,
-            Panel::Repl => Panel::Summary,
-            Panel::Output => Panel::Repl,
         }
     }
 }
@@ -277,6 +289,16 @@ pub struct App {
     // Loaded analysis backend (rusi/golem/dosai/blint).
     pub backend: Option<Box<dyn Backend>>,
 
+    // Non-atom mode flag (rust/go/dotnet/binary). Hides the summary panel,
+    // leaving only the REPL and Output panels, with REPL at the bottom.
+    pub non_atom: bool,
+    /// Human-readable project language name, set for non-atom mode (e.g. "Rust", "Go", ".NET").
+    pub project_language: Option<String>,
+    /// Starter questions shown in the Output panel's empty state.
+    pub starter_questions: Vec<StarterQuestion>,
+    /// Hit-test rect for the starter questions list during render.
+    pub starter_questions_area: Option<Rect>,
+
     // Background startup tasks (cdxgen, atom, rusi) and initialisation phase.
     pub bg_progress: Arc<Mutex<Vec<BgTaskInfo>>>,
     pub init_phase: InitPhase,
@@ -337,6 +359,10 @@ impl App {
             flow_detail_scroll: 0,
             flow_detail_total: 0,
             flow_detail_visible: 0,
+            non_atom: false,
+            project_language: None,
+            starter_questions: Vec::new(),
+            starter_questions_area: None,
             agent_enabled: false,
             agent_active: false,
             agent_rx: None,
@@ -389,6 +415,10 @@ impl App {
                 } else if self.flows.is_some() {
                     let len = self.flow_visible.len();
                     Some((&mut self.flow_state, len))
+                // Starter questions in the empty Output panel.
+                } else if self.non_atom && self.output.is_none() && !self.starter_questions.is_empty() {
+                    let len = self.starter_questions.len();
+                    Some((&mut self.output_state, len))
                 } else {
                     Some((&mut self.output_state, self.table_visible.len()))
                 }
@@ -405,6 +435,11 @@ impl App {
             Panel::Output => {
                 if self.agent_active || (!self.agent_transcript.is_empty() && self.output.is_none() && self.flows.is_none()) {
                     // In agent view, Enter is a no-op (or could select a tool result).
+                    return;
+                }
+                // Starter questions: execute the selected question on Enter.
+                if self.output.is_none() && self.flows.is_none() && !self.starter_questions.is_empty() {
+                    self.run_starter_question(self.output_state.selected);
                     return;
                 }
                 if !self.detail_focused {
@@ -889,6 +924,19 @@ impl App {
                     && !self.expanded_lines.remove(&key) {
                         self.expanded_lines.insert(key);
                     }
+
+        // Starter questions in the empty Output panel.
+        if self.output.is_none() && self.flows.is_none()
+            && !self.agent_active && self.agent_transcript.is_empty()
+            && let Some(area) = self.starter_questions_area
+            && contains(&area, col, row)
+        {
+            let idx = (row.saturating_sub(area.y + 1)) as usize;
+            if idx < self.starter_questions.len() {
+                self.output_state.select(idx, self.starter_questions.len());
+                self.run_starter_question(idx);
+            }
+        }
     }
 
     pub fn open_detail_for_selected(&mut self) {
@@ -1064,6 +1112,171 @@ impl App {
         } else {
             if let Some((s, _)) = self.focused_list() { s.up(); }
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Starter questions
+// ---------------------------------------------------------------------------
+
+impl App {
+    /// Generate contextual starter questions based on the loaded backend, summary, and BOM data.
+    /// Only generates questions when the agent is available or in non-atom mode.
+    pub fn generate_starter_questions(&mut self) {
+        let mut questions: Vec<StarterQuestion> = Vec::new();
+        let bom_note = self.bom_store.as_ref().map(|s| s.total_components).filter(|&c| c > 0);
+
+        if let Some(ref backend) = self.backend {
+            let lang = self.project_language.as_deref().unwrap_or("the");
+            match backend.backend_name() {
+                "rusi" => {
+                    questions.push(StarterQuestion {
+                        label: format!("Summarize this {lang} project"),
+                        command: "Provide a high-level summary of this Rust project — its main modules, packages, and architecture.".into(),
+                    });
+                    questions.push(StarterQuestion {
+                        label: "List security signals".into(),
+                        command: "What security signals and vulnerabilities were detected? Show me the details.".into(),
+                    });
+                    if let Some(n) = bom_note {
+                        questions.push(StarterQuestion {
+                            label: format!("Explore {n} dependencies"),
+                            command: format!("Explore the {n} dependencies in this project. Are there any vulnerable components?"),
+                        });
+                    }
+                    questions.push(StarterQuestion {
+                        label: "Show data flows".into(),
+                        command: "Trace the data flows through this application and highlight injection paths.".into(),
+                    });
+                }
+                "golem" => {
+                    questions.push(StarterQuestion {
+                        label: format!("Summarize this {lang} project"),
+                        command: "Provide a high-level summary of this Go project — its main packages, modules, and architecture.".into(),
+                    });
+                    questions.push(StarterQuestion {
+                        label: "Show vulnerabilities".into(),
+                        command: "What vulnerabilities were found in this Go project? Show me the details.".into(),
+                    });
+                    if let Some(n) = bom_note {
+                        questions.push(StarterQuestion {
+                            label: format!("Explore {n} dependencies"),
+                            command: format!("Explore the {n} dependencies in this project. Are there any vulnerable components?"),
+                        });
+                    }
+                    questions.push(StarterQuestion {
+                        label: "Explore call graph".into(),
+                        command: "Show me the call graph and function entry points in this project.".into(),
+                    });
+                }
+                "dosai" => {
+                    questions.push(StarterQuestion {
+                        label: format!("Summarize this {lang} project"),
+                        command: "Provide a high-level summary of this .NET application — its main data flows, entry points, and architecture.".into(),
+                    });
+                    questions.push(StarterQuestion {
+                        label: "Trace data flows".into(),
+                        command: "Trace the data flows through this .NET application. Show me sources, sinks, and paths.".into(),
+                    });
+                    if let Some(n) = bom_note {
+                        questions.push(StarterQuestion {
+                            label: format!("Explore {n} dependencies"),
+                            command: format!("Explore the {n} dependencies in this project. Are there any vulnerable components?"),
+                        });
+                    }
+                    questions.push(StarterQuestion {
+                        label: "Find weaknesses".into(),
+                        command: "What security weaknesses and dangerous API reachability were discovered?".into(),
+                    });
+                }
+                "blint" => {
+                    questions.push(StarterQuestion {
+                        label: "Summarize this binary".to_string(),
+                        command: "Summarize this binary — what type is it and what capabilities does it have?".into(),
+                    });
+                    questions.push(StarterQuestion {
+                        label: "Show findings".into(),
+                        command: "What security findings and capabilities were detected in this binary?".into(),
+                    });
+                    if let Some(n) = bom_note {
+                        questions.push(StarterQuestion {
+                            label: format!("Explore {n} components"),
+                            command: format!("Explore the {n} SBOM components in this binary."),
+                        });
+                    }
+                    questions.push(StarterQuestion {
+                        label: "List symbols".into(),
+                        command: "List the symbols, imports, and exports in this binary.".into(),
+                    });
+                }
+                _ => {}
+            }
+        }
+
+        // Atom mode with agent enabled: generate questions based on summary rows.
+        if questions.is_empty() && !self.non_atom && self.agent_enabled {
+            let lang = if self.summary.language.is_empty() { "the" } else { &self.summary.language };
+            questions.push(StarterQuestion {
+                label: format!("Summarize this {lang} project"),
+                command: format!("Provide a high-level summary of this {lang} project — its main modules, classes, and architecture."),
+            });
+            // Mention interesting summary figures.
+            for row in &self.summary.rows {
+                if row.count > 0 && row.label == "classes" || row.label == "methods" || row.label == "files" {
+                    questions.push(StarterQuestion {
+                        label: format!("List {label} ({count})", label = row.label.to_lowercase(), count = row.count),
+                        command: format!("Show me the {count} {label} in this project.", label = row.label.to_lowercase(), count = row.count),
+                    });
+                    if questions.len() >= 3 { break; }
+                }
+            }
+            if questions.len() < 2 && let Some(n) = bom_note {
+                questions.push(StarterQuestion {
+                    label: format!("Explore {n} dependencies"),
+                    command: format!("Explore the {n} dependencies in this project."),
+                });
+            }
+            if questions.is_empty() {
+                questions.push(StarterQuestion {
+                    label: "Explore the codebase".into(),
+                    command: "Help me explore and understand this codebase.".into(),
+                });
+            }
+        }
+
+        // Fallback: generic questions if none were generated above.
+        if questions.is_empty() {
+            let lang = self.project_language.as_deref().unwrap_or("this");
+            questions.push(StarterQuestion {
+                label: format!("Summarize this {lang} project"),
+                command: format!("Provide a high-level summary of this {lang} project — its main modules and architecture."),
+            });
+            if let Some(n) = bom_note {
+                questions.push(StarterQuestion {
+                    label: format!("Explore {n} dependencies"),
+                    command: format!("Explore the {n} dependencies in this project."),
+                });
+            }
+            questions.push(StarterQuestion {
+                label: "Explore the codebase".into(),
+                command: "Help me explore and understand this codebase.".into(),
+            });
+        }
+
+        self.starter_questions = questions;
+    }
+
+    /// Execute a starter question: fill the REPL with its command and submit.
+    fn run_starter_question(&mut self, idx: usize) {
+        let command = match self.starter_questions.get(idx) {
+            Some(q) => q.command.clone(),
+            None => return,
+        };
+        self.repl.set_text(&command);
+        self.execute(&command);
+        self.repl.clear();
+        // Switch focus to Output so the user sees the result.
+        self.focus = Panel::Output;
     }
 }
 
@@ -1610,11 +1823,11 @@ mod tests {
     fn focus_cycles_through_three_panels() {
         let mut app = app_with_labels(&["Files"]);
         assert_eq!(app.focus, Panel::Summary);
-        app.focus = app.focus.next();
-        assert_eq!(app.focus, Panel::Repl);
-        app.focus = app.focus.next();
+        app.focus = app.focus.next(false);
         assert_eq!(app.focus, Panel::Output);
-        app.focus = app.focus.next();
+        app.focus = app.focus.next(false);
+        assert_eq!(app.focus, Panel::Repl);
+        app.focus = app.focus.next(false);
         assert_eq!(app.focus, Panel::Summary);
     }
 

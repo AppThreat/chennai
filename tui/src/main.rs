@@ -298,6 +298,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         } else if !bom_tip.is_empty() {
             app.status = bom_tip;
         }
+        app.generate_starter_questions();
 
         enable_raw_mode()?;
         let mut stdout = io::stdout();
@@ -491,6 +492,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if agent_ctx.is_some() {
             app.enable_agent();
         }
+        app.generate_starter_questions();
 
         enable_raw_mode()?;
         let mut stdout = io::stdout();
@@ -717,6 +719,9 @@ fn run_non_atom_mode(
 
     // Create App with deferred init.
     let mut app = App::new(None, source_dir.to_string_lossy().to_string(), Summary::default());
+    app.non_atom = true;
+    app.project_language = language.clone();
+    app.focus = Panel::Repl;
     app.atom_path = source_dir.to_string_lossy().to_string();
     app.bg_progress = bg_progress;
     app.init_phase = InitPhase::Starting;
@@ -727,6 +732,7 @@ fn run_non_atom_mode(
     if let Some(b) = existing_backend {
         app.backend = Some(b);
     }
+    app.generate_starter_questions();
 
     let backend = app.backend.as_ref().map(|b| b.clone_box());
 
@@ -833,6 +839,9 @@ fn finish_non_atom_startup(
     }
 
     let mut app = App::new(None, source_dir.to_string_lossy().to_string(), Summary::default());
+    app.non_atom = true;
+    app.project_language = language.clone();
+    app.focus = Panel::Repl;
     app.atom_path = source_dir.to_string_lossy().to_string();
     app.backend = backend.as_ref().map(|b| b.clone_box());
 
@@ -848,6 +857,8 @@ fn finish_non_atom_startup(
         app.status = "No SBOM found. Generate with: cdxgen -o sbom.cdx.json <source_dir>".into();
         eprintln!("Tip: {}", app.status);
     }
+
+    app.generate_starter_questions();
 
     let agent_ctx = if config.enabled {
         match agent::create_provider(config) {
@@ -1362,8 +1373,8 @@ fn handle_key(app: &mut App, key: KeyEvent) {
             KeyCode::Down | KeyCode::Char('j') => app.detail_scroll_down(),
             KeyCode::Left | KeyCode::Char('h') => app.toggle_detail_focus(),
             KeyCode::Esc => app.close_detail(),
-            KeyCode::Tab => app.focus = app.focus.next(),
-            KeyCode::BackTab => app.focus = app.focus.prev(),
+            KeyCode::Tab => app.focus = app.focus.next(app.non_atom),
+            KeyCode::BackTab => app.focus = app.focus.prev(app.non_atom),
             _ => {}
         }
         return;
@@ -1388,8 +1399,8 @@ fn handle_key(app: &mut App, key: KeyEvent) {
                 app.should_quit = true;
             }
         }
-        KeyCode::Tab => app.focus = app.focus.next(),
-        KeyCode::BackTab => app.focus = app.focus.prev(),
+        KeyCode::Tab => app.focus = app.focus.next(app.non_atom),
+        KeyCode::BackTab => app.focus = app.focus.prev(app.non_atom),
 
         KeyCode::Up | KeyCode::Char('k') => {
             if let Some((s, _)) = app.focused_list() { s.up(); }
@@ -1449,8 +1460,8 @@ fn handle_repl_key(app: &mut App, key: KeyEvent) {
 
     match code {
         KeyCode::Esc => app.should_quit = true,
-        KeyCode::Tab => app.focus = app.focus.next(),
-        KeyCode::BackTab => app.focus = app.focus.prev(),
+        KeyCode::Tab => app.focus = app.focus.next(app.non_atom),
+        KeyCode::BackTab => app.focus = app.focus.prev(app.non_atom),
         KeyCode::Enter => app.on_enter(),
         _ => handle_repl_edit(app, code),
     }
@@ -1551,6 +1562,7 @@ fn try_complete_startup(app: &mut App, source_root: &Option<String>, reports_dir
                                 } else {
                                     app.status = "Atom ready. No BOM found.".into();
                                 }
+                                app.generate_starter_questions();
                                 app.init_phase = InitPhase::Ready;
                             }
                             Err(e) => { app.status = format!("engine summary failed: {e}"); app.init_phase = InitPhase::Ready; }
@@ -1635,6 +1647,7 @@ fn try_complete_non_atom_startup(app: &mut App, source_root: &Option<String>, re
     } else {
         app.status = "No SBOM found. Generate with: cdxgen -o sbom.cdx.json <source_dir>".into();
     }
+    app.generate_starter_questions();
     app.init_phase = InitPhase::Ready;
 }
 

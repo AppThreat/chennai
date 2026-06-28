@@ -7,7 +7,7 @@ use crate::model::Cell as ModelCell;
 use theme::Theme;
 
 use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
     Block, Borders, Cell, Clear, Paragraph, Row, Scrollbar, ScrollbarOrientation, ScrollbarState,
@@ -18,6 +18,30 @@ use ratatui::Frame;
 const REPL_PROMPT: &str = "chennai> ";
 
 pub fn render(frame: &mut Frame, app: &mut App, theme: &Theme) {
+    app.panel_rects.clear();
+
+    if app.non_atom {
+        // Non-atom mode: hide the atom summary panel, put the agent/repl panel at the bottom.
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Min(6),    // output (full remaining space)
+                Constraint::Length(7), // repl (agent panel) at the bottom
+                Constraint::Length(1), // status
+            ])
+            .split(frame.area());
+
+        app.panel_rects.push((Panel::Output, chunks[0]));
+        app.panel_rects.push((Panel::Repl, chunks[1]));
+
+        render_output(frame, app, theme, chunks[0]);
+        render_repl(frame, app, theme, chunks[1]);
+        render_status(frame, app, theme, chunks[2]);
+        render_completion_popup(frame, app, theme);
+        return;
+    }
+
+    // Atom-supported languages: three-panel layout (Summary, Output, REPL bottom).
     // Once a result is showing, the Summary panel collapses to a single line to give the result
     // more room; it expands again whenever it has focus (Tab or a click lands on it).
     let summary_collapsed =
@@ -32,24 +56,23 @@ pub fn render(frame: &mut Frame, app: &mut App, theme: &Theme) {
         .direction(Direction::Vertical)
         .constraints([
             summary_constraint,    // summary (collapsible)
-            Constraint::Length(7), // repl
             Constraint::Min(6),    // output
+            Constraint::Length(7), // repl at the bottom
             Constraint::Length(1), // status
         ])
         .split(frame.area());
 
-    app.panel_rects.clear();
     app.panel_rects.push((Panel::Summary, chunks[0]));
-    app.panel_rects.push((Panel::Repl, chunks[1]));
-    app.panel_rects.push((Panel::Output, chunks[2]));
+    app.panel_rects.push((Panel::Output, chunks[1]));
+    app.panel_rects.push((Panel::Repl, chunks[2]));
 
     if summary_collapsed {
         render_summary_collapsed(frame, app, theme, chunks[0]);
     } else {
         render_summary(frame, app, theme, chunks[0]);
     }
-    render_repl(frame, app, theme, chunks[1]);
-    render_output(frame, app, theme, chunks[2]);
+    render_output(frame, app, theme, chunks[1]);
+    render_repl(frame, app, theme, chunks[2]);
     render_status(frame, app, theme, chunks[3]);
     // Drawn last so it overlays the panels below the REPL input.
     render_completion_popup(frame, app, theme);
@@ -168,13 +191,36 @@ fn render_summary_collapsed(frame: &mut Frame, app: &mut App, theme: &Theme, are
 fn render_repl(frame: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
     let focused = app.focus == Panel::Repl;
     let title = if app.agent_enabled {
-        " Ask agent (Enter to ask, ↑/↓ history) ".to_string()
+        " Ask agent (Enter to ask, ↑/↓ history) "
     } else {
-        " REPL (Enter to run, ↑/↓ history) ".to_string()
+        " REPL (Enter to run, ↑/↓ history) "
     };
-    let block = panel_block(title, focused, theme);
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
+
+    let border_color = Color::Rgb(0x5a, 0x7c, 0x90);
+    let bg_color = Color::Rgb(0x2b, 0x3a, 0x42);
+
+    // Fill the area with the subtle background, then overlay a left-border block.
+    let bg = Paragraph::new(Line::from(vec![]))
+        .style(Style::default().bg(bg_color));
+    frame.render_widget(bg, area);
+
+    let border_block = Block::default()
+        .borders(Borders::LEFT)
+        .border_style(Style::default().fg(border_color))
+        .title(title)
+        .title_style(
+            Style::default()
+                .fg(Color::Rgb(0xf8, 0xfa, 0xfb))
+                .add_modifier(Modifier::BOLD),
+        );
+    frame.render_widget(border_block, area);
+
+    let inner = Rect {
+        x: area.x + 1,
+        y: area.y,
+        width: area.width.saturating_sub(1),
+        height: area.height,
+    };
     if inner.height == 0 {
         return;
     }
@@ -185,13 +231,14 @@ fn render_repl(frame: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
     // Scrollback: show the most recent `hist_h` executed commands.
     let entries = &app.repl.entries;
     let start = entries.len().saturating_sub(hist_h);
+    let accent_color = Color::Rgb(0xff, 0x75, 0x3d);
     let lines: Vec<Line> = entries[start..]
         .iter()
         .map(|e| {
             let status_color = if e.ok { theme.num } else { theme.error };
             Line::from(vec![
                 Span::styled(REPL_PROMPT, Style::default().fg(theme.muted)),
-                Span::styled(e.input.clone(), Style::default().fg(theme.accent)),
+                Span::styled(e.input.clone(), Style::default().fg(accent_color)),
                 Span::raw("  "),
                 Span::styled(e.status.clone(), Style::default().fg(status_color)),
             ])
@@ -206,8 +253,8 @@ fn render_repl(frame: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
     // Input line.
     let text = app.repl.text();
     let input = Paragraph::new(Line::from(vec![
-        Span::styled(REPL_PROMPT, Style::default().fg(theme.header).add_modifier(Modifier::BOLD)),
-        Span::styled(text, Style::default().fg(theme.fg)),
+        Span::styled(REPL_PROMPT, Style::default().fg(accent_color).add_modifier(Modifier::BOLD)),
+        Span::styled(text, Style::default().fg(Color::Rgb(0xf8, 0xfa, 0xfb))),
     ]));
     frame.render_widget(input, Rect { x: inner.x, y: input_y, width: inner.width, height: 1 });
 
@@ -346,24 +393,78 @@ fn render_output_table(frame: &mut Frame, app: &mut App, theme: &Theme, area: Re
                 filter
             )
         }
-        None => " Output (run a command) ".to_string(),
+        None => " Output ".to_string(),
     };
     let block = panel_block(title, focused, theme);
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
     let Some(table) = app.output.as_ref() else {
-        let hint = Paragraph::new(vec![
-            Line::from(Span::styled(
-                "Select a Summary row (Enter / double-click) or type a query in the REPL.",
-                Style::default().fg(theme.muted),
-            )),
-            Line::from(Span::styled(
-                "Press r for data flows · / to filter · 1-9 to sort by column.",
-                Style::default().fg(theme.muted),
-            )),
-        ]);
-        frame.render_widget(hint, inner);
+        let show_questions = app.non_atom
+            || (!app.starter_questions.is_empty() && app.agent_enabled);
+        if show_questions {
+            let lang = if !app.summary.language.is_empty() {
+                &app.summary.language
+            } else {
+                app.project_language.as_deref().unwrap_or("the")
+            };
+            let mut lines = vec![
+                Line::from(Span::styled(
+                    format!("How can I help you with the {lang} project today?"),
+                    Style::default().fg(theme.muted),
+                )),
+                Line::from(""),
+                Line::from(Span::styled(
+                    "Try asking:",
+                    Style::default().fg(theme.header).add_modifier(Modifier::BOLD),
+                )),
+            ];
+            let selected = if app.focus == Panel::Output && app.output.is_none() {
+                app.output_state.selected
+            } else {
+                usize::MAX
+            };
+            let qs = &app.starter_questions;
+            let q_area_top = inner.y + lines.len() as u16;
+            for (i, q) in qs.iter().enumerate() {
+                let is_sel = i == selected;
+                let icon = if is_sel { "▸" } else { " " };
+                let bullet_style = if is_sel {
+                    Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(theme.muted)
+                };
+                let text_style = if is_sel {
+                    Style::default().fg(theme.accent)
+                } else {
+                    Style::default().fg(theme.fg)
+                };
+                lines.push(Line::from(vec![
+                    Span::styled(format!(" {} ", icon), bullet_style),
+                    Span::styled(q.label.as_str(), text_style),
+                ]));
+            }
+            app.starter_questions_area = Some(Rect {
+                x: inner.x,
+                y: q_area_top,
+                width: inner.width,
+                height: qs.len() as u16,
+            });
+            let hint = Paragraph::new(lines);
+            frame.render_widget(hint, inner);
+        } else {
+            let hint = Paragraph::new(vec![
+                Line::from(Span::styled(
+                    "Select a Summary row (Enter / double-click) or type a query in the REPL.",
+                    Style::default().fg(theme.muted),
+                )),
+                Line::from(Span::styled(
+                    "Press r for data flows · / to filter · 1-9 to sort by column.",
+                    Style::default().fg(theme.muted),
+                )),
+            ]);
+            frame.render_widget(hint, inner);
+        }
         return;
     };
 
