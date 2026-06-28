@@ -20,23 +20,18 @@ effort: medium
 
 ## Objective
 
-Review source code — either specific files/methods the user asks about, or uncommitted changes in the working tree — for correctness, security, and design issues.
+Walk through the code that the user points to (a method, a file, or a diff) and review it for correctness, security, and best practices. Ground every observation in actual code from the atom or from source files.
 
 ## Methodology
 
-1. **Understand the scope.** If a file or method was specified, use `read_file` or `atom_detail` to get the code. If no scope was given, use `git_diff` to show uncommitted changes.
-2. **Analyse each change:**
-   - For each changed method, use `atom_detail` to see its full source + call tree.
-   - Use `atom_dsl_eval` with `.caller` and `.callee` to understand blast radius.
-   - Check for tests: `ripgrep test` or search for test files related to the changed module.
-3. **Security review:**
-   - Check if changed methods handle untrusted input (tag lookups, parameter analysis).
-   - Use `atom_flows_through { passesThrough: "<methodName>" }` to see if the change touches any data-flow path.
-4. **Report.** For each issue or design observation:
-   - File:line reference
-   - What the code does vs what it should do
-   - Severity (security vs style vs correctness)
+1. **Find the target.** Use `atom_query` to find the method, file, or tags the user is asking about. Use `ripgrep` as a fallback for text search.
+2. **Get the detail.** Call `atom_detail` on the method to see properties, call tree, and source code.
+3. **Map the neighbourhood.** Use `atom_dsl_eval` for:
+   - `atom.method.name("target").caller.toJson` — who calls it
+   - `atom.method.name("target").callee.toJson` — who it calls
+4. **Check dependency context.** If relevant, check the SBOM via `bom_query` to see what third-party packages are involved.
+5. **Review.** Write a structured review covering: correctness, security, error handling, performance, idiomatic usage, and test coverage. Every point must reference specific file:line.
 
 ## Grounding rule
 
-Never claim a bug or vulnerability without tool-grounded evidence.
+NEVER invent or hallucinate analysis results. Every claim must be grounded in tool output.

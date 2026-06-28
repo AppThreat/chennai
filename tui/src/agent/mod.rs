@@ -82,60 +82,53 @@ fn user_override_prompt(cmd: &str) -> Option<String> {
     std::fs::read_to_string(path).ok()
 }
 
-/// Split optional `---`-delimited YAML-ish frontmatter from a markdown prompt.
-/// Only the small subset we need is understood: `tools: [a, b, c]` and
-/// `effort: <scalar>`. Unknown keys are ignored; a malformed/absent header
-/// leaves the whole input as the body.
+/// Split optional `---`-delimited YAML frontmatter from a markdown prompt using
+/// `serde_yaml`. Supports both single-line (`tools: [a, b]`) and multi-line
+/// (`tools:\n  - a\n  - b`) YAML lists. Unknown keys are ignored; a malformed or
+/// absent header leaves the whole input as the body.
 fn parse_frontmatter(raw: &str) -> SlashCommand {
     let trimmed = raw.trim_start_matches('\u{feff}');
     let Some(rest) = trimmed.strip_prefix("---\n").or_else(|| trimmed.strip_prefix("---\r\n")) else {
         return SlashCommand { body: raw.trim().to_string(), tools: None, effort: None };
     };
-    // Find the closing delimiter line.
-    let mut header = String::new();
-    let mut body_start = None;
-    let mut offset = 0;
-    for line in rest.split_inclusive('\n') {
-        let l = line.trim_end_matches(['\n', '\r']);
-        if l == "---" {
-            body_start = Some(offset + line.len());
-            break;
-        }
-        header.push_str(line);
-        offset += line.len();
-    }
-    let Some(bs) = body_start else {
-        // No closing delimiter — treat everything as body.
+
+    // Find the closing `---` delimiter line.
+    let closing = rest.find("\n---").or_else(|| rest.find("\r\n---"));
+    let Some(end) = closing else {
         return SlashCommand { body: raw.trim().to_string(), tools: None, effort: None };
     };
-    let body = rest[bs..].trim().to_string();
+    let yaml_str = &rest[..end];
+    let body_start = end + 4; // skip past "\n---" (or "\r\n---")
+    let body = rest[body_start..].trim().to_string();
 
-    let mut tools = None;
-    let mut effort = None;
-    for line in header.lines() {
-        let Some((key, val)) = line.split_once(':') else { continue };
-        let (key, val) = (key.trim(), val.trim());
-        match key {
-            "tools" => {
-                let inner = val.trim_start_matches('[').trim_end_matches(']');
-                let list: Vec<String> = inner
-                    .split(',')
-                    .map(|s| s.trim().trim_matches(['"', '\'']).to_string())
-                    .filter(|s| !s.is_empty())
-                    .collect();
-                if !list.is_empty() {
-                    tools = Some(list);
-                }
+    // Parse the YAML header with serde_yaml.
+    let Ok(yaml) = serde_yaml::from_str::<serde_yaml::Value>(yaml_str) else {
+        return SlashCommand { body, tools: None, effort: None };
+    };
+    let mapping = match yaml {
+        serde_yaml::Value::Mapping(ref m) => m,
+        _ => return SlashCommand { body, tools: None, effort: None },
+    };
+
+    let tools = mapping.get(serde_yaml::Value::String("tools".into())).and_then(|v| {
+        let list: Vec<String> = match v {
+            serde_yaml::Value::Sequence(seq) => {
+                seq.iter().filter_map(|item| item.as_str().map(|s| s.to_string())).collect()
             }
-            "effort" => {
-                let v = val.trim_matches(['"', '\'']);
-                if !v.is_empty() {
-                    effort = Some(v.to_string());
-                }
+            serde_yaml::Value::String(s) => {
+                // Fallback: parse inline YAML array syntax like "[a, b, c]"
+                let inner = s.trim_start_matches('[').trim_end_matches(']');
+                inner.split(',').map(|s| s.trim().trim_matches(['"', '\'']).to_string()).filter(|s| !s.is_empty()).collect()
             }
-            _ => {}
-        }
-    }
+            _ => return None,
+        };
+        if list.is_empty() { None } else { Some(list) }
+    });
+
+    let effort = mapping.get(serde_yaml::Value::String("effort".into())).and_then(|v| {
+        v.as_str().map(|s| s.to_string()).filter(|s| !s.is_empty())
+    });
+
     SlashCommand { body, tools, effort }
 }
 
@@ -987,6 +980,24 @@ mod tests {
         assert_eq!(sc.body, "just a prompt, no header");
         assert!(sc.tools.is_none());
         assert!(sc.effort.is_none());
+    }
+
+    #[test]
+    fn frontmatter_supports_multi_line_yaml_lists() {
+        let raw = "---\nname: security-review\ntools:\n  - atom_summary\n  - atom_flows\n  - ripgrep\neffort: xhigh\n---\n\n## Objective\nReview it.";
+        let sc = parse_frontmatter(raw);
+        assert_eq!(sc.tools.as_deref(), Some(&["atom_summary".to_string(), "atom_flows".to_string(), "ripgrep".to_string()][..]));
+        assert_eq!(sc.effort.as_deref(), Some("xhigh"));
+        assert!(sc.body.starts_with("## Objective"));
+    }
+
+    #[test]
+    fn frontmatter_supports_yaml_inline_array_on_next_line() {
+        // Format: tools:\n  [a, b, c] (inline array indented on next line)
+        let raw = "---\ntools:\n  [atom_summary, atom_flows]\neffort: medium\n---\n\nBody.";
+        let sc = parse_frontmatter(raw);
+        assert_eq!(sc.tools.as_deref(), Some(&["atom_summary".to_string(), "atom_flows".to_string()][..]));
+        assert_eq!(sc.effort.as_deref(), Some("medium"));
     }
 
     #[test]
