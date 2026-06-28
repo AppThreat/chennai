@@ -759,12 +759,12 @@ pub fn run_agent(ctx: &AgentCtx, user_input: &str, tx: mpsc::Sender<AgentEvent>)
     transcript.push_user(user_input);
 
     // Select the appropriate tool definitions based on the analysis mode.
-    let base_tools = if let Some(ref backend) = ctx.backend {
-        tools::backend_tool_definitions(backend)
-    } else if ctx.engine.is_some() {
-        tools::all_tool_definitions()
-    } else {
-        tools::non_atom_tool_definitions()
+    let base_tools = match (ctx.engine.is_some(), ctx.backend.as_ref()) {
+        // Atom + backend (e.g. APK/JAR with both atom and blint): atom-primary, both toolsets.
+        (true, Some(backend)) => tools::atom_plus_backend_tool_definitions(backend),
+        (false, Some(backend)) => tools::backend_tool_definitions(backend),
+        (true, None) => tools::all_tool_definitions(),
+        (false, None) => tools::non_atom_tool_definitions(),
     };
     let tool_defs = filter_tools(base_tools, ctx.allowed_tools.as_deref());
 
@@ -887,12 +887,12 @@ impl EventSink for HeadlessSink {
 }
 
 pub fn run_headless(ctx: &AgentCtx, input: &str) -> Result<String, Box<dyn std::error::Error>> {
-    let base_tools = if let Some(ref backend) = ctx.backend {
-        tools::backend_tool_definitions(backend)
-    } else if ctx.engine.is_some() {
-        tools::all_tool_definitions()
-    } else {
-        tools::non_atom_tool_definitions()
+    let base_tools = match (ctx.engine.is_some(), ctx.backend.as_ref()) {
+        // Atom + backend (e.g. APK/JAR with both atom and blint): atom-primary, both toolsets.
+        (true, Some(backend)) => tools::atom_plus_backend_tool_definitions(backend),
+        (false, Some(backend)) => tools::backend_tool_definitions(backend),
+        (true, None) => tools::all_tool_definitions(),
+        (false, None) => tools::non_atom_tool_definitions(),
     };
     let tool_defs = filter_tools(base_tools, ctx.allowed_tools.as_deref());
     let mut transcript = Transcript::new();

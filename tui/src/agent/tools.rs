@@ -13,6 +13,25 @@ pub fn backend_tool_definitions(backend: &Box<dyn crate::shared::backend::Backen
     tools
 }
 
+/// Combined toolset for an atom that ALSO has a loaded analysis backend (e.g. an
+/// APK/JAR analyzed by both atom and blint). Atom is primary; the backend's own
+/// tools are appended. The shared shell/BOM tools (already in `all_tool_definitions`)
+/// are filtered out of the backend set so they aren't duplicated.
+#[allow(clippy::borrowed_box)]
+pub fn atom_plus_backend_tool_definitions(backend: &Box<dyn crate::shared::backend::Backend>) -> Vec<Value> {
+    let mut tools = all_tool_definitions();
+    let shared = non_atom_tool_definitions();
+    let shared_names: std::collections::HashSet<&str> =
+        shared.iter().filter_map(|t| t["name"].as_str()).collect();
+    for t in backend.tool_definitions() {
+        let dup = t["name"].as_str().map(|n| shared_names.contains(n)).unwrap_or(false);
+        if !dup {
+            tools.push(t);
+        }
+    }
+    tools
+}
+
 /// Return the full set of tool definitions sent to the LLM on every turn.
 pub fn all_tool_definitions() -> Vec<Value> {
     vec![
@@ -426,4 +445,36 @@ fn bom_query() -> Value {
             }
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn atom_plus_backend_merges_without_duplicating_shared_tools() {
+        let backend: Box<dyn crate::shared::backend::Backend> =
+            Box::new(crate::blint::BlintCtx {
+                reports: crate::blint::BlintReports {
+                    metadata: crate::shared::LoadedReport { report: serde_json::json!({}), report_path: String::new() },
+                    findings: None, reviews: None, fuzzables: None, sbom: None,
+                    callgraph_path: None, extra_callgraphs: Vec::new(), artifact_type: "apk".into(),
+                },
+                artifact_path: "app.apk".into(),
+            });
+
+        let combined = atom_plus_backend_tool_definitions(&backend);
+        let names: Vec<&str> = combined.iter().filter_map(|t| t["name"].as_str()).collect();
+
+        // Atom tools present.
+        assert!(names.contains(&"atom_flows"));
+        assert!(names.contains(&"atom_dsl_eval"));
+        // Backend-specific tools present.
+        assert!(names.contains(&"blint_callgraph"));
+        assert!(names.contains(&"blint_disassembly"));
+        // Shared tools appear exactly once (not duplicated by the backend set).
+        assert_eq!(names.iter().filter(|&&n| n == "ripgrep").count(), 1);
+        assert_eq!(names.iter().filter(|&&n| n == "bom_query").count(), 1);
+        assert_eq!(names.iter().filter(|&&n| n == "read_file").count(), 1);
+    }
 }

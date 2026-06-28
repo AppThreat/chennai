@@ -251,6 +251,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let agent_source_root = source_root.clone()
             .or_else(|| Some(source_dir.to_string_lossy().to_string()));
 
+        // If this atom (e.g. an APK/JAR) also has a blint report nearby, expose blint_* tools too.
+        let atom_dir = existing_atom.parent().unwrap_or(Path::new(".")).to_path_buf();
+        let aux_backend: Option<BackendCtx> =
+            find_aux_blint_backend(&[atom_dir.as_path(), reports_dir.as_path()]).map(|c| Box::new(c) as BackendCtx);
+
         let agent_ctx = if config.enabled {
             let bom_summary = if bom_store.loaded { bom_store.summary() } else { String::new() };
             let bom_components = if bom_store.loaded && !bom_store.components.is_empty() {
@@ -272,7 +277,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     Some(AgentCtx {
                         provider,
                         engine: Some(engine_arc.clone()),
-                        backend: None,
+                        backend: aux_backend.as_ref().map(|b| b.clone_box()),
                         source_root: agent_source_root.clone(),
                         system_prompt,
                         max_tokens: 8192,
@@ -292,6 +297,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
 
         let mut app = App::new(Some(engine_arc), atom_str, summary);
+        // Keep the aux blint backend on the app so the agent-context recreation path
+        // (which reads app.backend) preserves blint_* tools across runs.
+        app.backend = aux_backend;
         if agent_ctx.is_some() {
             app.enable_agent();
         }
@@ -974,6 +982,36 @@ fn load_blint_backend(artifact: &Path, reports_dir: &Path) -> Option<BlintCtx> {
     None
 }
 
+/// In atom mode, opportunistically load a blint backend so `blint_*` tools are offered
+/// alongside `atom_*` for binary artifacts (APK/JAR) that were analyzed by both. Scans
+/// `dirs` for a blint metadata report (`*-metadata.json` carrying blint markers) and, if
+/// found, loads the full report set. Returns `None` when no blint report is present.
+fn find_aux_blint_backend(dirs: &[&Path]) -> Option<BlintCtx> {
+    for dir in dirs {
+        let Ok(entries) = std::fs::read_dir(dir) else { continue };
+        let mut metas: Vec<PathBuf> = entries
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.file_name().and_then(|n| n.to_str()).map(|n| n.ends_with("-metadata.json")).unwrap_or(false))
+            .collect();
+        metas.sort();
+        for meta in metas {
+            let Ok(report) = crate::shared::LoadedReport::from_file(&meta) else { continue };
+            let r = &report.report;
+            let is_blint = r.get("exe_type").is_some() || r.get("binary_type").is_some()
+                || r.get("disassembled_functions").is_some()
+                || r.get("callgraph").map(|c| c.is_object()).unwrap_or(false);
+            if !is_blint { continue; }
+            let Some(base) = meta.file_name().and_then(|n| n.to_str()).map(|n| n.trim_end_matches("-metadata.json")) else { continue };
+            if let Ok(reports) = BlintReports::load(base, dir) {
+                eprintln!("Also loaded blint report ({base}) — blint_* tools enabled alongside atom");
+                return Some(BlintCtx { reports, artifact_path: base.to_string() });
+            }
+        }
+    }
+    None
+}
+
 /// Try to load an existing golem report (from `reports_dir` or `source_dir`) or run golem
 /// to generate one into `reports_dir`.
 fn load_or_generate_golem(source_dir: &Path, reports_dir: &Path, headless: bool) -> Result<GolemCtx, String> {
@@ -1269,19 +1307,23 @@ fn run_app<B: ratatui::backend::Backend>(
                             Some(top.join("\n"))
                         } else { None }
                     });
-                    let system_prompt = match (&custom_system_prompt, &app.backend) {
-                        (Some(sp), _) => sp.clone(),
-                        (None, Some(b)) => {
-                            let console_history = app.build_console_history();
-                            b.system_prompt(&b.summary(), bom_summary.as_deref(), bom_components_summary.as_deref(), Some(&console_history))
-                        }
-                        (None, None) => {
-                            let console_history = app.build_console_history();
-                            AgentCtx::build_system_prompt(
+                    // Atom is primary when an engine is open: use the atom system prompt even
+                    // if a blint backend is also attached (the backend just adds blint_* tools).
+                    // Fall back to the backend prompt only in pure non-atom mode.
+                    let system_prompt = if let Some(sp) = &custom_system_prompt {
+                        sp.clone()
+                    } else {
+                        let console_history = app.build_console_history();
+                        match (&app.engine, &app.backend) {
+                            (None, Some(b)) => b.system_prompt(
+                                &b.summary(), bom_summary.as_deref(),
+                                bom_components_summary.as_deref(), Some(&console_history),
+                            ),
+                            _ => AgentCtx::build_system_prompt(
                                 &app.summary.language, &app.summary.version, &app.summary.rows,
                                 bom_summary.as_deref(), bom_components_summary.as_deref(),
                                 Some(&console_history),
-                            )
+                            ),
                         }
                     };
                     let cancel = Arc::new(AtomicBool::new(false));
