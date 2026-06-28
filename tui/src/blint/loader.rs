@@ -17,6 +17,13 @@ pub struct BlintReports {
     pub sbom: Option<LoadedReport>,
     /// Path to the callgraph GraphML export, if generated.
     pub callgraph_path: Option<String>,
+    /// Sidecar call graphs parsed from JSON, as `(label, callgraph_json)` pairs.
+    /// blint emits these alongside the BOM when `--disassemble` is used:
+    /// `<stem>-<app>.dex-callgraph.json` for Android APKs (Dalvik bytecode) and
+    /// `<stem>-<app>-<bundle>.callgraph.json` for each Mach-O inside an iOS IPA.
+    /// Native ELF/PE/Mach-O binaries instead carry their call graph inline in
+    /// `metadata["callgraph"]`, so this is normally non-empty only for apk/ipa.
+    pub extra_callgraphs: Vec<(String, serde_json::Value)>,
     /// The detected artifact type (apk, ipa, elf, pe, macho, wasm, etc.).
     pub artifact_type: String,
 }
@@ -36,26 +43,11 @@ impl BlintReports {
         let metadata = LoadedReport::from_file(&metadata_path)
             .map_err(|e| format!("failed to load blint metadata: {e}"))?;
 
-        let findings_path = output_dir.join(format!("{stem}-findings.json"));
-        let findings = if findings_path.is_file() {
-            LoadedReport::from_file(&findings_path).ok()
-        } else {
-            None
-        };
-
-        let reviews_path = output_dir.join(format!("{stem}-reviews.json"));
-        let reviews = if reviews_path.is_file() {
-            LoadedReport::from_file(&reviews_path).ok()
-        } else {
-            None
-        };
-
-        let fuzzables_path = output_dir.join(format!("{stem}-fuzzables.json"));
-        let fuzzables = if fuzzables_path.is_file() {
-            LoadedReport::from_file(&fuzzables_path).ok()
-        } else {
-            None
-        };
+        // blint names these either `<stem>-findings.json` or, depending on invocation,
+        // a bare `findings.json` in the output dir. Try both.
+        let findings = load_optional(output_dir, stem, "findings");
+        let reviews = load_optional(output_dir, stem, "reviews");
+        let fuzzables = load_optional(output_dir, stem, "fuzzables");
 
         let sbom_path = output_dir.join("sbom.cdx.json");
         let sbom = if sbom_path.is_file() {
@@ -68,6 +60,9 @@ impl BlintReports {
         // so accept the fixed name if present, otherwise the first `*.graphml` in the dir.
         let callgraph_path = first_graphml(output_dir).map(|p| p.to_string_lossy().to_string());
 
+        // JSON call-graph sidecars (apk Dalvik + iOS Mach-O), emitted with --disassemble.
+        let extra_callgraphs = load_callgraph_sidecars(output_dir);
+
         let artifact_type = detect_artifact_type(stem, &metadata.report);
 
         Ok(BlintReports {
@@ -77,9 +72,57 @@ impl BlintReports {
             fuzzables,
             sbom,
             callgraph_path,
+            extra_callgraphs,
             artifact_type,
         })
     }
+}
+
+/// Load an optional blint report `<name>`, trying the stem-prefixed name
+/// (`<stem>-<name>.json`) first and falling back to a bare `<name>.json`.
+fn load_optional(dir: &Path, stem: &str, name: &str) -> Option<LoadedReport> {
+    let prefixed = dir.join(format!("{stem}-{name}.json"));
+    if prefixed.is_file() {
+        return LoadedReport::from_file(&prefixed).ok();
+    }
+    let bare = dir.join(format!("{name}.json"));
+    if bare.is_file() {
+        return LoadedReport::from_file(&bare).ok();
+    }
+    None
+}
+
+/// Parse blint's JSON call-graph sidecars from `dir`. Matches files ending in
+/// `.dex-callgraph.json` (Android Dalvik) or `.callgraph.json` (iOS Mach-O, one per
+/// embedded binary). The label is the file name with the redundant suffix trimmed so
+/// the agent sees which app/binary each graph belongs to. Sorted for determinism.
+fn load_callgraph_sidecars(dir: &Path) -> Vec<(String, serde_json::Value)> {
+    let mut out: Vec<(String, serde_json::Value)> = Vec::new();
+    let Ok(entries) = std::fs::read_dir(dir) else { return out };
+    let mut paths: Vec<std::path::PathBuf> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .map(|n| n.ends_with(".dex-callgraph.json") || n.ends_with(".callgraph.json"))
+                .unwrap_or(false)
+        })
+        .collect();
+    paths.sort();
+    for p in paths {
+        let Some(name) = p.file_name().and_then(|n| n.to_str()) else { continue };
+        let label = name
+            .trim_end_matches(".dex-callgraph.json")
+            .trim_end_matches(".callgraph.json")
+            .to_string();
+        if let Ok(report) = LoadedReport::from_file(&p)
+            && report.report.get("nodes").map(|n| n.is_array()).unwrap_or(false)
+        {
+            out.push((label, report.report));
+        }
+    }
+    out
 }
 
 /// Return a GraphML callgraph export from `dir`: the fixed `callgraph.graphml` if present,
@@ -160,6 +203,18 @@ mod tests {
         assert!(reports.sbom.is_some());
         assert!(reports.callgraph_path.is_some());
         assert_eq!(reports.artifact_type, "PE32");
+    }
+
+    #[test]
+    fn test_blint_loader_bare_findings_reviews() {
+        // Some blint invocations write bare `findings.json` / `reviews.json` (no stem prefix).
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("app.apk-metadata.json"), r#"{"exe_type":"dexbinary"}"#).unwrap();
+        std::fs::write(dir.path().join("findings.json"), r#"{"findings":[]}"#).unwrap();
+        std::fs::write(dir.path().join("reviews.json"), r#"{"reviews":[]}"#).unwrap();
+        let reports = BlintReports::load("app.apk", dir.path()).unwrap();
+        assert!(reports.findings.is_some());
+        assert!(reports.reviews.is_some());
     }
 
     #[test]

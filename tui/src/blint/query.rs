@@ -424,44 +424,175 @@ pub fn query_security_properties(metadata: &Value) -> String {
     lines.join("\n")
 }
 
-pub fn query_callgraph(metadata: &Value) -> String {
-    let cg = match metadata["callgraph"].as_object() {
-        Some(obj) => obj,
-        None => return "No call graph data available (re-run with --disassemble).".to_string(),
-    };
+/// Normalise a call-graph node id (int or string) to a string key for edge lookup.
+fn node_id_key(v: &Value) -> Option<String> {
+    match v {
+        Value::String(s) => Some(s.clone()),
+        Value::Number(n) => Some(n.to_string()),
+        _ => None,
+    }
+}
 
-    let nodes = cg.get("nodes").and_then(|n| n.as_array()).map(|a| a.len()).unwrap_or(0);
-    let edges = cg.get("edges").and_then(|n| n.as_array()).map(|a| a.len()).unwrap_or(0);
-    let external = cg.get("external").and_then(|n| n.as_array()).map(|a| a.len()).unwrap_or(0);
+/// Resolve a node id to a human-readable label (`name @ address`, falling back to the id).
+fn resolve_node(id_map: &std::collections::HashMap<String, String>, edge_endpoint: &Value) -> String {
+    match node_id_key(edge_endpoint) {
+        Some(k) => id_map.get(&k).cloned().unwrap_or(k),
+        None => "?".to_string(),
+    }
+}
 
-    let mut lines: Vec<String> = Vec::new();
-    lines.push(format!("# Call Graph ({nodes} nodes, {edges} edges, {external} external)"));
+/// Render a single call graph (`{nodes, edges, external}`), resolving edge node-ids to
+/// names. `pattern` filters edges by either endpoint name; returns up to `limit` edges.
+fn render_callgraph(label: &str, cg: &Value, pattern: Option<&str>, limit: usize, out: &mut Vec<String>) {
+    let nodes = cg["nodes"].as_array().map(Vec::as_slice).unwrap_or(&[]);
+    let edges = cg["edges"].as_array().map(Vec::as_slice).unwrap_or(&[]);
+    let external = cg["external"].as_array().map(Vec::as_slice).unwrap_or(&[]);
 
-    // Show edges
-    if let Some(edge_arr) = cg.get("edges").and_then(|e| e.as_array()) {
-        for edge in edge_arr.iter().take(100) {
-            let src = field_str(edge, "sourceName");
-            let tgt = field_str(edge, "targetName");
-            let src2 = field_str(edge, "src_name");
-            let tgt2 = field_str(edge, "tgt_name");
-            let src3 = edge["src"].as_i64().map(|v| v.to_string()).unwrap_or_default();
-            let tgt3 = edge["dst"].as_i64().map(|v| v.to_string()).unwrap_or_default();
-
-            let src_display = if src != "?" && !src.is_empty() { src } else if src2 != "?" { src2 } else { &src3 };
-            let tgt_display = if tgt != "?" && !tgt.is_empty() { tgt } else if tgt2 != "?" { tgt2 } else { &tgt3 };
-            lines.push(format!("  {src_display} → {tgt_display}"));
+    // Build id -> "name @ address" so edges read as call relationships, not raw ids.
+    let mut id_map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    for n in nodes {
+        if let Some(k) = node_id_key(&n["id"]) {
+            let name = n["name"].as_str().filter(|s| !s.is_empty()).unwrap_or("?");
+            let label = match n["address"].as_str() {
+                Some(a) if !a.is_empty() => format!("{name} @ {a}"),
+                _ => name.to_string(),
+            };
+            id_map.insert(k, label);
         }
     }
 
-    // Show external references
-    if external > 0 {
-        lines.push("\n# External references".to_string());
-        if let Some(ext_arr) = cg.get("external").and_then(|e| e.as_array()) {
-            for ext in ext_arr.iter().take(20) {
-                let target = field_str(ext, "target");
-                let reason = field_str(ext, "reason");
-                lines.push(format!("  → {target} ({reason})"));
-            }
+    out.push(format!(
+        "## {label} ({} nodes, {} edges, {} external)",
+        nodes.len(), edges.len(), external.len()
+    ));
+
+    let pat_lower = pattern.map(|p| p.to_lowercase());
+    let mut shown = 0usize;
+    let mut filtered = 0usize;
+    for edge in edges {
+        let src = resolve_node(&id_map, &edge["src"]);
+        let dst = resolve_node(&id_map, &edge["dst"]);
+        if let Some(ref pat) = pat_lower
+            && !src.to_lowercase().contains(pat) && !dst.to_lowercase().contains(pat)
+        {
+            continue;
+        }
+        filtered += 1;
+        if shown >= limit {
+            continue;
+        }
+        // Edge kind/confidence (direct/tailcall/indirect_hint) exist on native graphs,
+        // not Dalvik; surface them only when present so triage can weight the evidence.
+        let mut tags: Vec<String> = Vec::new();
+        if let Some(k) = edge["kind"].as_str() { tags.push(k.to_string()); }
+        if let Some(c) = edge["confidence"].as_str() { tags.push(c.to_string()); }
+        if let Some(cnt) = edge["count"].as_i64().filter(|&c| c > 1) { tags.push(format!("x{cnt}")); }
+        let suffix = if tags.is_empty() { String::new() } else { format!("  [{}]", tags.join(", ")) };
+        out.push(format!("  {src} → {dst}{suffix}"));
+        shown += 1;
+    }
+    if filtered > shown {
+        out.push(format!("  … {} more edges match (raise limit to see them)", filtered - shown));
+    }
+
+    // External (unresolved) call targets with their reason bucket — the systemic-miss view.
+    if !external.is_empty() && pat_lower.is_none() {
+        out.push("  external (unresolved) targets:".to_string());
+        for ext in external.iter().take(20) {
+            let target = ext["target"].as_str().unwrap_or("?");
+            let reason = ext["reason"].as_str().unwrap_or("unresolved");
+            let kind = ext["kind"].as_str().map(|k| format!(":{k}")).unwrap_or_default();
+            out.push(format!("    → {target} ({reason}{kind})"));
+        }
+    }
+}
+
+/// Query the disassembly-derived call graph. Resolves edge node-ids to function names,
+/// surfaces edge kind/confidence (direct/tailcall/indirect_hint), and merges the
+/// Android Dalvik / iOS Mach-O sidecar graphs when present. `pattern` filters edges by
+/// either endpoint's function name.
+pub fn query_callgraph(metadata: &Value, extra: &[(String, Value)], pattern: Option<&str>, limit: usize) -> String {
+    let mut lines: Vec<String> = Vec::new();
+
+    // Sidecars are the disassembly graphs for apk/ipa; when present prefer them over the
+    // inline metadata["callgraph"] (which, for apk, duplicates the Dalvik sidecar).
+    if !extra.is_empty() {
+        lines.push(format!("# Call Graphs from {} disassembled binary/binaries", extra.len()));
+        for (label, cg) in extra {
+            render_callgraph(label, cg, pattern, limit, &mut lines);
+        }
+        return lines.join("\n");
+    }
+
+    match metadata["callgraph"].as_object() {
+        Some(_) => {
+            lines.push("# Call Graph".to_string());
+            render_callgraph("binary", &metadata["callgraph"], pattern, limit, &mut lines);
+            lines.join("\n")
+        }
+        None => "No call graph data available. Re-run blint with --disassemble (and for apk/ipa this also emits per-binary callgraph sidecars).".to_string(),
+    }
+}
+
+/// Query disassembled functions: per-function instruction metrics and behaviour flags
+/// (indirect/system/crypto calls, loops, PAC), the function-type classification, and the
+/// resolved direct-call targets. `pattern` matches the function name (case-insensitive).
+pub fn query_disassembly(metadata: &Value, pattern: Option<&str>, limit: usize) -> String {
+    let Some(funcs) = metadata["disassembled_functions"].as_object() else {
+        return "No disassembly data available. Re-run blint with --disassemble (requires the extended install with the nyxstone disassembler).".to_string();
+    };
+    if funcs.is_empty() {
+        return "Disassembly ran but produced no functions (the binary may be encrypted, e.g. FairPlay-protected iOS, or fully stripped).".to_string();
+    }
+
+    let pat_lower = pattern.map(|p| p.to_lowercase());
+    let mut matched: Vec<(&String, &Value)> = funcs.iter()
+        .filter(|(k, v)| {
+            let Some(ref pat) = pat_lower else { return true };
+            k.to_lowercase().contains(pat)
+                || v["name"].as_str().unwrap_or("").to_lowercase().contains(pat)
+        })
+        .collect();
+    // Most-instructions-first puts the substantive functions at the top.
+    matched.sort_by_key(|(_, v)| std::cmp::Reverse(v["instruction_count"].as_i64().unwrap_or(0)));
+
+    let total = matched.len();
+    let mut lines: Vec<String> = Vec::new();
+    lines.push(format!("# Disassembled functions ({} total, {} shown)", total, total.min(limit)));
+
+    for (_, f) in matched.into_iter().take(limit) {
+        let name = f["name"].as_str().unwrap_or("?");
+        let addr = f["address"].as_str().unwrap_or("");
+        let icount = f["instruction_count"].as_i64().unwrap_or(0);
+        let ftype = f["function_type"].as_str().filter(|s| !s.is_empty());
+
+        let mut flags: Vec<&str> = Vec::new();
+        for (key, tag) in [
+            ("has_indirect_call", "indirect-call"),
+            ("has_system_call", "syscall"),
+            ("has_crypto_call", "crypto"),
+            ("has_gpu_call", "gpu"),
+            ("has_loop", "loop"),
+            ("has_pac", "pac"),
+        ] {
+            if f[key].as_bool().unwrap_or(false) { flags.push(tag); }
+        }
+
+        let mut header = format!("  {name} @ {addr} ({icount} instr)");
+        if let Some(t) = ftype { header.push_str(&format!(" [{t}]")); }
+        if !flags.is_empty() { header.push_str(&format!(" {{{}}}", flags.join(", "))); }
+        lines.push(header);
+
+        // Resolved direct callees — the per-function edge list, useful even without the
+        // top-level callgraph (e.g. when only a few functions were disassembled).
+        let callees: Vec<&str> = f["direct_calls"].as_array()
+            .map(|a| a.iter().filter_map(|c| c.as_str()).collect())
+            .unwrap_or_default();
+        if !callees.is_empty() {
+            let head: Vec<&str> = callees.iter().take(8).copied().collect();
+            let more = callees.len().saturating_sub(head.len());
+            let suffix = if more > 0 { format!(", +{more} more") } else { String::new() };
+            lines.push(format!("      calls: {}{}", head.join(", "), suffix));
         }
     }
 
@@ -674,9 +805,64 @@ mod tests {
     }
 
     #[test]
-    fn test_query_callgraph_dex() {
-        let result = query_callgraph(&dex_metadata());
+    fn test_query_callgraph_resolves_node_names() {
+        // Edge src=1 resolves to node 1's name ("Foo::bar"); dst=2 is unknown -> raw id.
+        let result = query_callgraph(&dex_metadata(), &[], None, 50);
         assert!(result.contains("Call Graph"));
+        assert!(result.contains("Foo::bar → 2"), "edge ids should resolve to names: {result}");
+    }
+
+    #[test]
+    fn test_query_callgraph_uses_sidecars_for_apk_ipa() {
+        let metadata = json!({});
+        let dex = json!({
+            "nodes": [
+                {"id": "0:0", "name": "La/A;->caller()V", "address": null},
+                {"id": "0:1", "name": "Lb/B;->callee()V", "address": null}
+            ],
+            "edges": [{"src": "0:0", "dst": "0:1"}]
+        });
+        let extra = vec![("com.example.apk".to_string(), dex)];
+        let result = query_callgraph(&metadata, &extra, None, 50);
+        assert!(result.contains("com.example.apk"));
+        assert!(result.contains("La/A;->caller()V → Lb/B;->callee()V"), "{result}");
+    }
+
+    #[test]
+    fn test_query_callgraph_pattern_filters_edges() {
+        let dex = json!({
+            "nodes": [
+                {"id": "1", "name": "alpha"}, {"id": "2", "name": "beta"}, {"id": "3", "name": "gamma"}
+            ],
+            "edges": [{"src": "1", "dst": "2"}, {"src": "2", "dst": "3"}]
+        });
+        let result = query_callgraph(&json!({}), &[("x".into(), dex)], Some("alpha"), 50);
+        assert!(result.contains("alpha → beta"));
+        assert!(!result.contains("beta → gamma"));
+    }
+
+    #[test]
+    fn test_query_disassembly() {
+        let metadata = json!({
+            "disassembled_functions": {
+                "0x1000::doCrypto": {
+                    "name": "doCrypto", "address": "0x1000", "instruction_count": 80,
+                    "function_type": "Has_Indirect_Calls", "has_indirect_call": true,
+                    "has_crypto_call": true, "direct_calls": ["malloc", "AES_encrypt"]
+                },
+                "0x2000::tiny": {"name": "tiny", "address": "0x2000", "instruction_count": 3}
+            }
+        });
+        let result = query_disassembly(&metadata, None, 50);
+        // Most-instructions-first ordering puts doCrypto before tiny.
+        assert!(result.find("doCrypto").unwrap() < result.find("tiny").unwrap());
+        assert!(result.contains("crypto"));
+        assert!(result.contains("indirect-call"));
+        assert!(result.contains("calls: malloc, AES_encrypt"));
+        // pattern filter
+        assert!(!query_disassembly(&metadata, Some("crypto"), 50).contains("tiny"));
+        // missing data
+        assert!(query_disassembly(&json!({}), None, 50).contains("No disassembly data"));
     }
 
     #[test]
@@ -687,6 +873,6 @@ mod tests {
         assert!(query_strings(&empty, None, 50).contains("No string data"));
         assert!(query_components(&None, None, 50).contains("No SBOM component"));
         assert!(query_security_properties(&empty).contains("No security property"));
-        assert!(query_callgraph(&empty).contains("No call graph data"));
+        assert!(query_callgraph(&empty, &[], None, 50).contains("No call graph data"));
     }
 }

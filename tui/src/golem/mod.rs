@@ -237,7 +237,7 @@ fn golem_endpoints_tool() -> serde_json::Value {
 fn golem_summary_tool() -> serde_json::Value {
     make_tool(
         "golem_summary",
-        "Return the summary of the golem analysis report: packages, files, imports, declarations, usages, security signals, call graph, data flow, and crypto counts.",
+        "Return the summary of the golem (Go) analysis report: packages, files, imports, declarations, usages, security signals, call graph, data flow, and crypto counts. Call this FIRST to orient — the counts tell you which categories of evidence exist so you know which tool to reach for next (e.g. whether there are any flows/sinks worth investigating).",
         json!({ "type": "object", "properties": {}, "required": [] }),
     )
 }
@@ -245,7 +245,7 @@ fn golem_summary_tool() -> serde_json::Value {
 fn golem_query_tool() -> serde_json::Value {
     make_tool(
         "golem_query",
-        "Query the golem analysis report for indexed entities. Use this to find packages, files, imports, declarations, usages (calls), security signals, callgraph, dataflow, crypto, flows (ranked slices), sources, or sinks.",
+        "Primary structured entry point for the golem (Go) report — prefer it over ripgrep for finding any indexed entity, since results carry exact file:line, package, and PURL rather than raw text hits. Use it to find packages, files, imports, declarations, usages (calls), security signals, callgraph, dataflow, crypto, flows (ranked slices), sources, or sinks.",
         json!({
             "type": "object",
             "properties": {
@@ -295,7 +295,7 @@ fn golem_callgraph_tool() -> serde_json::Value {
 fn golem_flows_tool() -> serde_json::Value {
     make_tool(
         "golem_flows",
-        "Query data-flow evidence from the golem report: per-function taint summaries (which parameters reach which sink categories, with confidence) plus flagged source/sink nodes. Results are ranked by confidence. Pass an optional pattern to filter.",
+        "THE authoritative tool for reachability/taint questions in the golem (Go) report — 'can untrusted input reach X', injection, or whether a sink is exploitable. Returns per-function taint summaries (which parameters reach which sink categories, with confidence) plus flagged source/sink nodes, ranked by confidence. ripgrep CANNOT prove a path reaches a sink; this can. Reach for it whenever the user asks about vulnerabilities or how data moves. Pass an optional pattern to filter.",
         json!({
             "type": "object",
             "properties": {

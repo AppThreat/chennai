@@ -383,7 +383,7 @@ pub fn dosai_tool_definitions() -> Vec<serde_json::Value> {
 fn dosai_trace_tool() -> serde_json::Value {
     make_tool(
         "dosai_trace",
-        "Expand a data-flow slice into its full ordered node path, resolving each node id to a name and file:line. Pass a slice id (e.g. 'dfs1') or a source/sink category to select which slice(s) to trace.",
+        "Expand a dosai (.NET) data-flow slice into its full ordered node path, resolving each node id to a name and file:line. Use this as the follow-up to dosai_flows whenever you need the concrete step-by-step path (source -> ... -> sink) to report file:line evidence for a finding. Pass a slice id (e.g. 'dfs1') or a source/sink category to select which slice(s) to trace.",
         json!({
             "type": "object",
             "properties": {
@@ -405,7 +405,7 @@ fn dosai_trace_tool() -> serde_json::Value {
 fn dosai_summary_tool() -> serde_json::Value {
     make_tool(
         "dosai_summary",
-        "Return the summary of the dosai analysis report: methods, data-flow nodes/edges/slices, API endpoints, weakness candidates.",
+        "Return the summary of the dosai (.NET) analysis report: methods, data-flow nodes/edges/slices, API endpoints, weakness candidates. Call this FIRST to orient — the counts tell you which categories of evidence exist so you know which tool to reach for next (e.g. whether there are any flows/endpoints worth investigating).",
         json!({ "type": "object", "properties": {}, "required": [] }),
     )
 }
@@ -413,7 +413,7 @@ fn dosai_summary_tool() -> serde_json::Value {
 fn dosai_query_tool() -> serde_json::Value {
     make_tool(
         "dosai_query",
-        "Query the dosai analysis reports for indexed entities: methods, method_calls, dependencies, api_endpoints, entry_points, package_reachability, dataflow_nodes, dataflow_edges, security_signals, flows.",
+        "Primary structured entry point for the dosai (.NET) reports — prefer it over ripgrep for finding any indexed entity, since results carry exact file:line and signatures rather than raw text hits. Indexed entities: methods, method_calls, dependencies, api_endpoints, entry_points, package_reachability, dataflow_nodes, dataflow_edges, security_signals, flows.",
         json!({
             "type": "object",
             "properties": {
@@ -463,7 +463,7 @@ fn dosai_callgraph_tool() -> serde_json::Value {
 fn dosai_flows_tool() -> serde_json::Value {
     make_tool(
         "dosai_flows",
-        "Query data-flow source-to-sink slices from the dosai dataflows report. Each slice includes source name, sink name, rule, path length, and method summary.",
+        "THE authoritative tool for reachability/taint questions in the dosai (.NET) report — 'can untrusted input reach X', injection, or whether a sink is exploitable. Each slice is a source-to-sink path with source name, sink name, rule, path length, and method summary. ripgrep CANNOT prove a path reaches a sink; this can. Reach for it whenever the user asks about vulnerabilities or how data moves, then use dosai_trace to expand a slice into its full node-by-node path.",
         json!({
             "type": "object",
             "properties": {

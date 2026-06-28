@@ -552,13 +552,39 @@ fn engine_request(ctx: &AgentCtx, call_id: &str, cmd: &str, input: &Value) -> To
             }
             ToolExecResult { call_id: call_id.into(), content, is_error: false }
         }
-        Err(e) => ToolExecResult {
-            call_id: call_id.into(),
-            content: redact_secrets(&format!("engine error: {e}")),
-            is_error: true,
-        },
+        Err(e) => {
+            let mut content = redact_secrets(&format!("engine error: {e}"));
+            // A failed DSL eval is the moment the model most needs the syntax
+            // reference. Append a compact chen-DSL cheat-sheet so it can self-
+            // correct in the same turn instead of falling back to ripgrep or
+            // burning a separate atom_traversal_docs round-trip.
+            if cmd == "eval" {
+                content.push_str(EVAL_ERROR_CHEATSHEET);
+            }
+            ToolExecResult { call_id: call_id.into(), content, is_error: true }
+        }
     }
 }
+
+/// Compact chen-DSL reference appended to `atom_dsl_eval` parser errors. Distilled
+/// from `docs/TRAVERSAL.md` + `docs/DSL_OPERATIONS.md` and real query patterns in the
+/// atom/chen test suites. Kept short so it doesn't bloat repeated error turns.
+const EVAL_ERROR_CHEATSHEET: &str = "\n\n--- chen DSL quick reference (fix the expression above) ---\n\
+Every query starts with `atom.<root>` and ends with `.toJson` (auto-appended if omitted).\n\
+Roots: method, call, literal, identifier, parameter, local, file, configFile, tag, imports, annotation, typeDecl, member, ret.\n\
+String args are REGEX, anchored with neither ^ nor $ (substring match). Use `Exact` for literal: `.nameExact(\"main\")`, `.fullNameExact(...)`.\n\
+Common steps:\n\
+  atom.method.name(\"regex\")            method defs by name (also .fullName, .filename, .signature)\n\
+  atom.method.internal / .external      app-defined vs library methods (NOT .isExternal as a step)\n\
+  atom.method.name(\"x\").caller / .callee / .callIn / .parameter / .literal\n\
+  atom.call.code(\"regex\")              call sites by source text (prefer over .name for real patterns)\n\
+  atom.call.name(\"regex\") / .methodFullName(\"regex\") / .argument\n\
+  atom.literal.code(\"regex\") / atom.identifier.typeFullName(\"regex\")\n\
+  atom.tag.name(\"sql|framework-input\") tagged nodes\n\
+Generic ops: .where(_.tag.name(\"x\")) .whereNot(...) .filter(_.isExternal==false) .dedup .take(n) .drop(n) .repeat(_.caller).times(3)\n\
+Data flow (use atom_flows, but the DSL form is): sink.reachableByFlows(source) / sink.reachableBy(source)\n\
+  where source/sink are traversals, e.g. atom.call.code(\"executeQuery\").reachableByFlows(atom.tag.name(\"framework-input\").call).toJson\n\
+If still unsure of an exact step name, call atom_traversal_docs with the root (e.g. root=\"method\") for the full list.\n";
 
 /// Returns an advisory note when an analysis-grounded engine result is empty, so
 /// the model treats the absence of data-flow/reachability evidence honestly

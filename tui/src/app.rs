@@ -437,8 +437,8 @@ impl App {
                 } else if self.flows.is_some() {
                     let len = self.flow_visible.len();
                     Some((&mut self.flow_state, len))
-                // Starter questions in the empty Output panel.
-                } else if self.non_atom && self.output.is_none() && !self.starter_questions.is_empty() {
+                // Starter questions in the empty Output panel (atom and non-atom alike).
+                } else if self.output.is_none() && !self.starter_questions.is_empty() {
                     let len = self.starter_questions.len();
                     Some((&mut self.output_state, len))
                 } else {

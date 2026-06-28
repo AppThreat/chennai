@@ -83,7 +83,7 @@ pub fn blint_tool_definitions() -> Vec<Value> {
 fn atom_traversal_docs() -> Value {
     json!({
         "name": "atom_traversal_docs",
-        "description": "Look up the chen DSL traversal reference. Returns traversal roots, step methods, and generic operations (filter, where, repeat, collect, path tracking, etc.) with examples. Use this when you need to know what queries or chain steps are available. Pass 'all' or omit to see the full index.",
+        "description": "Look up the chen DSL traversal reference: traversal roots, step methods, and generic operations (filter, where, repeat, collect, path tracking, etc.) with examples. CALL THIS FIRST before writing any non-trivial atom_dsl_eval expression, and whenever an atom_dsl_eval call returns a parser error — it is the fastest way to write a correct query instead of guessing. Cheap, always available, and one lookup typically saves several failed eval attempts. Pass 'all' or omit to see the full index.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -162,7 +162,7 @@ fn atom_dsl_eval() -> Value {
 fn atom_flows() -> Value {
     json!({
         "name": "atom_flows",
-        "description": "Compute data flows (source-to-sink paths) in the atom. Use a preset ('dataflows', 'reachables', 'cryptos'), provide a DSL expression, or specify explicit source and sink expressions. Each flow is an ordered list of steps (source -> propagation -> ... -> sink).",
+        "description": "Compute data flows (source-to-sink paths) in the atom. THIS IS THE PRIMARY TOOL for any question about reachability, taint, 'can untrusted input reach X', injection, or whether a sink is exploitable — ripgrep CANNOT answer these, only atom_flows can prove an end-to-end path. Reach for it whenever the user asks about vulnerabilities, exploitability, or how data moves through the app. Use a preset ('dataflows', 'reachables', 'cryptos'), provide a DSL expression, or specify explicit source and sink expressions. Each flow is an ordered list of steps (source -> propagation -> ... -> sink).",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -191,7 +191,7 @@ fn atom_flows() -> Value {
 fn atom_flows_through() -> Value {
     json!({
         "name": "atom_flows_through",
-        "description": "Find data flows that pass through (or exclude) specific method calls, files, or code patterns. Returns only flows where at least one step matches the 'passesThrough' pattern and no step matches 'doesNotPassThrough'. Use this after identifying a potential vulnerability to find all end-to-end paths that go through the suspicious method.",
+        "description": "Find data flows that pass through (or exclude) specific method calls, files, or code patterns. Returns only flows where at least one step matches the 'passesThrough' pattern and no step matches 'doesNotPassThrough'. Use this whenever you have a suspect method/sink (e.g. from atom_query or ripgrep) and need to confirm it is actually on a tainted path — it turns a name match into proven reachability, and 'doesNotPassThrough' lets you rule out sanitized flows. Prefer this over re-running ripgrep to 'check' a finding.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -249,7 +249,7 @@ fn atom_detail() -> Value {
 fn atom_algorithms() -> Value {
     json!({
         "name": "atom_algorithms",
-        "description": "Run graph algorithms on the atom's call graph or dependency graph. Returns a table of results.\n\nAlgorithms:\n- pagerank (scope: callgraph): rank methods by centrality; use to find 'hottest' / most important methods.\n- scc (scope: callgraph): find strongly connected components (recursive call cycles).\n- toposort (scope: callgraph): topological sort of methods; use for build/ordering analysis.\n- dominators (scope: callgraph): compute immediate dominators on the call graph; use to find 'must-pass-through' gates (e.g. is auth a dominator of a sink?).\n- shortest-path: shortest call-chain between two methods; use 'from' (method fullName) and 'to' (method fullName).\n- reachable-by: tag-based reachability via dataflow engine; use 'sourceTag' and 'sinkTag'.",
+        "description": "Run graph algorithms on the atom's call graph or dependency graph. Returns a table of results. Reach for this on structural questions that text search cannot answer: 'what are the most important/central methods' (pagerank), 'what is the blast radius / what calls into X' or 'is auth always on the path to this sink' (dominators, shortest-path, reachable-by), recursion/cycles (scc), or build/order analysis (toposort).\n\nAlgorithms:\n- pagerank (scope: callgraph): rank methods by centrality; use to find 'hottest' / most important methods.\n- scc (scope: callgraph): find strongly connected components (recursive call cycles).\n- toposort (scope: callgraph): topological sort of methods; use for build/ordering analysis.\n- dominators (scope: callgraph): compute immediate dominators on the call graph; use to find 'must-pass-through' gates (e.g. is auth a dominator of a sink?).\n- shortest-path: shortest call-chain between two methods; use 'from' (method fullName) and 'to' (method fullName).\n- reachable-by: tag-based reachability via dataflow engine; use 'sourceTag' and 'sinkTag'.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -294,7 +294,7 @@ fn atom_algorithms() -> Value {
 fn ripgrep_tool() -> Value {
     json!({
         "name": "ripgrep",
-        "description": "Search source code with ripgrep (rg) using a regex pattern. Returns matching file:line matches with surrounding context. Confined to the project source root.",
+        "description": "FALLBACK text search (regex) over raw source files. Prefer the structured analysis tools first — the atom_* tools (atom mode) or the rusi_*/golem_*/dosai_*/blint_* tools (non-atom mode): they locate calls, methods, and tags structurally, and their flow/dataflow tools prove reachability, whereas a ripgrep match is only a text hit and is weaker evidence. Use ripgrep ONLY when: (1) those tools have been tried and lack the data you need, (2) you need to grep non-code/config/comment text they don't model, or (3) you need a quick literal-string locate before drilling in with a detail tool. Do NOT use ripgrep to 'double-check' a structured-analysis result. Confined to the project source root.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -324,7 +324,7 @@ fn ripgrep_tool() -> Value {
 fn read_file_tool() -> Value {
     json!({
         "name": "read_file",
-        "description": "Read the contents of a source file from the project. Path is relative to the project source root. Optionally specify start and end line numbers to read a range.",
+        "description": "Read raw source lines from a file. Use this to pull a short snippet of surrounding context AFTER a structured-analysis tool has located the file:line of interest (e.g. confirming the code around a flow step or a flagged call). Prefer a detail tool (atom_detail, or <backend>_detail) for a node's signature, location, and call-graph neighbors; reach for read_file only when you need adjacent lines those tools don't expose. Path is relative to the project source root; optionally specify start and end line numbers.",
         "input_schema": {
             "type": "object",
             "properties": {

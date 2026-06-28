@@ -220,7 +220,7 @@ fn rusi_endpoints_tool() -> serde_json::Value {
 fn rusi_summary_tool() -> serde_json::Value {
     json!({
         "name": "rusi_summary",
-        "description": "Return the summary of the rusi analysis report: packages, files, imports, declarations, usages, security signals, call graph, data flow, and crypto counts.",
+        "description": "Return the summary of the rusi (Rust) analysis report: packages, files, imports, declarations, usages, security signals, call graph, data flow, and crypto counts. Call this FIRST to orient — the counts tell you which categories of evidence exist so you know which tool to reach for next (e.g. whether there are any flows/endpoints worth investigating).",
         "input_schema": {
             "type": "object",
             "properties": {},
@@ -232,7 +232,7 @@ fn rusi_summary_tool() -> serde_json::Value {
 fn rusi_query_tool() -> serde_json::Value {
     json!({
         "name": "rusi_query",
-        "description": "Query the rusi analysis report for indexed entities. Use this to find packages, files, imports, declarations, usages (calls), security signals, callgraph, dataflow, or crypto evidence. The pattern parameter does a case-insensitive substring match against names, paths, and relevant fields.",
+        "description": "Primary structured entry point for the rusi (Rust) report — prefer it over ripgrep for finding any indexed entity, since results carry exact file:line, package, and PURL rather than raw text hits. Use it to find packages, files, imports, declarations, usages (calls), security signals, callgraph, dataflow, or crypto evidence. The pattern parameter does a case-insensitive substring match against names, paths, and relevant fields.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -282,7 +282,7 @@ fn rusi_callgraph_tool() -> serde_json::Value {
 fn rusi_flows_tool() -> serde_json::Value {
     json!({
         "name": "rusi_flows",
-        "description": "Query data-flow source-to-sink slices from the rusi report. Each slice represents a proven taint path from a source (e.g., env, file, http-request, crypto-material) to a sink (e.g., process-exec, sql-query, network-request). Pass an optional pattern to filter by source name, sink name, or rule name.",
+        "description": "THE authoritative tool for reachability/taint questions in the rusi (Rust) report — 'can untrusted input reach X', injection, or whether a sink is exploitable. Each slice is a proven taint path from a source (e.g., env, file, http-request, crypto-material) to a sink (e.g., process-exec, sql-query, network-request). ripgrep CANNOT prove a path reaches a sink; this can. Reach for it whenever the user asks about vulnerabilities or how data moves. Pass an optional pattern to filter by source name, sink name, or rule name.",
         "input_schema": {
             "type": "object",
             "properties": {

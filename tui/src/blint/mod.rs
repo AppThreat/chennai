@@ -73,9 +73,10 @@ impl BlintCtx {
                 limit,
             ),
             "security_properties" => query::query_security_properties(&self.reports.metadata.report),
-            "callgraph" => query::query_callgraph(&self.reports.metadata.report),
+            "callgraph" => query::query_callgraph(&self.reports.metadata.report, &self.reports.extra_callgraphs, pattern, limit),
+            "disassembly" => query::query_disassembly(&self.reports.metadata.report, pattern, limit),
             _ => format!(
-                "Unknown query kind '{kind}'. Valid kinds: capabilities, findings, symbols, strings, components, behaviours, security_properties, callgraph"
+                "Unknown query kind '{kind}'. Valid kinds: capabilities, findings, symbols, strings, components, behaviours, security_properties, callgraph, disassembly"
             ),
         }
     }
@@ -194,7 +195,8 @@ Blint performs **static analysis** of compiled binaries. Its outputs show:
 - blint_components: Query SBOM components and dependencies by name or PURL.
 - blint_behaviours: Query detected behaviours (Android Dalvik, iOS privacy surface).
 - blint_strings: Query informative/high-entropy strings (URLs, secrets, paths).
-- blint_callgraph: Query the disassembly-based call graph (when available).
+- blint_callgraph: Query the disassembly-based call graph (caller → callee, with kind/confidence). Spans all formats — inline for ELF/PE/Mach-O/WASM, the Dalvik graph for APKs, and the merged per-binary Mach-O graphs for IPAs. Use for 'what calls X' / 'what does X reach' / blast-radius questions. Needs --disassemble.
+- blint_disassembly: Query disassembled functions — per-function instruction metrics, function-type, behaviour flags (indirect-call, syscall, crypto, gpu, loop, pac), and resolved direct callees. Use for instruction-level / behavioural questions about specific functions. Needs --disassemble.
 - bom_query: Query the CycloneDX SBOM for dependency information.
 - ripgrep / read_file: Read source file content. Last resort; use blint tools listed above first.
 
@@ -206,9 +208,10 @@ Blint performs **static analysis** of compiled binaries. Its outputs show:
 5. Use blint_components to review third-party dependencies and their versions.
 6. For Android APKs, use blint_behaviours to find Dalvik-level behavioural issues.
 7. Use blint_strings to discover URLs, hardcoded secrets, and paths.
+8. When disassembly is available, use blint_callgraph to trace what reaches a capability/sink (works for native binaries, APK Dalvik, and every Mach-O inside an IPA) and blint_disassembly to inspect a specific function's behaviour flags and callees.
 
 ## Grounding rules
-1. **Tool priority**: Use blint tools FIRST for every query (blint_capabilities, blint_findings, blint_symbols, blint_components, blint_behaviours, blint_strings, blint_callgraph). Only use ripgrep or read_file when no blint tool answers the question. A ripgrep result is weaker evidence than a blint tool result.
+1. **Tool priority**: Use blint tools FIRST for every query (blint_capabilities, blint_findings, blint_symbols, blint_components, blint_behaviours, blint_strings, blint_callgraph, blint_disassembly). Only use ripgrep or read_file when no blint tool answers the question. A ripgrep result is weaker evidence than a blint tool result.
 2. **Capabilities/symbols are static evidence of presence, NOT proof of execution.** Do not assert that a capability is reachable without a call-graph path or source evidence.
 3. If a binary is **stripped**, note that symbol confidence is lower and many function names may be unavailable.
 4. For binary hardening findings, report the property status (yes/no/partial) and explain the concrete risk.
@@ -235,13 +238,14 @@ pub fn blint_tool_definitions() -> Vec<serde_json::Value> {
         blint_behaviours_tool(),
         blint_strings_tool(),
         blint_callgraph_tool(),
+        blint_disassembly_tool(),
     ]
 }
 
 fn blint_summary_tool() -> serde_json::Value {
     make_tool(
         "blint_summary",
-        "Return the summary of the blint binary analysis: architecture, platform, file type, functions, symbols, imports/exports, security findings, capabilities, and SBOM component counts.",
+        "Return the summary of the blint binary analysis: architecture, platform, file type, functions, symbols, imports/exports, security findings, capabilities, and SBOM component counts. Call this FIRST to orient — it tells you the binary's type/platform and which categories of evidence exist (capabilities, findings, behaviours, components) so you know which tool to reach for next. Note: this is a compiled artifact, not source — there is no data-flow/reachability evidence; reason from symbols and capabilities, not taint paths.",
         json!({ "type": "object", "properties": {}, "required": [] }),
     )
 }
@@ -249,7 +253,7 @@ fn blint_summary_tool() -> serde_json::Value {
 fn blint_capabilities_tool() -> serde_json::Value {
     make_tool(
         "blint_capabilities",
-        "Query capability evidence from the blint binary review. Each capability (e.g., Command Execution, Network Access, Crypto) lists the evidence symbols that triggered it. Use this to understand what the binary CAN do at the API/symbol level.",
+        "START HERE for 'what can this binary do' / 'is it dangerous' questions. Returns capability evidence from the blint review: each capability (e.g., Command Execution, Network Access, Crypto) lists the evidence symbols that triggered it. This is the binary-analysis equivalent of finding dangerous calls — it grounds claims about behaviour in actual imported/used symbols rather than guesses. For raw symbol lookups use blint_symbols; for hardening posture use blint_findings.",
         json!({
             "type": "object",
             "properties": {
@@ -271,7 +275,7 @@ fn blint_capabilities_tool() -> serde_json::Value {
 fn blint_findings_tool() -> serde_json::Value {
     make_tool(
         "blint_findings",
-        "Query binary hardening findings from blint. Reports issues like missing PIE, NX, RELRO, stack canary, or CFG with severity ratings.",
+        "Use this for binary hardening-posture questions ('is it hardened', 'what protections are missing'). Reports issues like missing PIE, NX, RELRO, stack canary, or CFG with severity ratings. Distinct from blint_capabilities (what the binary can do) — findings are about how well it was compiled/protected.",
         json!({
             "type": "object",
             "properties": {
@@ -383,8 +387,44 @@ fn blint_strings_tool() -> serde_json::Value {
 fn blint_callgraph_tool() -> serde_json::Value {
     make_tool(
         "blint_callgraph",
-        "Query the call graph generated from disassembly (when --disassemble was enabled). Shows function call relationships within the binary.",
-        json!({ "type": "object", "properties": {}, "required": [] }),
+        "Query the static call graph blint recovers from disassembly (requires --disassemble). Works across ALL binary formats — ELF/PE/Mach-O/WASM carry it inline, Android APKs get a Dalvik-bytecode call graph, and iOS IPAs get one graph per embedded Mach-O (main executable, frameworks, dylibs, app extensions) which this tool merges. Edges are shown as resolved 'caller → callee' function names (not raw ids), tagged with kind (direct / tailcall / indirect_hint) and confidence where available — treat indirect_hint as a hint, not proof. Use this to answer 'what calls X', 'what does X reach', entry-point/blast-radius, and dispatch questions. Pass a pattern to filter edges to a function name. For per-function instruction-level detail (mnemonics, indirect/syscall/crypto flags) use blint_disassembly instead.",
+        json!({
+            "type": "object",
+            "properties": {
+                "pattern": {
+                    "type": "string",
+                    "description": "Optional case-insensitive function-name filter; keeps only edges whose caller or callee matches"
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum edges to show per graph (default: 50, max: 500)",
+                    "default": 50,
+                    "maximum": 500
+                }
+            }
+        }),
+    )
+}
+
+fn blint_disassembly_tool() -> serde_json::Value {
+    make_tool(
+        "blint_disassembly",
+        "Query blint's disassembled functions (requires --disassemble; for APKs this is Dalvik bytecode, for binaries/IPAs it is native machine code via the nyxstone disassembler). For each matching function returns its instruction count, function-type classification (e.g. PLT_Thunk, Has_Syscalls, Has_Indirect_Calls), behaviour flags (indirect-call, syscall, crypto, gpu, loop, pac), and its resolved direct callees. Use this for instruction-level / behavioural questions about specific functions ('does this function make crypto or syscalls', 'which functions have indirect calls or loops', 'what does function X call') — it grounds claims in decoded mnemonics rather than symbol names alone. Pass a pattern to filter by function name; results are ordered most-instructions-first.",
+        json!({
+            "type": "object",
+            "properties": {
+                "pattern": {
+                    "type": "string",
+                    "description": "Optional case-insensitive function-name filter"
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum functions to show (default: 50, max: 500)",
+                    "default": 50,
+                    "maximum": 500
+                }
+            }
+        }),
     )
 }
 
@@ -420,6 +460,7 @@ mod tests {
             fuzzables: None,
             sbom: None,
             callgraph_path: None,
+            extra_callgraphs: Vec::new(),
             artifact_type: "ELF".to_string(),
         };
         BlintCtx { reports, artifact_path: "/tmp/test.elf".to_string() }
@@ -473,7 +514,8 @@ mod tests {
         assert!(names.contains(&"blint_behaviours"));
         assert!(names.contains(&"blint_strings"));
         assert!(names.contains(&"blint_callgraph"));
-        assert_eq!(defs.len(), 8);
+        assert!(names.contains(&"blint_disassembly"));
+        assert_eq!(defs.len(), 9);
     }
 
     #[test]
