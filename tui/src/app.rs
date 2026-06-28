@@ -10,6 +10,8 @@ use crate::model::{Flow, FlowSet, NodeDetail, ResultTable, StarterQuestion, Summ
 use crate::repl::Repl;
 use crate::shared::backend::Backend;
 
+use serde_json::Value;
+
 use ratatui::layout::Rect;
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
@@ -797,26 +799,60 @@ impl App {
     }
 
     /// Send a `flows` request and install the returned flow set as the Output master/detail view.
+    /// Falls back to the backend query when the atom engine is not available (non-atom mode).
     fn dispatch_flows(&mut self, args: serde_json::Value) -> (bool, String) {
-        let result = {
-            let Some(ref engine_arc) = self.engine else {
-                return (false, "engine not available".into());
-            };
+        // Atom engine path.
+        if self.engine.is_some() {
+            let engine_arc = self.engine.as_ref().unwrap().clone();
             let mut engine = engine_arc.lock().unwrap();
-            engine.request::<FlowSet>("flows", args)
-        };
-        match result {
-            Ok(fs) => {
-                let status = format!("{}: {} flow(s)", fs.title, fs.total);
-                self.flows = Some(fs);
-                self.output = None;
-                self.flow_state = ListState::default();
-                self.flow_detail_scroll = 0;
-                self.recompute_flow_visible();
-                (true, status)
+            match engine.request::<FlowSet>("flows", args) {
+                Ok(fs) => {
+                    let status = format!("{}: {} flow(s)", fs.title, fs.total);
+                    self.flows = Some(fs);
+                    self.output = None;
+                    self.flow_state = ListState::default();
+                    self.flow_detail_scroll = 0;
+                    self.recompute_flow_visible();
+                    return (true, status);
+                }
+                Err(e) => return (false, format!("flows failed: {e}")),
             }
-            Err(e) => (false, format!("flows failed: {e}")),
         }
+
+        // Backend fallback (non-atom mode).
+        let (result, title) = {
+            let backend = match self.backend.as_ref() {
+                Some(b) => b,
+                None => return (false, "engine not available".into()),
+            };
+            let preset = args.get("preset").and_then(Value::as_str).unwrap_or("dataflows");
+            let (kind, t) = match preset {
+                "dataflows" => ("dataflow", "Data Flows"),
+                "reachables" => ("flows", "Reachable Flows"),
+                "cryptos" => ("crypto", "Crypto Usage"),
+                "callgraph" => ("callgraph", "Call Graph"),
+                _ => ("dataflow", "Results"),
+            };
+            (backend.query(kind, None, 200), t.to_string())
+        };
+        let rows: Vec<Vec<crate::model::Cell>> = result
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(|l| vec![crate::model::Cell { v: l.to_string(), k: String::new() }])
+            .collect();
+        let total = rows.len() as i64;
+        let status = format!("{}: {} items", title, total);
+        let table = ResultTable {
+            title,
+            columns: vec![String::new()],
+            rows,
+            total,
+            offset: 0,
+        };
+        self.output = Some(table);
+        self.flows = None;
+        self.flow_state = ListState::default();
+        (true, status)
     }
 
 
@@ -1536,6 +1572,7 @@ impl App {
         for entry in self.agent_transcript.iter().rev() {
             if let AgentEntry::ToolCall { name, result, is_error, .. } = entry {
                 if *is_error { continue; }
+                // Atom engine flow result — deserialize into FlowSet.
                 if name == "atom_flows" || name == "atom_flows_through" {
                     if let Some(res) = result
                         && let Ok(fs) = serde_json::from_str::<FlowSet>(res) {
@@ -1544,6 +1581,29 @@ impl App {
                             self.flow_state = ListState::default();
                             self.flow_detail_scroll = 0;
                         }
+                    break;
+                }
+                // Backend flow result (golem_flows, rusi_flows, etc.) — show text in output panel.
+                if name.ends_with("_flows") || name.ends_with("_callgraph") {
+                    if let Some(res) = result {
+                        let title = name.replace('_', " ").to_uppercase();
+                        let rows: Vec<Vec<crate::model::Cell>> = res
+                            .lines()
+                            .filter(|l| !l.trim().is_empty())
+                            .map(|l| vec![crate::model::Cell { v: l.to_string(), k: String::new() }])
+                            .collect();
+                        let total = rows.len() as i64;
+                        let table = ResultTable {
+                            title,
+                            columns: vec![String::new()],
+                            rows,
+                            total,
+                            offset: 0,
+                        };
+                        self.output = Some(table);
+                        self.flows = None;
+                        self.flow_state = ListState::default();
+                    }
                     break;
                 }
             }

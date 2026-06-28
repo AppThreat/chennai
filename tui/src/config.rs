@@ -161,10 +161,21 @@ mod tests {
     #[test]
     fn load_with_cli_overrides() {
         // Without env var, config loading gracefully produces disabled config.
+        let prev_anthropic = std::env::var("ANTHROPIC_API_KEY").ok();
+        let prev_openai = std::env::var("OPENAI_API_KEY").ok();
+        unsafe {
+            std::env::remove_var("ANTHROPIC_API_KEY");
+            std::env::remove_var("OPENAI_API_KEY");
+        }
         let cfg = Config::load(Some("openai"), Some("gpt-4o"), None);
         assert_eq!(cfg.provider, ProviderKind::OpenAI);
         assert_eq!(cfg.model, "gpt-4o");
         assert!(!cfg.enabled);
+        // Restore env vars.
+        unsafe {
+            if let Some(k) = prev_anthropic { std::env::set_var("ANTHROPIC_API_KEY", k); }
+            if let Some(k) = prev_openai { std::env::set_var("OPENAI_API_KEY", k); }
+        }
     }
 
     #[test]
