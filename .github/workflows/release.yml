@@ -94,10 +94,10 @@ jobs:
       - name: Create release archive
         if: startsWith(github.ref, 'refs/tags/')
         run: |
-          mkdir -p staging
-          cp chennai-amd64 staging/chennai
-          cp chennai-engine-amd64 staging/chennai-engine
-          tar czf chennai-linux-amd64.tar.gz staging
+          mkdir -p standalone
+          cp chennai-amd64 standalone/chennai
+          cp chennai-engine-amd64 standalone/chennai-engine
+          tar czf chennai-linux-amd64.tar.gz -C standalone .
           shasum -a 256 chennai-linux-amd64.tar.gz > chennai-linux-amd64.tar.gz.sha256
       - name: Upload to GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
@@ -181,10 +181,10 @@ jobs:
       - name: Create release archive
         if: startsWith(github.ref, 'refs/tags/')
         run: |
-          mkdir -p staging
-          cp chennai-arm64 staging/chennai
-          cp chennai-engine-arm64 staging/chennai-engine
-          tar czf chennai-linux-arm64.tar.gz staging
+          mkdir -p standalone
+          cp chennai-arm64 standalone/chennai
+          cp chennai-engine-arm64 standalone/chennai-engine
+          tar czf chennai-linux-arm64.tar.gz -C standalone .
           shasum -a 256 chennai-linux-arm64.tar.gz > chennai-linux-arm64.tar.gz.sha256
       - name: Upload to GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
@@ -256,10 +256,10 @@ jobs:
       - name: Create release archive
         if: startsWith(github.ref, 'refs/tags/')
         run: |
-          mkdir -p staging
-          cp chennai-musl-amd64 staging/chennai
-          cp chennai-engine-musl-amd64 staging/chennai-engine
-          tar czf chennai-linux-amd64-musl.tar.gz staging
+          mkdir -p standalone
+          cp chennai-musl-amd64 standalone/chennai
+          cp chennai-engine-musl-amd64 standalone/chennai-engine
+          tar czf chennai-linux-amd64-musl.tar.gz -C standalone .
           shasum -a 256 chennai-linux-amd64-musl.tar.gz > chennai-linux-amd64-musl.tar.gz.sha256
       - name: Upload to GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
@@ -339,10 +339,10 @@ jobs:
       - name: Create release archive
         if: startsWith(github.ref, 'refs/tags/')
         run: |
-          mkdir -p staging
-          cp chennai-darwin-arm64 staging/chennai
-          cp chennai-engine-darwin-arm64 staging/chennai-engine
-          tar czf chennai-darwin-arm64.tar.gz staging
+          mkdir -p standalone
+          cp chennai-darwin-arm64 standalone/chennai
+          cp chennai-engine-darwin-arm64 standalone/chennai-engine
+          tar czf chennai-darwin-arm64.tar.gz -C standalone .
           shasum -a 256 chennai-darwin-arm64.tar.gz > chennai-darwin-arm64.tar.gz.sha256
       - name: Upload to GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
@@ -428,10 +428,10 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force -Path staging
-          Copy-Item chennai-win-amd64.exe staging/chennai.exe
-          Copy-Item chennai-engine-win-amd64.exe staging/chennai-engine.exe
-          Compress-Archive -Path staging -DestinationPath chennai-windows-amd64.zip -Force
+          New-Item -ItemType Directory -Force -Path standalone
+          Copy-Item chennai-win-amd64.exe standalone/chennai.exe
+          Copy-Item chennai-engine-win-amd64.exe standalone/chennai-engine.exe
+          Compress-Archive -Path standalone/* -DestinationPath chennai-windows-amd64.zip -Force
           $hash = (Get-FileHash -Algorithm SHA256 chennai-windows-amd64.zip).Hash.ToLower()
           Set-Content -Path chennai-windows-amd64.zip.sha256 -Value "$hash  chennai-windows-amd64.zip"
       - name: Upload to GitHub Release
@@ -614,6 +614,37 @@ jobs:
 
           echo "Publishing parent @appthreat/chennai..."
           (cd packages/chennai && npm publish --provenance --access=public)
+
+  # ──────────────────────────────────────────────────────────────
+  # Update Homebrew formula with release SHAs
+  # ──────────────────────────────────────────────────────────────
+  update-homebrew:
+    name: Update Homebrew formula
+    runs-on: ubuntu-24.04
+    needs: npm-publish
+    if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          repository: appthreat/homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+      - name: Update formula with release SHAs
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          sed -i "s/  version \".*\"/  version \"${VERSION}\"/" Formula/chennai.rb
+          for arch in darwin-arm64 linux-arm64 linux-amd64; do
+            sha=$(curl -sL "https://github.com/AppThreat/chennai/releases/download/${{ github.ref_name }}/chennai-${arch}.tar.gz.sha256" | cut -d' ' -f1)
+            sed -i "/url.*chennai-${arch}.tar.gz/{n;s/sha256 \".*\"/sha256 \"${sha}\"/;}" Formula/chennai.rb
+          done
+      - name: Commit and push
+        run: |
+          git config user.name "AppThreat Bot"
+          git config user.email "bot@appthreat.com"
+          git add Formula/chennai.rb
+          git commit -m "chennai ${{ github.ref_name }}"
+          git push
 
   # ──────────────────────────────────────────────────────────────
   # Post-publish smoke tests across platforms

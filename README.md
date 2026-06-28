@@ -22,10 +22,29 @@ chennai includes a built-in AI agent that uses atom as grounding context. The ag
 
 ## Installation
 
-chennai is distributed as an npm package with platform-specific native binaries.
+### Homebrew (macOS arm64, Linux amd64/arm64)
+
+```
+brew tap appthreat/tap
+brew trust --tap appthreat/tap   # only needed if HOMEBREW_REQUIRE_TAP_TRUST is set
+brew install chennai
+```
+
+### npm (all platforms)
 
 ```
 npm install -g @appthreat/chennai
+```
+
+### Direct download (any platform)
+
+Download the archive for your platform from the [releases page](https://github.com/AppThreat/chennai/releases), extract it, and add the `chennai` and `chennai-engine` binaries to your PATH:
+
+```bash
+# Example for macOS arm64
+curl -sL https://github.com/AppThreat/chennai/releases/latest/download/chennai-darwin-arm64.tar.gz | tar xz
+sudo chmod +x chennai chennai-engine
+sudo cp chennai chennai-engine /usr/local/bin/
 ```
 
 After installation the `chennai` command is available globally.
