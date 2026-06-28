@@ -91,6 +91,22 @@ jobs:
             chennai-amd64
             chennai-engine-amd64
 
+      - name: Create release archive
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          mkdir -p chennai-linux-amd64
+          cp chennai-amd64 chennai-linux-amd64/chennai
+          cp chennai-engine-amd64 chennai-linux-amd64/chennai-engine
+          tar czf chennai-linux-amd64.tar.gz chennai-linux-amd64
+          shasum -a 256 chennai-linux-amd64.tar.gz > chennai-linux-amd64.tar.gz.sha256
+      - name: Upload to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create ${{ github.ref_name }} --notes "" --verify-tag 2>/dev/null || true
+          gh release upload ${{ github.ref_name }} chennai-linux-amd64.tar.gz chennai-linux-amd64.tar.gz.sha256 --clobber
+
   # ──────────────────────────────────────────────────────────────
   # Linux arm64 (glibc): engine native-image + TUI (Rust)
   # ──────────────────────────────────────────────────────────────
@@ -162,6 +178,22 @@ jobs:
             chennai-arm64
             chennai-engine-arm64
 
+      - name: Create release archive
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          mkdir -p chennai-linux-arm64
+          cp chennai-arm64 chennai-linux-arm64/chennai
+          cp chennai-engine-arm64 chennai-linux-arm64/chennai-engine
+          tar czf chennai-linux-arm64.tar.gz chennai-linux-arm64
+          shasum -a 256 chennai-linux-arm64.tar.gz > chennai-linux-arm64.tar.gz.sha256
+      - name: Upload to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create ${{ github.ref_name }} --notes "" --verify-tag 2>/dev/null || true
+          gh release upload ${{ github.ref_name }} chennai-linux-arm64.tar.gz chennai-linux-arm64.tar.gz.sha256 --clobber
+
   # ──────────────────────────────────────────────────────────────
   # Linux amd64 (musl): engine native-image (musl) + TUI (Rust)
   # ──────────────────────────────────────────────────────────────
@@ -220,6 +252,22 @@ jobs:
           path: |
             chennai-musl-amd64
             chennai-engine-musl-amd64
+
+      - name: Create release archive
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          mkdir -p chennai-linux-amd64-musl
+          cp chennai-musl-amd64 chennai-linux-amd64-musl/chennai
+          cp chennai-engine-musl-amd64 chennai-linux-amd64-musl/chennai-engine
+          tar czf chennai-linux-amd64-musl.tar.gz chennai-linux-amd64-musl
+          shasum -a 256 chennai-linux-amd64-musl.tar.gz > chennai-linux-amd64-musl.tar.gz.sha256
+      - name: Upload to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create ${{ github.ref_name }} --notes "" --verify-tag 2>/dev/null || true
+          gh release upload ${{ github.ref_name }} chennai-linux-amd64-musl.tar.gz chennai-linux-amd64-musl.tar.gz.sha256 --clobber
 
   # ──────────────────────────────────────────────────────────────
   # Darwin arm64 (macOS Apple Silicon): engine native-image + TUI
@@ -287,6 +335,22 @@ jobs:
           path: |
             chennai-darwin-arm64
             chennai-engine-darwin-arm64
+
+      - name: Create release archive
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          mkdir -p chennai-darwin-arm64
+          cp chennai-darwin-arm64 chennai-darwin-arm64/chennai
+          cp chennai-engine-darwin-arm64 chennai-darwin-arm64/chennai-engine
+          tar czf chennai-darwin-arm64.tar.gz chennai-darwin-arm64
+          shasum -a 256 chennai-darwin-arm64.tar.gz > chennai-darwin-arm64.tar.gz.sha256
+      - name: Upload to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create ${{ github.ref_name }} --notes "" --verify-tag 2>/dev/null || true
+          gh release upload ${{ github.ref_name }} chennai-darwin-arm64.tar.gz chennai-darwin-arm64.tar.gz.sha256 --clobber
 
   # ──────────────────────────────────────────────────────────────
   # Windows amd64: engine native-image + TUI (Rust MSVC)
@@ -359,6 +423,24 @@ jobs:
           path: |
             chennai-win-amd64.exe
             chennai-engine-win-amd64.exe
+
+      - name: Create release archive
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path chennai-windows-amd64
+          Copy-Item chennai-win-amd64.exe chennai-windows-amd64/chennai.exe
+          Copy-Item chennai-engine-win-amd64.exe chennai-windows-amd64/chennai-engine.exe
+          Compress-Archive -Path chennai-windows-amd64 -DestinationPath chennai-windows-amd64.zip -Force
+          $hash = (Get-FileHash -Algorithm SHA256 chennai-windows-amd64.zip).Hash.ToLower()
+          Set-Content -Path chennai-windows-amd64.zip.sha256 -Value "$hash  chennai-windows-amd64.zip"
+      - name: Upload to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create ${{ github.ref_name }} --notes "" --verify-tag 2>/dev/null || true
+          gh release upload ${{ github.ref_name }} chennai-windows-amd64.zip chennai-windows-amd64.zip.sha256 --clobber
 
   # ──────────────────────────────────────────────────────────────
   # NPM Publish: assemble all packages and publish
