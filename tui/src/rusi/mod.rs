@@ -109,6 +109,8 @@ Key components:
         })
         .unwrap_or_default();
 
+    let identity_rules = crate::shared::backend::PROJECT_IDENTITY_RULES;
+
     format!(
         r#"You are chennai, an AI-powered code & security analysis agent. You are analyzing a Rust codebase using a structured analysis report produced by the Rust Source Inspector (rusi) tool — not over your training prior.
 
@@ -170,6 +172,8 @@ Libraries: path, family (hash, aead, kdf, protocol, etc.)
 Components: kind, algorithm, provider, operation
 Materials: kind (key, nonce, token, salt), name
 Findings: category, severity, summary
+
+{identity_rules}
 
 ## Grounding rules (this is the whole point of chennai)
 1. NEVER invent call graphs, data flows, taints, sinks, or security findings. Every claim must trace to a tool result. If you cannot trace it, say so explicitly.

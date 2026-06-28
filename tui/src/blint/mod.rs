@@ -165,6 +165,8 @@ Key components:
         })
         .unwrap_or_default();
 
+    let identity_rules = crate::shared::backend::PROJECT_IDENTITY_RULES;
+
     format!(
         r#"You are chennai, an AI-powered code & security analysis agent. You are analyzing a binary / APK / IPA artifact using the blint tool — not over your training prior.
 
@@ -209,6 +211,8 @@ Blint performs **static analysis** of compiled binaries. Its outputs show:
 6. For Android APKs, use blint_behaviours to find Dalvik-level behavioural issues.
 7. Use blint_strings to discover URLs, hardcoded secrets, and paths.
 8. When disassembly is available, use blint_callgraph to trace what reaches a capability/sink (works for native binaries, APK Dalvik, and every Mach-O inside an IPA) and blint_disassembly to inspect a specific function's behaviour flags and callees.
+
+{identity_rules}
 
 ## Grounding rules
 1. **Tool priority**: Use blint tools FIRST for every query (blint_capabilities, blint_findings, blint_symbols, blint_components, blint_behaviours, blint_strings, blint_callgraph, blint_disassembly). Only use ripgrep or read_file when no blint tool answers the question. A ripgrep result is weaker evidence than a blint tool result.

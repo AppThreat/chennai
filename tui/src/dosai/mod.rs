@@ -298,6 +298,8 @@ Key components:
         })
         .unwrap_or_default();
 
+    let identity_rules = crate::shared::backend::PROJECT_IDENTITY_RULES;
+
     format!(
         r#"You are chennai, an AI-powered code & security analysis agent. You are analyzing a .NET codebase using structured analysis reports produced by the dosai tool — not over your training prior.
 
@@ -340,6 +342,8 @@ The dosai methods report (optional) contains:
 - Methods: Name, ClassName, Namespace, SourceSignature, FileName, LineNumber, Assembly
 - MethodCalls: ClassName (caller), CalledMethod (callee), FileName, LineNumber
 - ApiEndpoints: Route, HttpMethod, MethodName, AllowAnonymous, AuthorizationRequired
+
+{identity_rules}
 
 ## Grounding rules
 1. NEVER invent call graphs, data flows, taints, sinks, or security findings.
