@@ -167,11 +167,12 @@ fn render_summary_collapsed(frame: &mut Frame, app: &mut App, theme: &Theme, are
 
 fn render_repl(frame: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
     let focused = app.focus == Panel::Repl;
-    let block = panel_block(
-        " REPL (Enter to run, ↑/↓ history) ".to_string(),
-        focused,
-        theme,
-    );
+    let title = if app.agent_enabled {
+        " Ask agent (Enter to ask, ↑/↓ history) ".to_string()
+    } else {
+        " REPL (Enter to run, ↑/↓ history) ".to_string()
+    };
+    let block = panel_block(title, focused, theme);
     let inner = block.inner(area);
     frame.render_widget(block, area);
     if inner.height == 0 {

@@ -8,6 +8,7 @@ use serde_json::{json, Value};
 /// Return the full set of tool definitions sent to the LLM on every turn.
 pub fn all_tool_definitions() -> Vec<Value> {
     vec![
+        atom_traversal_docs(),
         atom_summary(),
         atom_query(),
         atom_dsl_eval(),
@@ -25,6 +26,23 @@ pub fn all_tool_definitions() -> Vec<Value> {
 }
 
 // Tool definitions for atom (engine) operations.
+
+fn atom_traversal_docs() -> Value {
+    json!({
+        "name": "atom_traversal_docs",
+        "description": "Look up the chen DSL traversal reference. Returns traversal roots, step methods, and generic operations (filter, where, repeat, collect, path tracking, etc.) with examples. Use this when you need to know what queries or chain steps are available. Pass 'all' or omit to see the full index.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "root": {
+                    "type": "string",
+                    "description": "Topic to look up. Traversal roots: 'method', 'call', 'tag', 'file', 'literal', 'annotation', 'imports', 'typeDecl', etc. Generic operations: 'filter', 'where', 'repeat', 'transform', 'combine', 'dedup', 'flow', 'path', etc. Use 'all' to list every available topic."
+                }
+            },
+            "required": []
+        }
+    })
+}
 
 fn atom_summary() -> Value {
     json!({

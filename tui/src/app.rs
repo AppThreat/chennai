@@ -1395,6 +1395,48 @@ impl App {
             self.agent_auto_scroll = true;
         }
     }
+
+    /// Build a condensed console-history string from recent REPL entries and the current
+    /// output/flow result, for inclusion in the agent's system prompt.
+    pub fn build_console_history(&self) -> String {
+        const MAX_ENTRIES: usize = 5;
+        let entries = &self.repl.entries;
+        if entries.is_empty() && self.output.is_none() && self.flows.is_none() {
+            return String::new();
+        }
+
+        let mut lines: Vec<String> = Vec::new();
+        let start = entries.len().saturating_sub(MAX_ENTRIES);
+        for (i, e) in entries[start..].iter().enumerate() {
+            let idx = start + i + 1;
+            lines.push(format!("[{idx}] {inp}", inp = e.input));
+            if !e.status.is_empty() {
+                lines.push(format!("     → {status}", status = e.status));
+            }
+        }
+
+        // Attach a preview of the current output/flow result if it came from the last entry.
+        if let Some(t) = &self.output {
+            lines.push(String::new());
+            lines.push(format!("Current table — {} ({} / {} rows)", t.title, t.rows.len(), t.total));
+            if !t.columns.is_empty() {
+                lines.push(format!("  Columns: {}", t.columns.join(", ")));
+            }
+            let preview_rows = t.rows.iter().take(5);
+            for row in preview_rows {
+                let vals: Vec<&str> = row.iter().map(|c| c.v.as_str()).collect();
+                lines.push(format!("  {}", vals.join(" | ")));
+            }
+            if t.rows.len() > 5 {
+                lines.push(format!("  … ({} more row(s))", t.rows.len() - 5));
+            }
+        } else if let Some(fs) = &self.flows {
+            lines.push(String::new());
+            lines.push(format!("Current flow result — {} ({} flow(s))", fs.title, fs.total));
+        }
+
+        lines.join("\n")
+    }
 }
 
 /// Heuristic: does `input` look like a DSL expression or a structured command that should go

@@ -32,6 +32,14 @@ const PROMPT_EXPLAIN: &str = include_str!("../../agents/explain.md");
 const PROMPT_TRACE: &str = include_str!("../../agents/trace.md");
 const PROMPT_CODE_REVIEW: &str = include_str!("../../agents/code-review.md");
 
+/// Full traversal reference docs, compiled into the binary so the agent can look up
+/// any traversal root or step method on demand without bloating the system prompt.
+const TRAVERSAL_DOCS: &str = include_str!("../../../../chen/docs/TRAVERSAL.md");
+
+/// Generic DSL operations reference (filter, where, repeat, collect, path tracking, etc.)
+/// that can be chained on any traversal.
+const DSL_OPERATIONS: &str = include_str!("../../../../chen/docs/DSL_OPERATIONS.md");
+
 /// A parsed slash-command template: a prompt body plus an optional toolset
 /// allowlist and effort override, sourced from the markdown-with-frontmatter
 /// files in `tui/agents/` (or a user override).
@@ -179,6 +187,7 @@ impl AgentCtx {
         summary_rows: &[crate::model::SummaryRow],
         bom_summary: Option<&str>,
         bom_components: Option<&str>,
+        console_history: Option<&str>,
     ) -> String {
         let counts: String = summary_rows.iter()
             .map(|r| format!("{}: {}", r.label, r.count))
@@ -200,6 +209,11 @@ Key components:
             _ => String::new(),
         };
 
+        let console_section = console_history
+            .filter(|s| !s.is_empty())
+            .map(|s| format!("\n## Console output\nBelow are the recent commands the user ran and their results. Use this context to answer questions about what was shown.\n{s}\n"))
+            .unwrap_or_default();
+
         format!(
             r#"You are chennai, an AI-powered code & security analysis agent. You reason over a
 code property graph (CPG) "atom" for a real codebase — not over your training prior.
@@ -209,27 +223,26 @@ Language: {language}
 Version: {version}
 
 ## Atom summary (authoritative — do NOT call atom_summary to re-fetch these)
-{counts}
-{bom_section}
+{counts}{console_section}{bom_section}
 ## Available tools
+- atom_traversal_docs — look up DSL traversal roots, step methods, and examples.
 - atom_query — flat tables: files, methods, externalMethods, calls, tags, imports, literals, configFiles…
 - atom_dsl_eval — arbitrary chen DSL (the power tool). Auto-`.toJson`, paged.
 - atom_flows / atom_flows_through — data-flow (source→sink) paths; presets dataflows/reachables/cryptos.
 - atom_detail — properties, children, call tree, and real source for a node.
-- atom_algorithms — pagerank, scc, toposort, dominators, shortest-path, reachable-by.
+- atom_algorithms — pagerank, scc, dominators, toposort, shortest-path, reachable-by.
 - ripgrep / read_file — search and read source (confined to the project root).
 - git_diff / git_log / git_show — read-only git history.
 
-## chen DSL cheat-sheet (for atom_dsl_eval — write valid expressions)
-Traversal roots: `atom.method`, `atom.call`, `atom.literal`, `atom.parameter`, `atom.tag`,
-`atom.file`, `atom.imports`, `atom.namespace`, `atom.annotation`.
-Common steps:
-  atom.method.name("regex")            atom.method.fullName("regex")
-  atom.method.isExternal               atom.method.internal
-  .caller  .callee  .callIn  .call     (call-graph navigation)
-  .parameter  .parameter.name("..")    .literal  .code("regex")
-  atom.call.name("exec|system|eval")   atom.tag.name("framework-input").call
-  atom.method.name(".*auth.*").callee  atom.literal.code(".*password.*")
+## chen DSL quick-start (for atom_dsl_eval — write valid expressions)
+Use `atom_traversal_docs` to look up any traversal root, step method, or generic operation (filter, where, repeat, collect, …) — always available.
+Common patterns:
+  atom.method.name("regex").caller.toJson     (callers of matching methods)
+  atom.call.name("exec|system|eval").toJson   (dangerous calls)
+  atom.tag.name("framework-input").call.toJson (input-reachable calls)
+  atom.method.name(".*auth.*").callee.toJson   (what auth methods call)
+  atom.method.isExternal.toJson                (external library calls)
+  atom.imports.toJson                          (all imports)
 Always end a traversal you want back with `.toJson` (the engine appends it if omitted).
 Names are regex-matched. If an expression errors, the engine returns the parser error
 verbatim as the tool result — read it and self-correct.
@@ -271,6 +284,7 @@ pub struct ToolExecResult {
 
 pub fn dispatch_tool(ctx: &AgentCtx, call_id: &str, name: &str, input: &Value) -> ToolExecResult {
     match name {
+        "atom_traversal_docs" => traversal_docs_dispatch(call_id, input),
         "atom_summary" => engine_request(ctx, call_id, "summary", input),
         "atom_query" => engine_request(ctx, call_id, "query", input),
         "atom_dsl_eval" => engine_request(ctx, call_id, "eval", input),
@@ -290,6 +304,108 @@ pub fn dispatch_tool(ctx: &AgentCtx, call_id: &str, name: &str, input: &Value) -
             is_error: true,
         },
     }
+}
+
+/// Look up chen DSL traversal documentation from the embedded TRAVERSAL.md.
+fn traversal_docs_dispatch(call_id: &str, input: &Value) -> ToolExecResult {
+    let root = input.get("root").and_then(Value::as_str).unwrap_or("all");
+    let content = get_traversal_docs(root);
+    ToolExecResult { call_id: call_id.into(), content, is_error: false }
+}
+
+/// Return the relevant documentation section for a given traversal root, step,
+/// or generic operation name. Searches both TRAVERSAL.md and DSL_OPERATIONS.md.
+/// When `root` is `"all"` (or empty), returns a combined index.
+fn get_traversal_docs(root: &str) -> String {
+    let lower = root.trim().to_ascii_lowercase();
+
+    if lower.is_empty() || lower == "all" {
+        return build_full_index();
+    }
+
+    // 1) Search TRAVERSAL.md for a root section.
+    let section_header = format!("\n## {} ", lower);
+    if let Some(start) = TRAVERSAL_DOCS.find(&section_header) {
+        let from_header = &TRAVERSAL_DOCS[start + section_header.len() - 1..];
+        let section = if let Some(end) = from_header[1..].find("\n## ") {
+            from_header[..=end].trim()
+        } else {
+            from_header.trim()
+        };
+        let mut result = section.to_string();
+        // Append the helper step methods section if not already included.
+        if !result.contains("Helper step") {
+            if let Some(hs) = TRAVERSAL_DOCS.find("\n## Helper step") {
+                let helper = &TRAVERSAL_DOCS[hs..];
+                let helper = if let Some(e) = helper[1..].find("\n## ") {
+                    &helper[..=e]
+                } else {
+                    helper
+                };
+                result.push_str("\n\n");
+                result.push_str(helper.trim());
+            }
+        }
+        return result;
+    }
+
+    // 2) Search DSL_OPERATIONS.md for a category or specific operation.
+    //    First try a category heading match.
+    if let Some(start) = DSL_OPERATIONS.find(&section_header) {
+        let from_header = &DSL_OPERATIONS[start + section_header.len() - 1..];
+        let section = if let Some(end) = from_header[1..].find("\n## ") {
+            from_header[..=end].trim()
+        } else {
+            from_header.trim()
+        };
+        return section.to_string();
+    }
+    //    Then try to find a direct operation reference (e.g. "`.where(trav)`").
+    let op_pattern = &format!("`{lower}");
+    if let Some(start) = DSL_OPERATIONS.find(op_pattern) {
+        // Return the containing category section.
+        let before = &DSL_OPERATIONS[..start];
+        if let Some(cat_start) = before.rfind("\n## ") {
+            let cat_end = DSL_OPERATIONS[cat_start + 1..]
+                .find("\n## ")
+                .map(|e| cat_start + 1 + e)
+                .unwrap_or(DSL_OPERATIONS.len());
+            return DSL_OPERATIONS[cat_start..cat_end].trim().to_string();
+        }
+        // Fallback: return a snippet around the match.
+        let end = (start + 200).min(DSL_OPERATIONS.len());
+        return format!("…{}\n\nUse `atom_traversal_docs` with a category name (e.g. `filter`, `repeat`) for the full reference.", &DSL_OPERATIONS[start..end].trim());
+    }
+
+    format!(
+        "Unknown root or operation '{root}'. Use `atom_traversal_docs` with `root: \"all\"` for a full index."
+    )
+}
+
+/// Build a combined index of every available topic from both docs.
+fn build_full_index() -> String {
+    // Root table from TRAVERSAL.md (lines up to the first "## .* steps" heading).
+    let roots = TRAVERSAL_DOCS
+        .find("\n## ")
+        .map(|end| &TRAVERSAL_DOCS[..end])
+        .unwrap_or(TRAVERSAL_DOCS)
+        .trim();
+
+    // Category table from DSL_OPERATIONS.md (lines up to the first "## .*" content heading).
+    let op_categories = DSL_OPERATIONS
+        .find("\n### ")
+        .map(|end| &DSL_OPERATIONS[..end])
+        .unwrap_or(DSL_OPERATIONS)
+        .trim();
+
+    format!(
+        "## Traversal roots\n\
+         {roots}\n\n\
+         ## Generic operations (filter, where, repeat, collect, …)\n\
+         {op_categories}\n\n\
+         Use `atom_traversal_docs` with a specific root name (e.g. `method`, `call`, `tag`) \
+         or operation category (e.g. `filter`, `repeat`, `transform`) to see full details."
+    )
 }
 
 fn bom_query_dispatch(ctx: &AgentCtx, call_id: &str, input: &Value) -> ToolExecResult {
@@ -723,7 +839,7 @@ mod tests {
     #[test]
     fn system_prompt_includes_summary_counts() {
         let rows = vec![SummaryRow { label: "Files".into(), count: 42 }];
-        let prompt = AgentCtx::build_system_prompt("C", "1.0", &rows, None, None);
+        let prompt = AgentCtx::build_system_prompt("C", "1.0", &rows, None, None, None);
         assert!(prompt.contains("Language: C"));
         assert!(prompt.contains("Files: 42"));
         assert!(prompt.contains("Grounding rule"));
@@ -736,6 +852,7 @@ mod tests {
             "Python", "3.12", &rows,
             Some("components: 15 · dependencies: 42"),
             Some("  - library requests (2.31.0) pkg:pip/requests@2.31.0"),
+            None,
         );
         assert!(prompt.contains("components: 15"));
         assert!(prompt.contains("Software Bill of Materials"));

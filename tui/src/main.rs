@@ -152,29 +152,35 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let sdir = source_path.as_deref().unwrap_or(Path::new("."));
             let odir = reports_dir.as_path();
             let language = bom::detect_language(sdir);
+            let supported = language.as_deref().map(|l| matches!(l, "java" | "js" | "py" | "php" | "rb")).unwrap_or(false);
             let mut generated = false;
-            for lifecycle in bom::LIFECYCLES {
-                if let Ok(path) = bom::generate_bom(sdir, odir, lifecycle, language.as_deref()) {
-                    // Load the BOM into the Rust store for display.
-                    let mut store = BomStore::new();
-                    if store.load_path(&path).is_ok() {
-                        // Enrich the open atom by running CdxPass + EasyTagsPass.
-                        let bom_str = path.to_string_lossy().to_string();
-                        match engine_arc.lock().unwrap().request::<serde_json::Value>(
-                            "enrich", json!({"bom": bom_str}),
-                        ) {
-                            Ok(resp) => {
-                                if resp.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
-                                    eprintln!("Atom enriched with SBOM dependency data");
+            if !supported {
+                bom_tip = "Auto SBOM generation is not available for this language. Generate manually with: cdxgen -o sbom.cdx.json <source_dir>".into();
+            }
+            if supported {
+                for lifecycle in bom::LIFECYCLES {
+                    if let Ok(path) = bom::generate_bom(sdir, odir, lifecycle, language.as_deref()) {
+                        // Load the BOM into the Rust store for display.
+                        let mut store = BomStore::new();
+                        if store.load_path(&path).is_ok() {
+                            // Enrich the open atom by running CdxPass + EasyTagsPass.
+                            let bom_str = path.to_string_lossy().to_string();
+                            match engine_arc.lock().unwrap().request::<serde_json::Value>(
+                                "enrich", json!({"bom": bom_str}),
+                            ) {
+                                Ok(resp) => {
+                                    if resp.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
+                                        eprintln!("Atom enriched with SBOM dependency data");
+                                    }
+                                }
+                                Err(e) => {
+                                    eprintln!("Warning: failed to enrich atom with SBOM data: {e}");
                                 }
                             }
-                            Err(e) => {
-                                eprintln!("Warning: failed to enrich atom with SBOM data: {e}");
-                            }
+                            bom_store = store;
+                            generated = true;
+                            break;
                         }
-                        bom_store = store;
-                        generated = true;
-                        break;
                     }
                 }
             }
@@ -199,7 +205,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Ok(provider) => {
                 let system_prompt = AgentCtx::build_system_prompt(
                     &summary.language, &summary.version, &summary.rows,
-                    Some(&bom_summary), bom_components.as_deref(),
+                    Some(&bom_summary), bom_components.as_deref(), None,
                 );
                 eprintln!("AI agent enabled: {} ({})", config.provider, config.model);
                 Some(AgentCtx {
@@ -264,7 +270,7 @@ fn run_headless_agent(
         std::process::exit(1);
     }
     let provider = agent::create_provider(&config).map_err(|e| format!("provider: {e}"))?;
-    let system_prompt = AgentCtx::build_system_prompt(&summary.language, &summary.version, &summary.rows, None, None);
+    let system_prompt = AgentCtx::build_system_prompt(&summary.language, &summary.version, &summary.rows, None, None, None);
     let ctx = AgentCtx {
         provider,
         engine: Some(Arc::new(Mutex::new(engine))),
@@ -320,9 +326,11 @@ fn run_app<B: Backend>(
                             Some(top.join("\n"))
                         } else { None }
                     });
+                    let console_history = app.build_console_history();
                     let system_prompt = AgentCtx::build_system_prompt(
                         &app.summary.language, &app.summary.version, &app.summary.rows,
                         bom_summary.as_deref(), bom_components_summary.as_deref(),
+                        Some(&console_history),
                     );
                     let cancel = Arc::new(AtomicBool::new(false));
                     app.agent_cancel = Some(cancel.clone());
@@ -630,6 +638,33 @@ fn resolve_or_generate_atom(
         })
     {
         return Ok(atoms);
+    }
+
+    // Scan first-level subdirectories for .atom files.
+    if let Ok(entries) = std::fs::read_dir(path) {
+        for entry in entries.flatten() {
+            let entry_path = entry.path();
+            if entry_path.is_dir() {
+                if let Ok(atom) = std::fs::read_dir(&entry_path)
+                    .map(|entries| {
+                        entries
+                            .filter_map(|e| e.ok().map(|e| e.path()))
+                            .filter(|p| p.extension().map(|e| e == "atom").unwrap_or(false))
+                            .collect::<Vec<_>>()
+                    })
+                    .and_then(|mut v| {
+                        v.sort();
+                        if v.is_empty() {
+                            Err(std::io::Error::new(std::io::ErrorKind::NotFound, "no atom"))
+                        } else {
+                            Ok(v.into_iter().next().unwrap())
+                        }
+                    })
+                {
+                    return Ok(atom);
+                }
+            }
+        }
     }
 
     // No atom found.  If this is a headless run we cannot prompt — bail out.
