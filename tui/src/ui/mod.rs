@@ -11,7 +11,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
     Block, Borders, Cell, Clear, Paragraph, Row, Scrollbar, ScrollbarOrientation, ScrollbarState,
-    Table,
+    Table, Wrap,
 };
 use ratatui::Frame;
 
@@ -1017,6 +1017,10 @@ fn render_agent_transcript(frame: &mut Frame, app: &mut App, theme: &Theme, area
 
     if inner.height == 0 || inner.width == 0 { return; }
 
+    // Apply 1-char horizontal padding inside the panel.
+    let content_area = inner.inner(Margin { horizontal: 1, vertical: 0 });
+    if content_area.height == 0 || content_area.width == 0 { return; }
+
     let viewport = inner.height as usize;
     app.agent_viewport = viewport;
     let total = app.agent_transcript.len();
@@ -1030,7 +1034,7 @@ fn render_agent_transcript(frame: &mut Frame, app: &mut App, theme: &Theme, area
         let hint_lines: Vec<Line> = hint.lines().map(|l| {
             Line::from(Span::styled(l.to_string(), Style::default().fg(theme.muted)))
         }).collect();
-        frame.render_widget(Paragraph::new(hint_lines), inner);
+        frame.render_widget(Paragraph::new(hint_lines).wrap(Wrap { trim: false }), content_area);
         return;
     }
 
@@ -1038,7 +1042,7 @@ fn render_agent_transcript(frame: &mut Frame, app: &mut App, theme: &Theme, area
     // line-level window. `agent_scroll` is the index of the top visible line,
     // which gives smooth, uniform scrolling regardless of entry sizes.
     let line_counts: Vec<usize> = app.agent_transcript.iter().map(entry_line_count).collect();
-    let all_lines: Vec<Line> = build_agent_lines(app, theme, &line_counts, inner.width as usize);
+    let all_lines: Vec<Line> = build_agent_lines(app, theme, &line_counts, content_area.width as usize);
     let total_lines = all_lines.len();
     let max_scroll = total_lines.saturating_sub(viewport);
 
@@ -1052,7 +1056,7 @@ fn render_agent_transcript(frame: &mut Frame, app: &mut App, theme: &Theme, area
 
     let end = (line_scroll + viewport).min(total_lines);
     let visible: Vec<Line> = all_lines[line_scroll..end].to_vec();
-    frame.render_widget(Paragraph::new(visible), inner);
+    frame.render_widget(Paragraph::new(visible).wrap(Wrap { trim: false }), content_area);
     drop(all_lines);
 
     // Record the extent so the scroll handlers can clamp on the next event.
