@@ -984,29 +984,62 @@ fn load_blint_backend(artifact: &Path, reports_dir: &Path) -> Option<BlintCtx> {
 
 /// In atom mode, opportunistically load a blint backend so `blint_*` tools are offered
 /// alongside `atom_*` for binary artifacts (APK/JAR) that were analyzed by both. Scans
-/// `dirs` for a blint metadata report (`*-metadata.json` carrying blint markers) and, if
-/// found, loads the full report set. Returns `None` when no blint report is present.
+/// each of `dirs` **and their immediate subdirectories** (atom and blint reports may live
+/// side by side or one level deep, e.g. `reports/blint-<app>-reports/`) for a blint
+/// metadata report (`*-metadata.json` carrying blint markers). Returns `None` when none.
 fn find_aux_blint_backend(dirs: &[&Path]) -> Option<BlintCtx> {
+    // Expand to the input dirs plus their immediate subdirs, de-duplicated, order-preserving.
+    let mut search: Vec<PathBuf> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
     for dir in dirs {
-        let Ok(entries) = std::fs::read_dir(dir) else { continue };
-        let mut metas: Vec<PathBuf> = entries
-            .flatten()
-            .map(|e| e.path())
-            .filter(|p| p.file_name().and_then(|n| n.to_str()).map(|n| n.ends_with("-metadata.json")).unwrap_or(false))
-            .collect();
-        metas.sort();
-        for meta in metas {
-            let Ok(report) = crate::shared::LoadedReport::from_file(&meta) else { continue };
-            let r = &report.report;
-            let is_blint = r.get("exe_type").is_some() || r.get("binary_type").is_some()
-                || r.get("disassembled_functions").is_some()
-                || r.get("callgraph").map(|c| c.is_object()).unwrap_or(false);
-            if !is_blint { continue; }
-            let Some(base) = meta.file_name().and_then(|n| n.to_str()).map(|n| n.trim_end_matches("-metadata.json")) else { continue };
-            if let Ok(reports) = BlintReports::load(base, dir) {
-                eprintln!("Also loaded blint report ({base}) — blint_* tools enabled alongside atom");
-                return Some(BlintCtx { reports, artifact_path: base.to_string() });
+        for cand in std::iter::once(dir.to_path_buf()).chain(immediate_subdirs(dir)) {
+            if seen.insert(cand.clone()) {
+                search.push(cand);
             }
+        }
+    }
+    for dir in &search {
+        if let Some(ctx) = scan_dir_for_blint(dir) {
+            return Some(ctx);
+        }
+    }
+    None
+}
+
+/// Immediate (one-level) subdirectories of `dir`, sorted for deterministic scan order.
+fn immediate_subdirs(dir: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(dir) else { return Vec::new() };
+    let mut subs: Vec<PathBuf> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_dir())
+        .collect();
+    subs.sort();
+    subs
+}
+
+/// Scan a single directory for a blint metadata report and load the full report set if one
+/// is found. A `*-metadata.json` qualifies only if it carries blint markers (so an atom or
+/// other tool's metadata file isn't mistaken for blint output).
+fn scan_dir_for_blint(dir: &Path) -> Option<BlintCtx> {
+    let Ok(entries) = std::fs::read_dir(dir) else { return None };
+    let mut metas: Vec<PathBuf> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.file_name().and_then(|n| n.to_str()).map(|n| n.ends_with("-metadata.json")).unwrap_or(false))
+        .collect();
+    metas.sort();
+    for meta in metas {
+        let Ok(report) = crate::shared::LoadedReport::from_file(&meta) else { continue };
+        let r = &report.report;
+        let is_blint = r.get("exe_type").is_some() || r.get("binary_type").is_some()
+            || r.get("disassembled_functions").is_some()
+            || r.get("callgraph").map(|c| c.is_object()).unwrap_or(false);
+        if !is_blint { continue; }
+        let Some(base) = meta.file_name().and_then(|n| n.to_str()).map(|n| n.trim_end_matches("-metadata.json")) else { continue };
+        if let Ok(reports) = BlintReports::load(base, dir) {
+            eprintln!("Also loaded blint report ({base}) — blint_* tools enabled alongside atom");
+            return Some(BlintCtx { reports, artifact_path: base.to_string() });
         }
     }
     None
