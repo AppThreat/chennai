@@ -71,6 +71,9 @@ struct Args {
     /// Defaults to `high`. Ignored by providers that don't support it.
     #[arg(long)]
     effort: Option<String>,
+    /// Path to a custom system prompt file. Overrides the built-in system prompt entirely.
+    #[arg(long)]
+    system_prompt: Option<PathBuf>,
     /// Subcommand to run instead of launching the TUI.
     #[command(subcommand)]
     command: Option<CliCommand>,
@@ -81,6 +84,22 @@ struct Args {
 enum CliCommand {
     /// Install or reinstall the analysis tools (cdxgen, atom, atom-parsetools) via npm.
     Setup,
+    /// Dump the full system prompt as markdown and exit. Optionally write to a file with `-o`.
+    #[command(name = "dump-system-prompt")]
+    DumpSystemPrompt {
+        /// Project path (directory or .atom file) to build the prompt for.
+        #[arg()]
+        path: Option<PathBuf>,
+        /// Source root directory.
+        #[arg(long)]
+        source: Option<String>,
+        /// Override engine binary path.
+        #[arg(long)]
+        engine: Option<String>,
+        /// Output file path (defaults to stdout).
+        #[arg(short = 'o', long)]
+        output: Option<PathBuf>,
+    },
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -90,6 +109,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(cmd) = &args.command {
         return run_subcommand(cmd);
     }
+
+    // Load custom system prompt if provided.
+    let custom_system_prompt = match &args.system_prompt {
+        Some(p) => {
+            let content = std::fs::read_to_string(p)
+                .map_err(|e| format!("failed to read system prompt file '{}': {e}", p.display()))?;
+            eprintln!("Using custom system prompt from: {}", p.display());
+            Some(content)
+        }
+        None => None,
+    };
 
     // The TUI requires a path; make sure one was provided.
     let path = args.path.as_ref().ok_or(
@@ -203,10 +233,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         } else { None };
         match agent::create_provider(&config) {
             Ok(provider) => {
-                let system_prompt = AgentCtx::build_system_prompt(
-                    &summary.language, &summary.version, &summary.rows,
-                    Some(&bom_summary), bom_components.as_deref(), None,
-                );
+                let system_prompt = match &custom_system_prompt {
+                    Some(sp) => sp.clone(),
+                    None => AgentCtx::build_system_prompt(
+                        &summary.language, &summary.version, &summary.rows,
+                        Some(&bom_summary), bom_components.as_deref(), None,
+                    ),
+                };
                 eprintln!("AI agent enabled: {} ({})", config.provider, config.model);
                 Some(AgentCtx {
                     provider,
@@ -249,7 +282,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = ratatui::Terminal::new(backend)?;
 
-    let result = run_app(&mut terminal, &mut app, &theme, agent_ctx, config, source_root, reports_dir);
+    let result = run_app(&mut terminal, &mut app, &theme, agent_ctx, config, source_root, reports_dir, custom_system_prompt);
 
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
@@ -288,6 +321,7 @@ fn run_headless_agent(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_app<B: Backend>(
     terminal: &mut ratatui::Terminal<B>,
     app: &mut App,
@@ -296,6 +330,7 @@ fn run_app<B: Backend>(
     config: Config,
     source_root: Option<String>,
     reports_dir: PathBuf,
+    custom_system_prompt: Option<String>,
 ) -> io::Result<()> {
     loop {
         terminal.draw(|frame| ui::render(frame, app, theme))?;
@@ -326,12 +361,17 @@ fn run_app<B: Backend>(
                             Some(top.join("\n"))
                         } else { None }
                     });
-                    let console_history = app.build_console_history();
-                    let system_prompt = AgentCtx::build_system_prompt(
-                        &app.summary.language, &app.summary.version, &app.summary.rows,
-                        bom_summary.as_deref(), bom_components_summary.as_deref(),
-                        Some(&console_history),
-                    );
+                    let system_prompt = match &custom_system_prompt {
+                        Some(sp) => sp.clone(),
+                        None => {
+                            let console_history = app.build_console_history();
+                            AgentCtx::build_system_prompt(
+                                &app.summary.language, &app.summary.version, &app.summary.rows,
+                                bom_summary.as_deref(), bom_components_summary.as_deref(),
+                                Some(&console_history),
+                            )
+                        }
+                    };
                     let cancel = Arc::new(AtomicBool::new(false));
                     app.agent_cancel = Some(cancel.clone());
                     agent_ctx = Some(AgentCtx {
@@ -644,8 +684,8 @@ fn resolve_or_generate_atom(
     if let Ok(entries) = std::fs::read_dir(path) {
         for entry in entries.flatten() {
             let entry_path = entry.path();
-            if entry_path.is_dir() {
-                if let Ok(atom) = std::fs::read_dir(&entry_path)
+            if entry_path.is_dir()
+                && let Ok(atom) = std::fs::read_dir(&entry_path)
                     .map(|entries| {
                         entries
                             .filter_map(|e| e.ok().map(|e| e.path()))
@@ -660,9 +700,8 @@ fn resolve_or_generate_atom(
                             Ok(v.into_iter().next().unwrap())
                         }
                     })
-                {
-                    return Ok(atom);
-                }
+            {
+                return Ok(atom);
             }
         }
     }
@@ -773,7 +812,7 @@ fn resolve_or_generate_atom(
     Ok(generated_atom)
 }
 
-/// Dispatch a subcommand (`setup`, etc.) and exit.
+/// Dispatch a subcommand and exit.
 fn run_subcommand(cmd: &CliCommand) -> Result<(), Box<dyn std::error::Error>> {
     match cmd {
         CliCommand::Setup => {
@@ -791,5 +830,61 @@ fn run_subcommand(cmd: &CliCommand) -> Result<(), Box<dyn std::error::Error>> {
                 Err(e) => Err(format!("npm install failed:\n{e}").into()),
             }
         }
+        CliCommand::DumpSystemPrompt { path, source, engine, output } => {
+            let prompt = if let Some(p) = path {
+                build_dump_prompt(p, source.as_deref(), engine.as_deref())?
+            } else {
+                build_template_prompt()
+            };
+
+            match output {
+                Some(out) => {
+                    std::fs::write(out, &prompt)
+                        .map_err(|e| format!("failed to write system prompt: {e}"))?;
+                    eprintln!("System prompt written to: {}", out.display());
+                }
+                None => {
+                    println!("{prompt}");
+                }
+            }
+            Ok(())
+        }
     }
+}
+
+/// Build the full system prompt for a given project path (dump mode — no BOM enrichment).
+fn build_dump_prompt(
+    path: &Path,
+    source_root: Option<&str>,
+    engine_cmd: Option<&str>,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let atom = resolve_or_generate_atom(path, &source_root.map(|s| s.to_string()), true)?;
+    let atom_str = atom.to_string_lossy().to_string();
+    let command = Engine::resolve_command(engine_cmd).ok_or(
+        "engine binary not found; build it with `sbt stage` in engine/, or set CHENNAI_ENGINE",
+    )?;
+    let mut eng = Engine::spawn(&command)?;
+    let open_args = match source_root {
+        Some(src) => json!({ "path": atom_str, "sourceRoot": src }),
+        None      => json!({ "path": atom_str }),
+    };
+    let _open: OpenInfo = eng.request("open", open_args)?;
+    let summary: Summary = eng.request("summary", json!({}))?;
+    let prompt = AgentCtx::build_system_prompt(
+        &summary.language, &summary.version, &summary.rows,
+        None, None, None,
+    );
+    Ok(prompt)
+}
+
+/// Build a template system prompt with placeholder data (no atom required).
+fn build_template_prompt() -> String {
+    use crate::model::SummaryRow;
+    let rows = vec![
+        SummaryRow { label: "Files".into(), count: 0 },
+        SummaryRow { label: "Methods".into(), count: 0 },
+        SummaryRow { label: "Calls".into(), count: 0 },
+        SummaryRow { label: "Tags".into(), count: 0 },
+    ];
+    AgentCtx::build_system_prompt("<language>", "<version>", &rows, None, None, None)
 }

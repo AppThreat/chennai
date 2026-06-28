@@ -53,15 +53,32 @@ After installation the `chennai` command is available globally.
 chennai <path-to-atom-file-or-directory> [options]
 ```
 
-## Setup
+## Subcommands
 
-The `chennai setup` command installs or updates the required analysis tools (cdxgen, atom, atom-parsetools) via npm:
+### `setup`
+
+Install or update the required analysis tools (cdxgen, atom, atom-parsetools) via npm:
 
 ```
 chennai setup
 ```
 
 This runs `npm install -g --ignore-scripts @cyclonedx/cdxgen @appthreat/atom @appthreat/atom-parsetools`.
+
+### `dump-system-prompt`
+
+Build and print the full system prompt that would be sent to the LLM agent as a markdown document. Optionally write it to a file with `-o`:
+
+```
+# Print to stdout (requires a project path for real atom data)
+chennai dump-system-prompt /path/to/project
+
+# Write to a file
+chennai dump-system-prompt /path/to/project -o prompt.md
+
+# Template only (no atom loaded — shows placeholder values)
+chennai dump-system-prompt
+```
 
 ### Tool discovery
 
@@ -112,19 +129,20 @@ The BOM data is also injected into AI agent prompts for security and code review
 
 ### Options
 
-| Option               | Default               | Description                                         |
-| -------------------- | --------------------- | --------------------------------------------------- |
-| `--engine PATH`      | auto                  | Path to the chennai-engine binary                   |
-| `--theme dark/light` | dark                  | Color theme                                         |
-| `--source PATH`      | atom dir              | Project source root for file resolution             |
-| `--ask TEXT`         | --                    | Headless mode: ask a question and print the answer  |
-| `--provider STR`     | anthropic             | LLM provider (anthropic or openai)                  |
-| `--model STR`        | claude-opus-4-8       | LLM model name                                      |
-| `--api-key STR`      | env var               | API key for the LLM provider                        |
-| `--base-url STR`     | --                    | Custom API base URL for OpenAI-compatible endpoints |
-| `--reports-dir PATH` | .chen/chennai-reports | Directory for markdown reports and BOM files        |
-| `--no-thinking`      | false                 | Omit thinking blocks from the LLM request           |
-| `--effort STR`       | high                  | Reasoning effort (low, medium, high, xhigh, max)    |
+| Option                 | Default               | Description                                                         |
+| ---------------------- | --------------------- | ------------------------------------------------------------------- |
+| `--engine PATH`        | auto                  | Path to the chennai-engine binary                                   |
+| `--theme dark/light`   | dark                  | Color theme                                                         |
+| `--source PATH`        | atom dir              | Project source root for file resolution                             |
+| `--ask TEXT`           | --                    | Headless mode: ask a question and print the answer                  |
+| `--provider STR`       | anthropic             | LLM provider (anthropic or openai)                                  |
+| `--model STR`          | claude-opus-4-8       | LLM model name                                                      |
+| `--api-key STR`        | env var               | API key for the LLM provider                                        |
+| `--base-url STR`       | --                    | Custom API base URL for OpenAI-compatible endpoints                 |
+| `--reports-dir PATH`   | .chen/chennai-reports | Directory for markdown reports and BOM files                        |
+| `--system-prompt PATH` | --                    | Path to a custom system prompt file (overrides the built-in prompt) |
+| `--no-thinking`        | false                 | Omit thinking blocks from the LLM request                           |
+| `--effort STR`         | high                  | Reasoning effort (low, medium, high, xhigh, max)                    |
 
 ### Environment variables
 
@@ -256,7 +274,7 @@ When an API key is configured (via environment variable or config file), the sla
 | `/trace`           | Prove or disprove a taint path between a given source and sink. Uses `high` effort.                                                                 |
 | `/help`            | List available slash commands.                                                                                                                      |
 
-Free text input (without a slash) is also routed to the agent for ad hoc questions. The agent has access to thirteen tools: atom_summary, atom_query, atom_dsl_eval, atom_flows, atom_flows_through, atom_detail, atom_algorithms, bom_query, ripgrep, read_file, git_diff, git_log, and git_show.
+Free text input (without a slash) is also routed to the agent for ad hoc questions. The agent has access to fourteen tools: atom_traversal_docs, atom_summary, atom_query, atom_dsl_eval, atom_flows, atom_flows_through, atom_detail, atom_algorithms, bom_query, ripgrep, read_file, git_diff, git_log, and git_show.
 
 The agent uses the streaming API of the configured provider and renders thinking blocks, text deltas, and tool calls in real time. Tool results are truncated to 48 KiB to stay within model token limits. When the agent produces flow results they are automatically installed into the flow view for interactive exploration.
 
@@ -306,6 +324,54 @@ bash ci/native-image.sh
 ```
 bash wrapper/nodejs/scripts/build-local.sh
 ```
+
+## Philosophy
+
+### Code analysis, not chat
+
+chennai was built on a simple conviction: an LLM that cannot _run code analysis_ is guessing. Most AI coding tools wrap a chat window around a vector index. They retrieve documentation, sprinkle in a few file contents, and hope the model's training prior is good enough. That works for boilerplate generation but fails for anything that requires precise answers about a real codebase — reachability, data-flow paths, call graphs, dependency resolution.
+
+chennai is the opposite: the LLM is the _orchestrator_, not the oracle. The code analysis is done by real tools — the chen DSL for graph traversals, the data-flow engine for taint paths, graph algorithms for structural analysis, and ripgrep for source search. The agent's job is to decide _which_ tool to call and how to interpret the result, never to invent an answer from its training data.
+
+### Tools are first-class, not afterthoughts
+
+A typical AI coding tool has tools bolted on: "search the codebase," "read a file," maybe "run a test." The tool list is an implementation detail the user never sees.
+
+In chennai, the tools _are_ the interface. Every tool is a real analysis capability exposed directly in the TUI as well. Users can run `atom.method.name("auth").callee.toJson` in the REPL, see the exact same result the agent would get, and then ask the agent to explain it. The agent's tool calls are streamed to the transcript in real time — users watch the agent think, pick tools, and interpret results. Nothing is hidden.
+
+This design feeds both directions:
+
+- **User → Agent**: You can explore manually, then ask the agent to go deeper. The console history section of the system prompt means the agent knows what queries you already ran and what they returned, so follow-up questions have real context.
+- **Agent → User**: When the agent discovers something interesting, its tool results stay in the transcript. You can inspect the exact query that produced the finding.
+
+### The DSL is the interface
+
+The chen DSL isn't an implementation detail of the engine — it is a user-facing query language designed for interactive exploration. The agent uses it via `atom_dsl_eval`, and you use it directly in the REPL with the same syntax, the same semantics, and the same results.
+
+This symmetry means the agent does not have a "special" way of querying the atom that is hidden from you. Every query the agent runs is one you could have typed yourself. There is no black box between the agent's reasoning and the actual code analysis — the full traversal reference is available through `atom_traversal_docs`, and every tool result is visible.
+
+### Grounding rules and the trust boundary
+
+The system prompt's grounding rules are not decorative — they are the contract that makes the tool-based architecture work:
+
+1. **Never invent call graphs, taints, or reachability.** Every claim must trace to a tool result.
+2. **Prefer engine evidence over ripgrep.** Traversals and data-flow paths are structured evidence; text search is cross-referencing.
+3. **If a tool returns nothing, state it plainly.** The agent must not dress up a grep-based guess as a real finding.
+4. **Concrete file:line references for every finding.** The user must be able to verify every claim.
+
+These rules mean the agent operates within a strict trust boundary. It is authorized to analyze the user's own atom — it does not need to be "harmless" or refuse to look at code. The tool results are the single source of truth, and the agent is explicitly directed to refuse to answer based on its training prior alone.
+
+### Offline-first, agent-optional
+
+The agent is a feature of chennai, not the product. Every analysis capability — queries, data-flows, algorithms, graph traversals — works offline with no API key, no network, and no LLM. The TUI is a fully functional static analysis environment by itself. The agent layer adds natural-language orchestration on top, but it is strictly additive.
+
+This means you can:
+
+- Explore code with the REPL during development
+- Save queries as reproducible analysis steps
+- Run the agent only when you need natural-language reasoning about what you found
+
+The architecture ensures that the agent's value is proportional to the quality of the underlying analysis tools, not the size of the LLM's context window or training corpus.
 
 ## License
 

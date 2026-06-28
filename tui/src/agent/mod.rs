@@ -334,17 +334,17 @@ fn get_traversal_docs(root: &str) -> String {
         };
         let mut result = section.to_string();
         // Append the helper step methods section if not already included.
-        if !result.contains("Helper step") {
-            if let Some(hs) = TRAVERSAL_DOCS.find("\n## Helper step") {
-                let helper = &TRAVERSAL_DOCS[hs..];
-                let helper = if let Some(e) = helper[1..].find("\n## ") {
-                    &helper[..=e]
-                } else {
-                    helper
-                };
-                result.push_str("\n\n");
-                result.push_str(helper.trim());
-            }
+        if !result.contains("Helper step")
+            && let Some(hs) = TRAVERSAL_DOCS.find("\n## Helper step")
+        {
+            let helper = &TRAVERSAL_DOCS[hs..];
+            let helper = if let Some(e) = helper[1..].find("\n## ") {
+                &helper[..=e]
+            } else {
+                helper
+            };
+            result.push_str("\n\n");
+            result.push_str(helper.trim());
         }
         return result;
     }
