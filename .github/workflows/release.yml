@@ -492,14 +492,17 @@ jobs:
 
           # ── JAR fallback smoke test ──────────────────────────────
           cd "$REPO_ROOT/wrapper/nodejs"
+          mkdir -p /tmp/chennai-jar-test
           npm pack --workspace packages/chennai-jar --pack-destination /tmp/chennai-jar-test 2>&1
           JAR_TARBALL=$(ls /tmp/chennai-jar-test/appthreat-chennai-jar-*.tgz)
+          # Copy tarball outside the test dir so rm doesn't delete it
+          cp "$JAR_TARBALL" /tmp/appthreat-chennai-jar.tgz
 
           rm -rf /tmp/chennai-jar-test
           mkdir -p /tmp/chennai-jar-test
           cd /tmp/chennai-jar-test
           npm init -y >/dev/null 2>&1
-          npm install "$JAR_TARBALL" "$PARENT_TARBALL" --no-optional 2>&1
+          npm install /tmp/appthreat-chennai-jar.tgz "$PARENT_TARBALL" --no-optional 2>&1
 
           echo "=== chennai --help (JAR fallback) ==="
           ./node_modules/.bin/chennai --help
