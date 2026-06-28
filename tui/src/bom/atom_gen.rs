@@ -325,22 +325,22 @@ mod tests {
 
     #[test]
     fn test_find_atom_via_env_var() {
+        let dir = tempfile::tempdir().unwrap();
+        let fake_atom = dir.path().join("fake-atom");
+        std::fs::write(&fake_atom, b"#!/bin/sh\nexit 0").unwrap();
         let original = std::env::var("ATOM_CMD").ok();
-        if let Some(node) = which("node") {
-            // SAFETY: test-only environment mutation with restore.
-            unsafe { std::env::set_var("ATOM_CMD", &node); }
-            let result = find_atom();
-            assert!(
-                result.is_ok(),
-                "find_atom should find the binary pointed to by ATOM_CMD"
-            );
-            if let Ok(path) = result {
-                assert_eq!(path, node);
-            }
-            match original {
-                Some(v) => unsafe { std::env::set_var("ATOM_CMD", v); },
-                None => unsafe { std::env::remove_var("ATOM_CMD"); },
-            }
+        unsafe { std::env::set_var("ATOM_CMD", &fake_atom); }
+        let result = find_atom();
+        assert!(
+            result.is_ok(),
+            "find_atom should find the binary pointed to by ATOM_CMD"
+        );
+        if let Ok(path) = result {
+            assert_eq!(path, fake_atom);
+        }
+        match original {
+            Some(v) => unsafe { std::env::set_var("ATOM_CMD", v); },
+            None => unsafe { std::env::remove_var("ATOM_CMD"); },
         }
     }
 
