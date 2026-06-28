@@ -8,6 +8,7 @@ use crate::commands;
 use crate::engine::Engine;
 use crate::model::{Flow, FlowSet, NodeDetail, ResultTable, Summary};
 use crate::repl::Repl;
+use crate::rusi::RusiCtx;
 
 use ratatui::layout::Rect;
 use std::collections::HashSet;
@@ -248,6 +249,9 @@ pub struct App {
     // BOM (CycloneDX SBOM) state.
     pub bom_store: Option<BomStore>,
     pub bom_generated: bool,
+
+    // Rusi analysis context (for Rust codebases).
+    pub rusi: Option<Arc<RusiCtx>>,
 }
 
 impl App {
@@ -319,6 +323,7 @@ impl App {
             agent_last_tool: None,
             bom_store: None,
             bom_generated: false,
+            rusi: None,
         }
     }
 
@@ -424,18 +429,25 @@ impl App {
                 self.agent_query_text = t.clone();
                 // Use a curated template (prompt body + tool allowlist + effort)
                 // for known slash commands; unknown ones fall back to free-text.
-                match crate::agent::slash_command(&cmd) {
-                    Some(sc) => {
-                        self.agent_slash_prompt = Some(sc.body);
-                        self.agent_slash_tools = sc.tools;
-                        self.agent_slash_effort = sc.effort;
+                    match crate::agent::slash_command(&cmd) {
+                        Some(sc) => {
+                            self.agent_slash_prompt = Some(sc.body);
+                            // In rusi mode, map atom_* tool names to rusi_* equivalents.
+                            self.agent_slash_tools = sc.tools.map(|tools| {
+                                if self.rusi.is_some() {
+                                    tools.into_iter().map(|t| map_atom_to_rusi_tool(&t)).collect()
+                                } else {
+                                    tools
+                                }
+                            });
+                            self.agent_slash_effort = sc.effort;
+                        }
+                        None => {
+                            self.agent_slash_prompt = None;
+                            self.agent_slash_tools = None;
+                            self.agent_slash_effort = None;
+                        }
                     }
-                    None => {
-                        self.agent_slash_prompt = None;
-                        self.agent_slash_tools = None;
-                        self.agent_slash_effort = None;
-                    }
-                }
                 // Signal to main that we want to start the agent.
                 // The actual thread is spawned in the event loop when it sees this flag.
                 self.agent_active = true;
@@ -1476,6 +1488,20 @@ fn looks_like_dsl_or_command(t: &str) -> bool {
         return true;
     }
     false
+}
+
+/// Map atom_* tool names to rusi_* equivalents for rusi analysis mode.
+pub fn map_atom_to_rusi_tool(tool: &str) -> String {
+    match tool {
+        "atom_summary" => "rusi_summary",
+        "atom_query" => "rusi_query",
+        "atom_dsl_eval" => "rusi_query",
+        "atom_flows" | "atom_flows_through" => "rusi_flows",
+        "atom_detail" => "rusi_detail",
+        "atom_algorithms" => "rusi_callgraph",
+        _ => tool,
+    }
+    .to_string()
 }
 
 fn contains(r: &Rect, col: u16, row: u16) -> bool {

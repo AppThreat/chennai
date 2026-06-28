@@ -16,6 +16,7 @@ pub mod transcript;
 
 use crate::config::{Config, ProviderKind};
 use crate::engine::Engine;
+use crate::rusi::RusiCtx;
 use provider::{
     AgentEvent, ChannelSink, ContentBlock, EventSink, LlmProvider, ProviderError, TurnRequest,
 };
@@ -168,6 +169,8 @@ pub fn create_provider(config: &Config) -> Result<Box<dyn LlmProvider + Send + S
 pub struct AgentCtx {
     pub provider: Box<dyn LlmProvider + Send + Sync>,
     pub engine: Option<Arc<Mutex<Engine>>>,
+    /// Optional loaded rusi analysis context for Rust codebases.
+    pub rusi: Option<Arc<RusiCtx>>,
     pub source_root: Option<String>,
     pub system_prompt: String,
     pub max_tokens: u32,
@@ -292,6 +295,12 @@ pub fn dispatch_tool(ctx: &AgentCtx, call_id: &str, name: &str, input: &Value) -
         "atom_flows_through" => engine_request(ctx, call_id, "flows", input),
         "atom_detail" => engine_request(ctx, call_id, "detail", input),
         "atom_algorithms" => engine_request(ctx, call_id, "algo", input),
+        "rusi_summary" => rusi_dispatch(ctx, call_id, "summary", input),
+        "rusi_query" => rusi_dispatch(ctx, call_id, "query", input),
+        "rusi_callgraph" => rusi_dispatch(ctx, call_id, "callgraph", input),
+        "rusi_flows" => rusi_dispatch(ctx, call_id, "dataflow", input),
+        "rusi_detail" => rusi_dispatch(ctx, call_id, "detail", input),
+        "rusi_crypto" => rusi_dispatch(ctx, call_id, "crypto", input),
         "bom_query" => bom_query_dispatch(ctx, call_id, input),
         "ripgrep"   => wrap_result(call_id, shell::ripgrep(&source_root_path(ctx), input)),
         "read_file" => wrap_result(call_id, shell::read_file(&source_root_path(ctx), input)),
@@ -303,6 +312,56 @@ pub fn dispatch_tool(ctx: &AgentCtx, call_id: &str, name: &str, input: &Value) -
             content: format!("unknown tool: {other}"),
             is_error: true,
         },
+    }
+}
+
+/// Dispatch a rusi-specific tool call to the loaded RusiCtx.
+fn rusi_dispatch(ctx: &AgentCtx, call_id: &str, cmd: &str, input: &Value) -> ToolExecResult {
+    let Some(ref rusi) = ctx.rusi else {
+        return ToolExecResult {
+            call_id: call_id.into(),
+            content: "rusi report not loaded".into(),
+            is_error: true,
+        };
+    };
+
+    let content = match cmd {
+        "summary" => rusi.summary(),
+        "query" => {
+            let kind = input.get("kind").and_then(Value::as_str).unwrap_or("declarations");
+            let pattern = input.get("pattern").and_then(Value::as_str);
+            let limit = input.get("limit").and_then(Value::as_u64).unwrap_or(50).min(500) as usize;
+            rusi.query(kind, pattern, limit)
+        }
+        "callgraph" => {
+            let pattern = input.get("pattern").and_then(Value::as_str);
+            let limit = input.get("limit").and_then(Value::as_u64).unwrap_or(50).min(500) as usize;
+            rusi.callgraph(pattern, limit)
+        }
+        "dataflow" => {
+            let pattern = input.get("pattern").and_then(Value::as_str);
+            let limit = input.get("limit").and_then(Value::as_u64).unwrap_or(50).min(500) as usize;
+            rusi.dataflow(pattern, limit)
+        }
+        "detail" => {
+            let name = input.get("name").and_then(Value::as_str).unwrap_or("");
+            if name.is_empty() {
+                "Please provide a 'name' parameter to look up.".to_string()
+            } else {
+                rusi.detail(name)
+            }
+        }
+        "crypto" => {
+            let pattern = input.get("pattern").and_then(Value::as_str);
+            rusi.crypto(pattern)
+        }
+        _ => format!("unknown rusi command: {cmd}"),
+    };
+
+    ToolExecResult {
+        call_id: call_id.into(),
+        content: truncate_content(&content, MAX_TOOL_RESULT_BYTES),
+        is_error: false,
     }
 }
 
@@ -664,7 +723,15 @@ pub fn run_agent(ctx: &AgentCtx, user_input: &str, tx: mpsc::Sender<AgentEvent>)
     let mut transcript = Transcript::new();
     transcript.push_user(user_input);
 
-    let tool_defs = filter_tools(tools::all_tool_definitions(), ctx.allowed_tools.as_deref());
+    // Select the appropriate tool definitions based on the analysis mode.
+    let base_tools = if ctx.rusi.is_some() {
+        tools::rusi_tool_definitions()
+    } else if ctx.engine.is_some() {
+        tools::all_tool_definitions()
+    } else {
+        tools::non_atom_tool_definitions()
+    };
+    let tool_defs = filter_tools(base_tools, ctx.allowed_tools.as_deref());
 
     loop {
         if ctx.cancel.load(Ordering::Relaxed) {
@@ -785,7 +852,14 @@ impl EventSink for HeadlessSink {
 }
 
 pub fn run_headless(ctx: &AgentCtx, input: &str) -> Result<String, Box<dyn std::error::Error>> {
-    let tool_defs = filter_tools(tools::all_tool_definitions(), ctx.allowed_tools.as_deref());
+    let base_tools = if ctx.rusi.is_some() {
+        tools::rusi_tool_definitions()
+    } else if ctx.engine.is_some() {
+        tools::all_tool_definitions()
+    } else {
+        tools::non_atom_tool_definitions()
+    };
+    let tool_defs = filter_tools(base_tools, ctx.allowed_tools.as_deref());
     let mut transcript = Transcript::new();
     transcript.push_user(input);
     let mut final_text = String::new();
@@ -864,6 +938,7 @@ mod tests {
         let ctx = AgentCtx {
             provider: Box::new(crate::agent::anthropic::AnthropicProvider::new("test".into(), "test".into())),
             engine: None,
+            rusi: None,
             source_root: None,
             system_prompt: "test".into(),
             max_tokens: 1000,
@@ -882,6 +957,7 @@ mod tests {
         let ctx = AgentCtx {
             provider: Box::new(crate::agent::anthropic::AnthropicProvider::new("test".into(), "test".into())),
             engine: None,
+            rusi: None,
             source_root: None,
             system_prompt: "test".into(),
             max_tokens: 1000,

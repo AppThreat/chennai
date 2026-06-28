@@ -25,6 +25,26 @@ pub fn all_tool_definitions() -> Vec<Value> {
     ]
 }
 
+/// Return the set of tool definitions for non-atom analysis modes (e.g., rusi).
+/// These exclude atom_* engine tools and include tool-specific tools.
+pub fn non_atom_tool_definitions() -> Vec<Value> {
+    vec![
+        bom_query(),
+        ripgrep_tool(),
+        read_file_tool(),
+        git_diff_tool(),
+        git_log_tool(),
+        git_show_tool(),
+    ]
+}
+
+/// Return the full set of rusi tool definitions (shell tools + rusi-specific tools).
+pub fn rusi_tool_definitions() -> Vec<Value> {
+    let mut tools = non_atom_tool_definitions();
+    tools.append(&mut crate::rusi::rusi_tool_definitions());
+    tools
+}
+
 // Tool definitions for atom (engine) operations.
 
 fn atom_traversal_docs() -> Value {
