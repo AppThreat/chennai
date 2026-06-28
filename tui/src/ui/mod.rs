@@ -2,7 +2,7 @@
 
 pub mod theme;
 
-use crate::app::{AgentEntry, App, Panel};
+use crate::app::{AgentEntry, App, BgStatus, InitPhase, Panel};
 use crate::model::Cell as ModelCell;
 use theme::Theme;
 
@@ -1141,13 +1141,37 @@ fn truncate(s: &str, max: usize) -> String {
 }
 
 fn render_status(frame: &mut Frame, app: &App, theme: &Theme, area: Rect) {
+    let mut spans: Vec<Span> = Vec::new();
+
+    // Background task indicators (mini icon-based progress).
+    {
+        let tasks = app.bg_progress.lock().unwrap();
+        for task in tasks.iter() {
+            let (color, icon) = match &task.status {
+                BgStatus::Running => (theme.accent, "\u{23F3}"),  // ⏳
+                BgStatus::Done => (theme.num, "\u{2713}"),        // ✓
+                BgStatus::Failed(_) => (theme.error, "\u{2717}"), // ✗
+            };
+            spans.push(Span::styled(
+                format!("{}{} ", icon, task.name),
+                Style::default().fg(color),
+            ));
+        }
+    }
+
+    // Main status message.
     let text = if app.status.is_empty() {
-        "q quit · Tab panel · ↑/↓ move · Enter run · d data flows · r reachable · / filter · 1-9 sort · s/m toggles"
-            .to_string()
+        if matches!(app.init_phase, InitPhase::Starting) {
+            "Initialising...".to_string()
+        } else {
+            "q quit \u{B7} Tab panel \u{B7} \u{2191}/\u{2193} move \u{B7} Enter run \u{B7} d data flows \u{B7} r reachable \u{B7} / filter \u{B7} 1-9 sort \u{B7} s/m toggles".to_string()
+        }
     } else {
         app.status.clone()
     };
-    let p = Paragraph::new(Line::from(Span::styled(text, Style::default().fg(theme.muted))));
+    spans.push(Span::styled(text, Style::default().fg(theme.muted)));
+
+    let p = Paragraph::new(Line::from(spans));
     frame.render_widget(p, area);
 }
 

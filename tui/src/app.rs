@@ -16,6 +16,30 @@ use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::Instant;
 
+/// Status of a background startup task displayed in the status bar.
+#[derive(Debug, Clone, PartialEq)]
+pub enum BgStatus {
+    Running,
+    Done,
+    Failed(String),
+}
+
+/// A single background task tracked in the status bar.
+#[derive(Debug, Clone)]
+pub struct BgTaskInfo {
+    pub name: String,
+    pub status: BgStatus,
+}
+
+/// Initialisation phase of the TUI.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InitPhase {
+    /// Background tasks are still running (or not yet started).
+    Starting,
+    /// All startup tasks completed and the TUI is fully interactive.
+    Ready,
+}
+
 /// A single entry in the agent transcript, built from streamed [`AgentEvent`]s for rendering.
 #[derive(Debug, Clone)]
 pub enum AgentEntry {
@@ -252,6 +276,18 @@ pub struct App {
 
     // Rusi analysis context (for Rust codebases).
     pub rusi: Option<Arc<RusiCtx>>,
+
+    // Background startup tasks (cdxgen, atom, rusi) and initialisation phase.
+    pub bg_progress: Arc<Mutex<Vec<BgTaskInfo>>>,
+    pub init_phase: InitPhase,
+    /// Atom path to use once deferred init completes (set by main.rs before run_app).
+    pub deferred_atom_path: Option<String>,
+    /// Engine command path for deferred init.
+    pub deferred_engine_cmd: Option<String>,
+    /// Source root for deferred init.
+    pub deferred_source_root: Option<String>,
+    /// Reports directory for deferred init.
+    pub deferred_reports_dir: Option<String>,
 }
 
 impl App {
@@ -324,6 +360,12 @@ impl App {
             bom_store: None,
             bom_generated: false,
             rusi: None,
+            bg_progress: Arc::new(Mutex::new(Vec::new())),
+            init_phase: InitPhase::Ready,
+            deferred_atom_path: None,
+            deferred_engine_cmd: None,
+            deferred_source_root: None,
+            deferred_reports_dir: None,
         }
     }
 

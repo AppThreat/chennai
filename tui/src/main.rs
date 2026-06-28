@@ -10,7 +10,7 @@ mod rusi;
 mod ui;
 
 use agent::AgentCtx;
-use app::{App, Panel};
+use app::{App, BgStatus, BgTaskInfo, InitPhase, Panel};
 use bom::{find_existing_boms, BomStore};
 use config::Config;
 use engine::Engine;
@@ -144,166 +144,353 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
-    // --- Atom mode (existing flow) ---
-    let atom = resolve_or_generate_atom(path, &args.source, args.ask.is_some())?;
-    let atom_str = atom.to_string_lossy().to_string();
-    let command = Engine::resolve_command(args.engine.as_deref()).ok_or(
-        "engine binary not found; build it with `sbt stage` in engine/, or set CHENNAI_ENGINE",
-    )?;
+    // --- Atom mode ---
 
-    eprintln!("Spawning engine: {}", command.display());
-    let mut eng = Engine::spawn(&command)?;
+    // Fast path: check for an existing .atom file (non-blocking).
+    if let Some(existing_atom) = fast_find_atom(path) {
+        let atom_str = existing_atom.to_string_lossy().to_string();
+        let command = Engine::resolve_command(args.engine.as_deref()).ok_or(
+            "engine binary not found; build it with `sbt stage` in engine/, or set CHENNAI_ENGINE",
+        )?;
 
-    let open_args = match &source_root {
-        Some(src) => json!({ "path": atom_str, "sourceRoot": src }),
-        None      => json!({ "path": atom_str }),
-    };
-    let _open: OpenInfo = eng.request("open", open_args)?;
-    let summary: Summary = eng.request("summary", json!({}))?;
+        eprintln!("Spawning engine: {}", command.display());
+        let mut eng = Engine::spawn(&command)?;
 
-    if let Some(question) = args.ask {
-        return run_headless_agent(config, eng, source_root, summary, question);
-    }
+        let open_args = match &source_root {
+            Some(src) => json!({ "path": atom_str, "sourceRoot": src }),
+            None      => json!({ "path": atom_str }),
+        };
+        let _open: OpenInfo = eng.request("open", open_args)?;
+        let summary: Summary = eng.request("summary", json!({}))?;
 
-    // Wrap engine in Arc<Mutex> so both the TUI and agent can share it.
-    let engine_arc = Arc::new(Mutex::new(eng));
+        if let Some(question) = args.ask {
+            return run_headless_agent(config, eng, source_root, summary, question);
+        }
 
-    // Load existing .cdx.json BOM files — never auto-generate at startup.
-    // cdxgen is invoked on demand if reachables returns empty and no BOM exists.
-    let source_path = source_root.as_ref().map(PathBuf::from);
-    let reports_dir = args.reports_dir.unwrap_or_else(|| {
-        let base = source_root.clone().unwrap_or_else(|| {
-            atom.parent().map(|p| p.to_string_lossy().to_string()).unwrap_or_else(|| ".".into())
+        let engine_arc = Arc::new(Mutex::new(eng));
+
+        let source_path = source_root.as_ref().map(PathBuf::from);
+        let reports_dir = args.reports_dir.unwrap_or_else(|| {
+            let base = source_root.clone().unwrap_or_else(|| {
+                existing_atom.parent().map(|p| p.to_string_lossy().to_string()).unwrap_or_else(|| ".".into())
+            });
+            PathBuf::from(base).join(".chen").join("chennai-reports")
         });
-        PathBuf::from(base).join(".chen").join("chennai-reports")
-    });
 
-    let bom_store = find_existing_boms(reports_dir.as_path());
-    let mut bom_store = if bom_store.loaded { bom_store } else {
-        find_existing_boms(source_path.as_deref().unwrap_or(Path::new(".")))
-    };
+        let bom_store = find_existing_boms(reports_dir.as_path());
+        let mut bom_store = if bom_store.loaded { bom_store } else {
+            find_existing_boms(source_path.as_deref().unwrap_or(Path::new(".")))
+        };
 
-    // If no BOM was found via directory scan, check the atom for .cdx.json config
-    // files (a cheaper query than directory scanning). If none exist either, try
-    // cdxgen on demand. If cdxgen is unavailable, show a reminder.
-    let mut bom_tip = String::new();
-    if !bom_store.loaded {
-        let has_cdx_config = engine_arc.lock().unwrap()
-            .request::<serde_json::Value>("eval", json!({"expr": "atom.configFiles.name(\".*cdx\\\\.json\").toJson"}))
-            .map(|r| r.get("total").and_then(|v| v.as_i64()).unwrap_or(0) > 0)
-            .unwrap_or(false);
+        let mut bom_tip = String::new();
+        if !bom_store.loaded {
+            let has_cdx_config = engine_arc.lock().unwrap()
+                .request::<serde_json::Value>("eval", json!({"expr": "atom.configFiles.name(\".*cdx\\\\.json\").toJson"}))
+                .map(|r| r.get("total").and_then(|v| v.as_i64()).unwrap_or(0) > 0)
+                .unwrap_or(false);
 
-        if !has_cdx_config {
-            let sdir = source_path.as_deref().unwrap_or(Path::new("."));
-            let odir = reports_dir.as_path();
-            let language = bom::detect_language(sdir);
-            let supported = language.as_deref().map(|l| matches!(l, "java" | "js" | "py" | "php" | "rb")).unwrap_or(false);
-            let mut generated = false;
-            if !supported {
-                bom_tip = "Auto SBOM generation is not available for this language. Generate manually with: cdxgen -o sbom.cdx.json <source_dir>".into();
-            }
-            if supported {
-                for lifecycle in bom::LIFECYCLES {
-                    if let Ok(path) = bom::generate_bom(sdir, odir, lifecycle, language.as_deref()) {
-                        // Load the BOM into the Rust store for display.
-                        let mut store = BomStore::new();
-                        if store.load_path(&path).is_ok() {
-                            // Enrich the open atom by running CdxPass + EasyTagsPass.
-                            let bom_str = path.to_string_lossy().to_string();
-                            match engine_arc.lock().unwrap().request::<serde_json::Value>(
-                                "enrich", json!({"bom": bom_str}),
-                            ) {
-                                Ok(resp) => {
-                                    if resp.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
-                                        eprintln!("Atom enriched with SBOM dependency data");
+            if !has_cdx_config {
+                let sdir = source_path.as_deref().unwrap_or(Path::new("."));
+                let odir = reports_dir.as_path();
+                let language = bom::detect_language(sdir);
+                let supported = language.as_deref().map(|l| matches!(l, "java" | "js" | "py" | "php" | "rb")).unwrap_or(false);
+                let mut generated = false;
+                if !supported {
+                    bom_tip = "Auto SBOM generation is not available for this language. Generate manually with: cdxgen -o sbom.cdx.json <source_dir>".into();
+                }
+                if supported {
+                    for lifecycle in bom::LIFECYCLES {
+                        if let Ok(path) = bom::generate_bom(sdir, odir, lifecycle, language.as_deref()) {
+                            let mut store = BomStore::new();
+                            if store.load_path(&path).is_ok() {
+                                let bom_str = path.to_string_lossy().to_string();
+                                match engine_arc.lock().unwrap().request::<serde_json::Value>(
+                                    "enrich", json!({"bom": bom_str}),
+                                ) {
+                                    Ok(resp) => {
+                                        if resp.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
+                                            eprintln!("Atom enriched with SBOM dependency data");
+                                        }
+                                    }
+                                    Err(e) => {
+                                        eprintln!("Warning: failed to enrich atom with SBOM data: {e}");
                                     }
                                 }
-                                Err(e) => {
-                                    eprintln!("Warning: failed to enrich atom with SBOM data: {e}");
-                                }
+                                bom_store = store;
+                                generated = true;
+                                break;
                             }
-                            bom_store = store;
-                            generated = true;
-                            break;
                         }
                     }
                 }
-            }
-            if !generated {
-                bom_tip = "No SBOM found. Generate one with: cdxgen -o sbom-<lang>-<lifecycle>.cdx.json <source_dir> (npm install -g @cyclonedx/cdxgen)".into();
-                eprintln!("Tip: {bom_tip}");
-            }
-        }
-    }
-
-    // Build optional agent context for the TUI.
-    let agent_ctx = if config.enabled {
-        let bom_summary = if bom_store.loaded { bom_store.summary() } else { String::new() };
-        let bom_components = if bom_store.loaded && !bom_store.components.is_empty() {
-            let top: Vec<String> = bom_store.components.iter().take(20).map(|r| {
-                format!("  - {} {} ({}) {}", r.type_display(), r.name_display(), r.version_display(), r.purl_display())
-            }).collect();
-            Some(top.join("\n"))
-        } else { None };
-        match agent::create_provider(&config) {
-            Ok(provider) => {
-                let system_prompt = match &custom_system_prompt {
-                    Some(sp) => sp.clone(),
-                    None => AgentCtx::build_system_prompt(
-                        &summary.language, &summary.version, &summary.rows,
-                        Some(&bom_summary), bom_components.as_deref(), None,
-                    ),
-                };
-                eprintln!("AI agent enabled: {} ({})", config.provider, config.model);
-                Some(AgentCtx {
-                    provider,
-                    engine: Some(engine_arc.clone()),
-                    rusi: None,
-                    source_root: source_root.clone(),
-                    system_prompt,
-                    max_tokens: 8192,
-                    no_thinking: config.no_thinking,
-                    effort: config.effort.clone(),
-                    allowed_tools: None,
-                    cancel: Arc::new(AtomicBool::new(false)),
-                })
-            }
-            Err(e) => {
-                eprintln!("Warning: failed to create LLM provider: {e}. Agent disabled.");
-                None
+                if !generated {
+                    bom_tip = "No SBOM found. Generate one with: cdxgen -o sbom-<lang>-<lifecycle>.cdx.json <source_dir> (npm install -g @cyclonedx/cdxgen)".into();
+                    eprintln!("Tip: {bom_tip}");
+                }
             }
         }
-    } else {
-        None
-    };
 
-    let mut app = App::new(Some(engine_arc), atom_str, summary);
-    if agent_ctx.is_some() {
-        app.enable_agent();
+        let agent_ctx = if config.enabled {
+            let bom_summary = if bom_store.loaded { bom_store.summary() } else { String::new() };
+            let bom_components = if bom_store.loaded && !bom_store.components.is_empty() {
+                let top: Vec<String> = bom_store.components.iter().take(20).map(|r| {
+                    format!("  - {} {} ({}) {}", r.type_display(), r.name_display(), r.version_display(), r.purl_display())
+                }).collect();
+                Some(top.join("\n"))
+            } else { None };
+            match agent::create_provider(&config) {
+                Ok(provider) => {
+                    let system_prompt = match &custom_system_prompt {
+                        Some(sp) => sp.clone(),
+                        None => AgentCtx::build_system_prompt(
+                            &summary.language, &summary.version, &summary.rows,
+                            Some(&bom_summary), bom_components.as_deref(), None,
+                        ),
+                    };
+                    eprintln!("AI agent enabled: {} ({})", config.provider, config.model);
+                    Some(AgentCtx {
+                        provider,
+                        engine: Some(engine_arc.clone()),
+                        rusi: None,
+                        source_root: source_root.clone(),
+                        system_prompt,
+                        max_tokens: 8192,
+                        no_thinking: config.no_thinking,
+                        effort: config.effort.clone(),
+                        allowed_tools: None,
+                        cancel: Arc::new(AtomicBool::new(false)),
+                    })
+                }
+                Err(e) => {
+                    eprintln!("Warning: failed to create LLM provider: {e}. Agent disabled.");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        let mut app = App::new(Some(engine_arc), atom_str, summary);
+        if agent_ctx.is_some() {
+            app.enable_agent();
+        }
+
+        if bom_store.loaded {
+            app.bom_store = Some(bom_store);
+            app.bom_generated = false;
+            app.status = format!("BOM loaded ({} components) — type 'bom' to view", app.bom_store.as_ref().map(|s| s.total_components).unwrap_or(0));
+            eprintln!("{}", app.status);
+        } else if !bom_tip.is_empty() {
+            app.status = bom_tip;
+        }
+
+        enable_raw_mode()?;
+        let mut stdout = io::stdout();
+        execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+        let backend = CrosstermBackend::new(stdout);
+        let mut terminal = ratatui::Terminal::new(backend)?;
+
+        let result = run_app(&mut terminal, &mut app, &theme, agent_ctx, config, source_root, reports_dir, custom_system_prompt);
+
+        disable_raw_mode()?;
+        execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
+        terminal.show_cursor()?;
+
+        return result.map_err(|e| Box::new(e) as Box<dyn std::error::Error>);
     }
 
-    if bom_store.loaded {
-        app.bom_store = Some(bom_store);
-        app.bom_generated = false;
-        app.status = format!("BOM loaded ({} components) — type 'bom' to view", app.bom_store.as_ref().map(|s| s.total_components).unwrap_or(0));
-        eprintln!("{}", app.status);
-    } else if !bom_tip.is_empty() {
-        app.status = bom_tip;
+    // Slow path: no atom found — generate in background.
+    {
+        if args.ask.is_some() {
+            return Err(format!(
+                "no .atom file in {} — generate one first with: atom --with-data-deps <source_dir>",
+                path.display()
+            ).into());
+        }
+
+        let source_dir = source_root.as_ref().map(PathBuf::from).unwrap_or_else(|| path.to_path_buf());
+
+        // Tools availability + auto-install prompt.
+        let has_atom = bom::find_atom().is_ok();
+        let has_cdxgen = bom::find_cdxgen().is_ok();
+        let has_npm = bom::find_npm().is_some();
+
+        if !has_atom && !has_cdxgen && has_npm {
+            let msg = format!(
+                "No .atom file found in {d}\n\
+                 Required tools (cdxgen, atom) are not installed.\n\
+                 Install them automatically via npm?",
+                d = path.display()
+            );
+            if !bom::prompt_yes_no(&msg) {
+                eprintln!("Tip: install manually: npm install -g @cyclonedx/cdxgen @appthreat/atom @appthreat/atom-parsetools");
+                return Err("atom generation cancelled by user".into());
+            }
+            eprint!("Installing cdxgen, atom, and atom-parsetools... ");
+            let _ = std::io::stderr().flush();
+            bom::auto_install_npm()?;
+            eprintln!("done.");
+        } else if !has_atom || !has_cdxgen {
+            let missing = if !has_atom && !has_cdxgen {
+                "cdxgen and atom CLI"
+            } else if !has_atom {
+                "atom CLI"
+            } else {
+                "cdxgen"
+            };
+            return Err(format!(
+                "no .atom file in {} and {missing} is required for generation",
+                path.display()
+            ).into());
+        }
+
+        // Generation prompt.
+        let msg = format!(
+            "No .atom file found in {d}\n\
+             Generate one for analysis?  This will:\n\
+              └ 1. Run cdxgen to produce a CycloneDX SBOM\n\
+              └ 2. Run atom --with-data-deps to build the atom file\n\
+             \nSource: {src}",
+            d = path.display(),
+            src = source_dir.display()
+        );
+        if !bom::prompt_yes_no(&msg) {
+            eprintln!("Tip: generate manually: atom --with-data-deps <source_dir>");
+            return Err("atom generation cancelled by user".into());
+        }
+
+        let language = bom::atom_gen::detect_language(&source_dir).map(|s| s.to_string());
+        let language_for_atom = language.as_deref().unwrap_or("all").to_string();
+        let reports_dir = args.reports_dir.unwrap_or_else(|| {
+            PathBuf::from(&source_dir).join(".chen").join("chennai-reports")
+        });
+        let atom_path = bom::atom_output_path(&source_dir);
+        let engine_cmd = Engine::resolve_command(args.engine.as_deref()).ok_or(
+            "engine binary not found; build it with `sbt stage` in engine/, or set CHENNAI_ENGINE",
+        )?;
+
+        // Spawn background generation tasks.
+        let bg_progress = Arc::new(Mutex::new(Vec::new()));
+
+        // cdxgen task.
+        {
+            bg_progress.lock().unwrap().push(BgTaskInfo { name: "cdxgen".into(), status: BgStatus::Running });
+            let progress = bg_progress.clone();
+            let sdir = source_dir.clone();
+            let lang = language.clone();
+            let rdir = reports_dir.clone();
+            thread::spawn(move || {
+                let mut last_err = None;
+                for lifecycle in bom::LIFECYCLES {
+                    match bom::generate_bom(&sdir, &rdir, lifecycle, lang.as_deref()) {
+                        Ok(_) => {
+                            let mut tasks = progress.lock().unwrap();
+                            if let Some(t) = tasks.iter_mut().find(|t| t.name == "cdxgen") {
+                                t.status = BgStatus::Done;
+                            }
+                            return;
+                        }
+                        Err(e) => last_err = Some(e),
+                    }
+                }
+                let mut tasks = progress.lock().unwrap();
+                if let Some(t) = tasks.iter_mut().find(|t| t.name == "cdxgen") {
+                    t.status = BgStatus::Failed(last_err.unwrap_or_else(|| "cdxgen failed".into()));
+                }
+            });
+        }
+
+        // atom task (waits for cdxgen to complete).
+        {
+            bg_progress.lock().unwrap().push(BgTaskInfo { name: "atom".into(), status: BgStatus::Running });
+            let progress = bg_progress.clone();
+            let sdir = source_dir.clone();
+            let apath = atom_path.clone();
+            let lang = language_for_atom.clone();
+            thread::spawn(move || {
+                // Wait for cdxgen.
+                loop {
+                    let cdxgen_done = {
+                        let tasks = progress.lock().unwrap();
+                        tasks.iter().find(|t| t.name == "cdxgen")
+                            .map(|t| t.status != BgStatus::Running)
+                            .unwrap_or(true)
+                    };
+                    if cdxgen_done {
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(500));
+                }
+                match bom::generate_atom(&sdir, &apath, &lang) {
+                    Ok(_) => {
+                        let mut tasks = progress.lock().unwrap();
+                        if let Some(t) = tasks.iter_mut().find(|t| t.name == "atom") {
+                            t.status = BgStatus::Done;
+                        }
+                    }
+                    Err(e) => {
+                        let mut tasks = progress.lock().unwrap();
+                        if let Some(t) = tasks.iter_mut().find(|t| t.name == "atom") {
+                            t.status = BgStatus::Failed(e);
+                        }
+                    }
+                }
+            });
+        }
+
+        // Create App with deferred init.
+        let mut app = App::new(None, "generating...".into(), Summary::default());
+        app.bg_progress = bg_progress;
+        app.init_phase = InitPhase::Starting;
+        app.deferred_atom_path = Some(atom_path.to_string_lossy().to_string());
+        app.deferred_engine_cmd = Some(engine_cmd.to_string_lossy().to_string());
+        app.deferred_source_root = source_root.clone();
+        app.deferred_reports_dir = Some(reports_dir.to_string_lossy().to_string());
+
+        let agent_ctx = if config.enabled {
+            match agent::create_provider(&config) {
+                Ok(provider) => {
+                    eprintln!("AI agent enabled: {} ({})", config.provider, config.model);
+                    Some(AgentCtx {
+                        provider,
+                        engine: None,
+                        rusi: None,
+                        source_root: source_root.clone(),
+                        system_prompt: String::new(),
+                        max_tokens: 8192,
+                        no_thinking: config.no_thinking,
+                        effort: config.effort.clone(),
+                        allowed_tools: None,
+                        cancel: Arc::new(AtomicBool::new(false)),
+                    })
+                }
+                Err(e) => {
+                    eprintln!("Warning: failed to create LLM provider: {e}. Agent disabled.");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        if agent_ctx.is_some() {
+            app.enable_agent();
+        }
+
+        enable_raw_mode()?;
+        let mut stdout = io::stdout();
+        execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+        let backend = CrosstermBackend::new(stdout);
+        let mut terminal = ratatui::Terminal::new(backend)?;
+
+        let result = run_app(&mut terminal, &mut app, &theme, agent_ctx, config, source_root, reports_dir, custom_system_prompt);
+
+        disable_raw_mode()?;
+        execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
+        terminal.show_cursor()?;
+
+        result.map_err(|e| Box::new(e) as Box<dyn std::error::Error>)
     }
-
-    enable_raw_mode()?;
-    let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
-    let backend = CrosstermBackend::new(stdout);
-    let mut terminal = ratatui::Terminal::new(backend)?;
-
-    let result = run_app(&mut terminal, &mut app, &theme, agent_ctx, config, source_root, reports_dir, custom_system_prompt);
-
-    disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
-    terminal.show_cursor()?;
-
-    result.map_err(|e| Box::new(e) as Box<dyn std::error::Error>)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -326,24 +513,188 @@ fn run_non_atom_mode(
         find_existing_boms(source_dir)
     };
 
-    // Try to generate SBOM if none exists
-    if !bom_store.loaded {
-        let sdir = source_dir;
-        let odir = &reports_dir;
-        eprint!("Running cdxgen to generate SBOM... ");
-        let _ = std::io::stderr().flush();
-        for lifecycle in bom::LIFECYCLES {
-            if let Ok(path) = bom::generate_bom(sdir, odir, lifecycle, language.as_deref()) {
-                let mut store = BomStore::new();
-                if store.load_path(&path).is_ok() {
-                    bom_store = store;
-                    break;
+    // Try to load existing rusi report (fast file check).
+    let existing_rusi: Option<RusiCtx> = if language.as_deref() == Some("rust") {
+        let rusi_path = rusi::rusi_report_path(source_dir);
+        if rusi_path.is_file() {
+            rusi::loader::LoadedReport::from_file(&rusi_path).ok().map(|report| RusiCtx {
+                report,
+                source_root: source_dir.to_string_lossy().to_string(),
+                callgraph_path: None,
+                dataflow_path: None,
+            })
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    // Fast path: all data already exists — proceed synchronously as before.
+    let bom_ready = bom_store.loaded;
+    let rusi_ready = existing_rusi.is_some() || language.as_deref() != Some("rust");
+    if bom_ready && rusi_ready {
+        return finish_non_atom_startup(
+            source_dir, source_root, language, config, theme,
+            custom_system_prompt, ask, reports_dir,
+            bom_store, existing_rusi.map(Arc::new),
+        );
+    }
+
+    // Headless mode: generate synchronously.
+    if ask.is_some() {
+        if !bom_store.loaded {
+            for lifecycle in bom::LIFECYCLES {
+                if let Ok(path) = bom::generate_bom(source_dir, &reports_dir, lifecycle, language.as_deref()) {
+                    let mut store = BomStore::new();
+                    if store.load_path(&path).is_ok() {
+                        bom_store = store;
+                        break;
+                    }
                 }
             }
         }
-        eprintln!("done.");
+        let rusi_ctx = if language.as_deref() == Some("rust") {
+            match load_or_generate_rusi(source_dir, true) {
+                Ok(ctx) => Some(Arc::new(ctx)),
+                Err(e) => { eprintln!("Warning: rusi: {e}"); None }
+            }
+        } else { None };
+        return finish_non_atom_startup(
+            source_dir, source_root, language, config, theme,
+            custom_system_prompt, ask, reports_dir,
+            bom_store, rusi_ctx,
+        );
     }
 
+    // Slow path: spawn background tasks for cdxgen and/or rusi.
+    let source_root_str = source_root.clone().unwrap_or_else(|| source_dir.to_string_lossy().to_string());
+    let bg_progress = Arc::new(Mutex::new(Vec::new()));
+
+    // cdxgen task (if no BOM loaded).
+    if !bom_store.loaded {
+        bg_progress.lock().unwrap().push(BgTaskInfo { name: "cdxgen".into(), status: BgStatus::Running });
+        let progress = bg_progress.clone();
+        let sdir = source_dir.to_path_buf();
+        let lang = language.clone();
+        let rdir = reports_dir.clone();
+        thread::spawn(move || {
+            let mut last_err = None;
+            for lifecycle in bom::LIFECYCLES {
+                match bom::generate_bom(&sdir, &rdir, lifecycle, lang.as_deref()) {
+                    Ok(_) => {
+                        let mut tasks = progress.lock().unwrap();
+                        if let Some(t) = tasks.iter_mut().find(|t| t.name == "cdxgen") {
+                            t.status = BgStatus::Done;
+                        }
+                        return;
+                    }
+                    Err(e) => last_err = Some(e),
+                }
+            }
+            let mut tasks = progress.lock().unwrap();
+            if let Some(t) = tasks.iter_mut().find(|t| t.name == "cdxgen") {
+                t.status = BgStatus::Failed(last_err.unwrap_or_else(|| "cdxgen failed".into()));
+            }
+        });
+    }
+
+    // rusi task (if Rust and no existing report).
+    if language.as_deref() == Some("rust") && existing_rusi.is_none() {
+        bg_progress.lock().unwrap().push(BgTaskInfo { name: "rusi".into(), status: BgStatus::Running });
+        let progress = bg_progress.clone();
+        let sdir = source_dir.to_path_buf();
+        thread::spawn(move || {
+            match rusi::run_rusi(&sdir) {
+                Ok(_) => {
+                    let mut tasks = progress.lock().unwrap();
+                    if let Some(t) = tasks.iter_mut().find(|t| t.name == "rusi") {
+                        t.status = BgStatus::Done;
+                    }
+                }
+                Err(e) => {
+                    let mut tasks = progress.lock().unwrap();
+                    if let Some(t) = tasks.iter_mut().find(|t| t.name == "rusi") {
+                        t.status = BgStatus::Failed(e);
+                    }
+                }
+            }
+        });
+    }
+
+    // Create App with deferred init.
+    let mut app = App::new(None, source_dir.to_string_lossy().to_string(), Summary::default());
+    app.atom_path = source_dir.to_string_lossy().to_string();
+    app.bg_progress = bg_progress;
+    app.init_phase = InitPhase::Starting;
+    app.deferred_source_root = source_root.clone();
+    app.deferred_reports_dir = Some(reports_dir.to_string_lossy().to_string());
+
+    // Set rusi if it was already loaded (from existing file before bg task).
+    if let Some(ctx) = existing_rusi {
+        app.rusi = Some(Arc::new(ctx));
+    }
+
+    let agent_ctx = if config.enabled {
+        match agent::create_provider(config) {
+            Ok(provider) => {
+                eprintln!("AI agent enabled: {} ({})", config.provider, config.model);
+                Some(AgentCtx {
+                    provider,
+                    engine: None,
+                    rusi: app.rusi.clone(),
+                    source_root: Some(source_root_str.clone()),
+                    system_prompt: String::new(),
+                    max_tokens: 8192,
+                    no_thinking: config.no_thinking,
+                    effort: config.effort.clone(),
+                    allowed_tools: None,
+                    cancel: Arc::new(AtomicBool::new(false)),
+                })
+            }
+            Err(e) => {
+                eprintln!("Warning: failed to create LLM provider: {e}. Agent disabled.");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    if agent_ctx.is_some() {
+        app.enable_agent();
+    }
+
+    enable_raw_mode()?;
+    let mut stdout = io::stdout();
+    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    let backend = CrosstermBackend::new(stdout);
+    let mut terminal = ratatui::Terminal::new(backend)?;
+
+    let result = run_app(&mut terminal, &mut app, theme, agent_ctx, config.clone(), Some(source_root_str), reports_dir, None);
+
+    disable_raw_mode()?;
+    execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
+    terminal.show_cursor()?;
+
+    result.map_err(|e| Box::new(e) as Box<dyn std::error::Error>)
+}
+
+/// Shared fast-path initialisation for non-atom mode when data already exists.
+#[allow(clippy::too_many_arguments)]
+fn finish_non_atom_startup(
+    source_dir: &Path,
+    source_root: &Option<String>,
+    language: &Option<String>,
+    config: &Config,
+    theme: &Theme,
+    custom_system_prompt: Option<String>,
+    ask: Option<String>,
+    reports_dir: PathBuf,
+    bom_store: BomStore,
+    rusi_ctx: Option<Arc<RusiCtx>>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let source_root_str = source_root.clone().unwrap_or_else(|| source_dir.to_string_lossy().to_string());
     let bom_summary = if bom_store.loaded { bom_store.summary() } else { String::new() };
     let bom_components = if bom_store.loaded && !bom_store.components.is_empty() {
         let top: Vec<String> = bom_store.components.iter().take(20).map(|r| {
@@ -352,30 +703,10 @@ fn run_non_atom_mode(
         Some(top.join("\n"))
     } else { None };
 
-    let source_root_str = source_root.clone().unwrap_or_else(|| source_dir.to_string_lossy().to_string());
-
-    // For Rust, try to load or generate rusi report.
-    let headless = ask.is_some();
-    let rusi_ctx: Option<Arc<RusiCtx>> = if language.as_deref() == Some("rust") {
-        match load_or_generate_rusi(source_dir, headless) {
-            Ok(ctx) => {
-                eprintln!("Rusi analysis loaded for Rust codebase");
-                Some(Arc::new(ctx))
-            }
-            Err(e) => {
-                eprintln!("Warning: rusi analysis unavailable: {e}. Proceeding with shell tools only.");
-                None
-            }
-        }
-    } else {
-        None
-    };
-
     let summary_text = rusi_ctx.as_ref().map(|r| r.summary()).unwrap_or_else(|| {
         format!("Language: {lang}\nNo structured analysis available. Use ripgrep/read_file to explore the codebase.", lang = language.as_deref().unwrap_or("unknown"))
     });
 
-    // Build the system prompt.
     let system_prompt = match custom_system_prompt {
         Some(sp) => sp,
         None => {
@@ -635,6 +966,14 @@ fn run_app<B: Backend>(
         terminal.draw(|frame| ui::render(frame, app, theme))?;
 
         if app.should_quit { return Ok(()); }
+
+        // Poll background startup tasks and run deferred init when all done.
+        if app.init_phase == InitPhase::Starting {
+            try_complete_startup(app, &source_root, &reports_dir);
+            if app.init_phase == InitPhase::Ready {
+                eprintln!("Startup complete: {}", app.status);
+            }
+        }
 
         // Drain agent events every frame (non-blocking).
         if app.agent_active && app.agent_rx.is_some() {
@@ -952,6 +1291,132 @@ fn handle_mouse(app: &mut App, m: crossterm::event::MouseEvent) {
         MouseEventKind::ScrollUp   => app.scroll_at(m.column, m.row, false),
         _ => {}
     }
+}
+
+/// Quick non-blocking check for an existing `.atom` file at `path` or inside it.
+/// Returns `None` when no atom is found (meaning generation would be needed).
+fn fast_find_atom(path: &Path) -> Option<PathBuf> {
+    if path.is_file() {
+        return Some(path.to_path_buf());
+    }
+    if let Ok(entries) = std::fs::read_dir(path) {
+        let mut atoms: Vec<_> = entries
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| p.extension().map(|e| e == "atom").unwrap_or(false))
+            .collect();
+        atoms.sort();
+        if let Some(a) = atoms.into_iter().next() {
+            return Some(a);
+        }
+    }
+    None
+}
+
+/// Complete deferred initialisation after background tasks finish.
+/// Called from the event loop when `app.init_phase == InitPhase::Starting`.
+fn try_complete_startup(app: &mut App, source_root: &Option<String>, reports_dir: &Path) {
+    let all_done = {
+        let tasks = app.bg_progress.lock().unwrap();
+        tasks.iter().all(|t| t.status != BgStatus::Running)
+    };
+    if !all_done {
+        return;
+    }
+
+    // All background tasks done — run deferred init.
+    if let Some(atom_path) = app.deferred_atom_path.clone() {
+        // Atom mode: spawn engine, open atom, load summary.
+        let cmd = match &app.deferred_engine_cmd {
+            Some(c) => PathBuf::from(c),
+            None => { app.init_phase = InitPhase::Ready; return; }
+        };
+        let command = match Engine::resolve_command(cmd.to_str()) {
+            Some(c) => c,
+            None => { app.status = "engine binary not found".into(); app.init_phase = InitPhase::Ready; return; }
+        };
+        match Engine::spawn(&command) {
+            Ok(mut eng) => {
+                let open_args = match source_root {
+                    Some(src) => json!({ "path": atom_path, "sourceRoot": src }),
+                    None      => json!({ "path": atom_path }),
+                };
+                match eng.request::<OpenInfo>("open", open_args) {
+                    Ok(_) => {
+                        match eng.request::<Summary>("summary", json!({})) {
+                            Ok(summary) => {
+                                let engine_arc = Arc::new(Mutex::new(eng));
+                                app.engine = Some(engine_arc);
+                                app.summary = summary;
+                                app.atom_path = atom_path;
+
+                                // Load BOM from the reports directory.
+                                let mut bom_store = bom::find_existing_boms(reports_dir);
+                                if !bom_store.loaded {
+                                    let sp = source_root.as_ref().map(PathBuf::from);
+                                    bom_store = bom::find_existing_boms(sp.as_deref().unwrap_or(Path::new(".")));
+                                }
+                                if bom_store.loaded {
+                                    app.bom_store = Some(bom_store);
+                                    app.status = format!(
+                                        "BOM loaded ({} components) — type 'bom' to view",
+                                        app.bom_store.as_ref().map(|s| s.total_components).unwrap_or(0)
+                                    );
+                                } else {
+                                    app.status = "Atom ready. No BOM found.".into();
+                                }
+                                app.init_phase = InitPhase::Ready;
+                            }
+                            Err(e) => { app.status = format!("engine summary failed: {e}"); app.init_phase = InitPhase::Ready; }
+                        }
+                    }
+                    Err(e) => { app.status = format!("engine open failed: {e}"); app.init_phase = InitPhase::Ready; }
+                }
+            }
+            Err(e) => { app.status = format!("engine spawn failed: {e}"); app.init_phase = InitPhase::Ready; }
+        }
+    } else {
+        // Non-atom mode deferred init: load BOM / rusi (already generated by bg tasks).
+        try_complete_non_atom_startup(app, source_root, reports_dir);
+    }
+}
+
+/// Deferred init for non-atom mode: load generated BOM / rusi files and update App.
+fn try_complete_non_atom_startup(app: &mut App, source_root: &Option<String>, reports_dir: &Path) {
+    // Load BOM from reports directory.
+    let mut bom_store = bom::find_existing_boms(reports_dir);
+    if !bom_store.loaded {
+        let sp = source_root.as_ref().map(PathBuf::from);
+        bom_store = bom::find_existing_boms(sp.as_deref().unwrap_or(Path::new(".")));
+    }
+    if bom_store.loaded {
+        app.bom_store = Some(bom_store);
+    }
+
+    // Load rusi report if present.
+    if app.rusi.is_none() {
+        let rusi_path = rusi::rusi_report_path(Path::new(&app.atom_path));
+        if rusi_path.is_file()
+            && let Ok(report) = rusi::loader::LoadedReport::from_file(&rusi_path)
+        {
+            app.rusi = Some(Arc::new(RusiCtx {
+                report,
+                source_root: app.atom_path.clone(),
+                callgraph_path: None,
+                dataflow_path: None,
+            }));
+        }
+    }
+
+    let bom_size = app.bom_store.as_ref().map(|s| s.total_components).unwrap_or(0);
+    if bom_size > 0 {
+        app.status = format!(
+            "BOM loaded ({} components). AI agent is your primary interface.",
+            bom_size
+        );
+    } else {
+        app.status = "No SBOM found. Generate with: cdxgen -o sbom.cdx.json <source_dir>".into();
+    }
+    app.init_phase = InitPhase::Ready;
 }
 
 /// Resolve an atom file from the user-supplied path.  If the path is a directory that does not
