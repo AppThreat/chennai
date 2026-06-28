@@ -320,7 +320,11 @@ fn backend_dispatch(ctx: &AgentCtx, call_id: &str, cmd: &str, input: &Value) -> 
     let content = match cmd {
         "summary" => backend.summary(),
         _ => {
-            let kind = cmd;
+            let kind = if cmd == "query" {
+                input.get("kind").and_then(Value::as_str).unwrap_or("query")
+            } else {
+                cmd
+            };
             let pattern = input.get("pattern").and_then(Value::as_str);
             let limit = input.get("limit").and_then(Value::as_u64).unwrap_or(50).min(500) as usize;
             // For "detail", use pattern as the name lookup

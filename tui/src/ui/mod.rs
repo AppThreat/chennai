@@ -6,7 +6,7 @@ use crate::app::{AgentEntry, App, BgStatus, InitPhase, Panel};
 use crate::model::Cell as ModelCell;
 use theme::Theme;
 
-use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
+use ratatui::layout::{Alignment, Constraint, Direction, Layout, Margin, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
@@ -425,7 +425,6 @@ fn render_output_table(frame: &mut Frame, app: &mut App, theme: &Theme, area: Re
                 usize::MAX
             };
             let qs = &app.starter_questions;
-            let q_area_top = inner.y + lines.len() as u16;
             for (i, q) in qs.iter().enumerate() {
                 let is_sel = i == selected;
                 let icon = if is_sel { "▸" } else { " " };
@@ -444,14 +443,34 @@ fn render_output_table(frame: &mut Frame, app: &mut App, theme: &Theme, area: Re
                     Span::styled(q.label.as_str(), text_style),
                 ]));
             }
+
+            let q_total = 3 + qs.len();
+            let q_area_height = (q_total as u16 + 2).min(inner.height);
+
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Fill(1), Constraint::Length(q_area_height)])
+                .split(inner);
+
+            let repl_bg = Color::Rgb(0x2b, 0x3a, 0x42);
+            let repl_border = Color::Rgb(0x5a, 0x7c, 0x90);
+            let q_area = chunks[1];
+            let block = Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(repl_border))
+                .style(Style::default().bg(repl_bg));
+            let q_inner = block.inner(q_area);
+            frame.render_widget(block, q_area);
+
             app.starter_questions_area = Some(Rect {
-                x: inner.x,
-                y: q_area_top,
-                width: inner.width,
+                x: q_inner.x,
+                y: q_inner.y + 3,
+                width: q_inner.width,
                 height: qs.len() as u16,
             });
-            let hint = Paragraph::new(lines);
-            frame.render_widget(hint, inner);
+
+            let hint = Paragraph::new(lines).alignment(Alignment::Center);
+            frame.render_widget(hint, q_inner);
         } else {
             let hint = Paragraph::new(vec![
                 Line::from(Span::styled(
