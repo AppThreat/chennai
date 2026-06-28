@@ -698,7 +698,7 @@ fn merge_component_properties(existing: &mut Component, duplicate: &Component) {
             if let Some(ref ids) = dup_ev.identity {
                 let eids = merged_ev.identity.get_or_insert_with(Vec::new);
                 for id in ids {
-                    if !eids.iter().any(|e| e.name == id.name) {
+                    if !eids.iter().any(|e| e.field == id.field) {
                         eids.push(id.clone());
                     }
                 }

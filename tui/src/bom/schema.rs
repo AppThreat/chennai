@@ -499,11 +499,55 @@ pub struct Requirement {
 pub struct ComponentEvidence {
     pub licenses: Option<Vec<LicenseChoice>>,
     pub copyright: Option<Vec<Copyright>>,
-    pub identity: Option<Vec<OrganizationalEntity>>,
+    #[serde(default, deserialize_with = "deserialize_identity")]
+    pub identity: Option<Vec<ComponentIdentityEvidence>>,
     pub occurrences: Option<Vec<Occurrence>>,
 
     #[serde(flatten)]
     pub extra: HashMap<String, serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ComponentIdentityEvidence {
+    pub field: Option<String>,
+    pub confidence: Option<f64>,
+    #[serde(rename = "concludedValue")]
+    pub concluded_value: Option<String>,
+    pub methods: Option<Vec<IdentityMethod>>,
+
+    #[serde(flatten)]
+    pub extra: HashMap<String, serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IdentityMethod {
+    pub technique: Option<String>,
+    pub confidence: Option<f64>,
+    pub value: Option<String>,
+
+    #[serde(flatten)]
+    pub extra: HashMap<String, serde_json::Value>,
+}
+
+fn deserialize_identity<'de, D>(deserializer: D) -> Result<Option<Vec<ComponentIdentityEvidence>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::Error;
+    let v: Option<serde_json::Value> = Option::deserialize(deserializer)?;
+    match v {
+        None => Ok(None),
+        Some(serde_json::Value::Array(arr)) => {
+            let ids: Vec<ComponentIdentityEvidence> = serde_json::from_value(serde_json::Value::Array(arr))
+                .map_err(D::Error::custom)?;
+            Ok(Some(ids))
+        }
+        Some(obj) => {
+            let id: ComponentIdentityEvidence = serde_json::from_value(obj)
+                .map_err(D::Error::custom)?;
+            Ok(Some(vec![id]))
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

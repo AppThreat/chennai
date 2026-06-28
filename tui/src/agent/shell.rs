@@ -89,6 +89,20 @@ pub fn ripgrep(source_root: &Path, args: &serde_json::Value) -> Result<String, S
 // read_file
 // ---------------------------------------------------------------------------
 
+/// Largest valid UTF-8 char boundary at or below `max`, so byte-slicing `s[..n]`
+/// never panics by splitting a multi-byte character. (Equivalent to the unstable
+/// `str::floor_char_boundary`.)
+fn floor_char_boundary(s: &str, max: usize) -> usize {
+    if max >= s.len() {
+        return s.len();
+    }
+    let mut i = max;
+    while i > 0 && !s.is_char_boundary(i) {
+        i -= 1;
+    }
+    i
+}
+
 pub fn read_file(source_root: &Path, args: &serde_json::Value) -> Result<String, String> {
     let path_str = args.get("path").and_then(Value::as_str).ok_or("read_file requires 'path'")?;
     let confined = confine_path(source_root, path_str)?;
@@ -102,7 +116,7 @@ pub fn read_file(source_root: &Path, args: &serde_json::Value) -> Result<String,
     if start == 1 && end.is_none() {
         // Return whole file, respecting the output cap.
         if content.len() > MAX_OUTPUT_BYTES {
-            let truncated = &content[..MAX_OUTPUT_BYTES];
+            let truncated = &content[..floor_char_boundary(&content, MAX_OUTPUT_BYTES)];
             Ok(format!("{truncated}\n--- FILE TRUNCATED at {} KiB ---", MAX_OUTPUT_BYTES / 1024))
         } else {
             Ok(content)
@@ -110,10 +124,14 @@ pub fn read_file(source_root: &Path, args: &serde_json::Value) -> Result<String,
     } else {
         let lines: Vec<&str> = content.lines().collect();
         let end = end.unwrap_or(lines.len()).min(lines.len());
-        let selected: Vec<&str> = lines[start.saturating_sub(1)..end].to_vec();
+        // Clamp start so it never exceeds end (e.g. start past EOF, or start > end),
+        // which would otherwise panic with an inverted slice range.
+        let begin = start.saturating_sub(1).min(end);
+        let selected: Vec<&str> = lines[begin..end].to_vec();
         let result = selected.join("\n");
         if result.len() > MAX_OUTPUT_BYTES {
-            Ok(format!("{}\n--- OUTPUT TRUNCATED at {} KiB ---", &result[..MAX_OUTPUT_BYTES], MAX_OUTPUT_BYTES / 1024))
+            let truncated = &result[..floor_char_boundary(&result, MAX_OUTPUT_BYTES)];
+            Ok(format!("{truncated}\n--- OUTPUT TRUNCATED at {} KiB ---", MAX_OUTPUT_BYTES / 1024))
         } else {
             Ok(result)
         }
@@ -224,6 +242,38 @@ mod tests {
         let args = serde_json::json!({ "path": "test.txt", "start": 2, "end": 3 });
         let result = read_file(&root, &args).unwrap();
         assert_eq!(result, "line2\nline3");
+    }
+
+    #[test]
+    fn floor_char_boundary_avoids_splitting_multibyte_chars() {
+        // "é" is 2 bytes; a cap landing mid-character must step back to a boundary.
+        let s = "aé";
+        assert_eq!(floor_char_boundary(s, 2), 1); // between 'a' and 'é'
+        assert_eq!(floor_char_boundary(s, 1), 1);
+        assert_eq!(floor_char_boundary(s, 100), s.len());
+        // Slicing at the returned index never panics.
+        let _ = &s[..floor_char_boundary(s, 2)];
+    }
+
+    #[test]
+    fn read_file_truncates_multibyte_content_without_panic() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path().to_path_buf();
+        // Fill well past MAX_OUTPUT_BYTES with a 3-byte char so the cap lands mid-character.
+        let big = "あ".repeat(MAX_OUTPUT_BYTES);
+        std::fs::write(root.join("big.txt"), &big).unwrap();
+        let args = serde_json::json!({ "path": "big.txt" });
+        let result = read_file(&root, &args).unwrap();
+        assert!(result.contains("FILE TRUNCATED"));
+    }
+
+    #[test]
+    fn read_file_start_past_end_does_not_panic() {
+        let (_dir, root) = test_root();
+        // start beyond EOF (and well past end) must not panic on an inverted slice range.
+        let args = serde_json::json!({ "path": "test.txt", "start": 395, "end": 200 });
+        let result = read_file(&root, &args).unwrap();
+        assert_eq!(result, "");
     }
 
     #[test]
