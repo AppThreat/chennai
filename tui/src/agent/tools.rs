@@ -5,6 +5,14 @@
 
 use serde_json::{json, Value};
 
+/// Return the tool definitions for a given backend (shell + backend-specific).
+#[allow(clippy::borrowed_box)]
+pub fn backend_tool_definitions(backend: &Box<dyn crate::shared::backend::Backend>) -> Vec<Value> {
+    let mut tools = non_atom_tool_definitions();
+    tools.append(&mut backend.tool_definitions());
+    tools
+}
+
 /// Return the full set of tool definitions sent to the LLM on every turn.
 pub fn all_tool_definitions() -> Vec<Value> {
     vec![
@@ -39,9 +47,34 @@ pub fn non_atom_tool_definitions() -> Vec<Value> {
 }
 
 /// Return the full set of rusi tool definitions (shell tools + rusi-specific tools).
+#[allow(dead_code)]
 pub fn rusi_tool_definitions() -> Vec<Value> {
     let mut tools = non_atom_tool_definitions();
     tools.append(&mut crate::rusi::rusi_tool_definitions());
+    tools
+}
+
+/// Return the full set of golem tool definitions (shell tools + golem-specific tools).
+#[allow(dead_code)]
+pub fn golem_tool_definitions() -> Vec<Value> {
+    let mut tools = non_atom_tool_definitions();
+    tools.append(&mut crate::golem::golem_tool_definitions());
+    tools
+}
+
+/// Return the full set of dosai tool definitions (shell tools + dosai-specific tools).
+#[allow(dead_code)]
+pub fn dosai_tool_definitions() -> Vec<Value> {
+    let mut tools = non_atom_tool_definitions();
+    tools.append(&mut crate::dosai::dosai_tool_definitions());
+    tools
+}
+
+/// Return the full set of blint tool definitions (shell tools + blint-specific tools).
+#[allow(dead_code)]
+pub fn blint_tool_definitions() -> Vec<Value> {
+    let mut tools = non_atom_tool_definitions();
+    tools.append(&mut crate::blint::blint_tool_definitions());
     tools
 }
 

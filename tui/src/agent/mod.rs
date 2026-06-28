@@ -16,7 +16,7 @@ pub mod transcript;
 
 use crate::config::{Config, ProviderKind};
 use crate::engine::Engine;
-use crate::rusi::RusiCtx;
+use crate::shared::backend::Backend;
 use provider::{
     AgentEvent, ChannelSink, ContentBlock, EventSink, LlmProvider, ProviderError, TurnRequest,
 };
@@ -162,8 +162,8 @@ pub fn create_provider(config: &Config) -> Result<Box<dyn LlmProvider + Send + S
 pub struct AgentCtx {
     pub provider: Box<dyn LlmProvider + Send + Sync>,
     pub engine: Option<Arc<Mutex<Engine>>>,
-    /// Optional loaded rusi analysis context for Rust codebases.
-    pub rusi: Option<Arc<RusiCtx>>,
+    /// Optional loaded backend analysis context (rusi/golem/dosai/blint).
+    pub backend: Option<Box<dyn Backend>>,
     pub source_root: Option<String>,
     pub system_prompt: String,
     pub max_tokens: u32,
@@ -288,12 +288,11 @@ pub fn dispatch_tool(ctx: &AgentCtx, call_id: &str, name: &str, input: &Value) -
         "atom_flows_through" => engine_request(ctx, call_id, "flows", input),
         "atom_detail" => engine_request(ctx, call_id, "detail", input),
         "atom_algorithms" => engine_request(ctx, call_id, "algo", input),
-        "rusi_summary" => rusi_dispatch(ctx, call_id, "summary", input),
-        "rusi_query" => rusi_dispatch(ctx, call_id, "query", input),
-        "rusi_callgraph" => rusi_dispatch(ctx, call_id, "callgraph", input),
-        "rusi_flows" => rusi_dispatch(ctx, call_id, "dataflow", input),
-        "rusi_detail" => rusi_dispatch(ctx, call_id, "detail", input),
-        "rusi_crypto" => rusi_dispatch(ctx, call_id, "crypto", input),
+        // Backend-specific tool dispatch: tools named <backend>_<command>
+        _ if name.starts_with("rusi_") => backend_dispatch(ctx, call_id, name.strip_prefix("rusi_").unwrap(), input),
+        _ if name.starts_with("golem_") => backend_dispatch(ctx, call_id, name.strip_prefix("golem_").unwrap(), input),
+        _ if name.starts_with("dosai_") => backend_dispatch(ctx, call_id, name.strip_prefix("dosai_").unwrap(), input),
+        _ if name.starts_with("blint_") => backend_dispatch(ctx, call_id, name.strip_prefix("blint_").unwrap(), input),
         "bom_query" => bom_query_dispatch(ctx, call_id, input),
         "ripgrep"   => wrap_result(call_id, shell::ripgrep(&source_root_path(ctx), input)),
         "read_file" => wrap_result(call_id, shell::read_file(&source_root_path(ctx), input)),
@@ -308,47 +307,29 @@ pub fn dispatch_tool(ctx: &AgentCtx, call_id: &str, name: &str, input: &Value) -
     }
 }
 
-/// Dispatch a rusi-specific tool call to the loaded RusiCtx.
-fn rusi_dispatch(ctx: &AgentCtx, call_id: &str, cmd: &str, input: &Value) -> ToolExecResult {
-    let Some(ref rusi) = ctx.rusi else {
+/// Unified dispatch for all backend tool calls via the Backend trait.
+fn backend_dispatch(ctx: &AgentCtx, call_id: &str, cmd: &str, input: &Value) -> ToolExecResult {
+    let Some(ref backend) = ctx.backend else {
         return ToolExecResult {
             call_id: call_id.into(),
-            content: "rusi report not loaded".into(),
+            content: "analysis backend not loaded".into(),
             is_error: true,
         };
     };
 
     let content = match cmd {
-        "summary" => rusi.summary(),
-        "query" => {
-            let kind = input.get("kind").and_then(Value::as_str).unwrap_or("declarations");
+        "summary" => backend.summary(),
+        _ => {
+            let kind = cmd;
             let pattern = input.get("pattern").and_then(Value::as_str);
             let limit = input.get("limit").and_then(Value::as_u64).unwrap_or(50).min(500) as usize;
-            rusi.query(kind, pattern, limit)
-        }
-        "callgraph" => {
-            let pattern = input.get("pattern").and_then(Value::as_str);
-            let limit = input.get("limit").and_then(Value::as_u64).unwrap_or(50).min(500) as usize;
-            rusi.callgraph(pattern, limit)
-        }
-        "dataflow" => {
-            let pattern = input.get("pattern").and_then(Value::as_str);
-            let limit = input.get("limit").and_then(Value::as_u64).unwrap_or(50).min(500) as usize;
-            rusi.dataflow(pattern, limit)
-        }
-        "detail" => {
-            let name = input.get("name").and_then(Value::as_str).unwrap_or("");
-            if name.is_empty() {
-                "Please provide a 'name' parameter to look up.".to_string()
-            } else {
-                rusi.detail(name)
+            // For "detail", use pattern as the name lookup
+            let name = input.get("name").and_then(Value::as_str);
+            match name {
+                Some(n) if kind == "detail" => backend.query("detail", Some(n), limit),
+                _ => backend.query(kind, pattern, limit),
             }
         }
-        "crypto" => {
-            let pattern = input.get("pattern").and_then(Value::as_str);
-            rusi.crypto(pattern)
-        }
-        _ => format!("unknown rusi command: {cmd}"),
     };
 
     ToolExecResult {
@@ -717,8 +698,8 @@ pub fn run_agent(ctx: &AgentCtx, user_input: &str, tx: mpsc::Sender<AgentEvent>)
     transcript.push_user(user_input);
 
     // Select the appropriate tool definitions based on the analysis mode.
-    let base_tools = if ctx.rusi.is_some() {
-        tools::rusi_tool_definitions()
+    let base_tools = if let Some(ref backend) = ctx.backend {
+        tools::backend_tool_definitions(backend)
     } else if ctx.engine.is_some() {
         tools::all_tool_definitions()
     } else {
@@ -845,8 +826,8 @@ impl EventSink for HeadlessSink {
 }
 
 pub fn run_headless(ctx: &AgentCtx, input: &str) -> Result<String, Box<dyn std::error::Error>> {
-    let base_tools = if ctx.rusi.is_some() {
-        tools::rusi_tool_definitions()
+    let base_tools = if let Some(ref backend) = ctx.backend {
+        tools::backend_tool_definitions(backend)
     } else if ctx.engine.is_some() {
         tools::all_tool_definitions()
     } else {
@@ -931,7 +912,7 @@ mod tests {
         let ctx = AgentCtx {
             provider: Box::new(crate::agent::anthropic::AnthropicProvider::new("test".into(), "test".into())),
             engine: None,
-            rusi: None,
+            backend: None,
             source_root: None,
             system_prompt: "test".into(),
             max_tokens: 1000,
@@ -950,7 +931,7 @@ mod tests {
         let ctx = AgentCtx {
             provider: Box::new(crate::agent::anthropic::AnthropicProvider::new("test".into(), "test".into())),
             engine: None,
-            rusi: None,
+            backend: None,
             source_root: None,
             system_prompt: "test".into(),
             max_tokens: 1000,

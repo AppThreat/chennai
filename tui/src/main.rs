@@ -1,12 +1,16 @@
 mod agent;
 mod app;
+mod blint;
 mod bom;
 mod commands;
 mod config;
+mod dosai;
 mod engine;
+mod golem;
 mod model;
 mod repl;
 mod rusi;
+mod shared;
 mod ui;
 
 use agent::AgentCtx;
@@ -15,6 +19,11 @@ use bom::{find_existing_boms, BomStore};
 use config::Config;
 use engine::Engine;
 use model::{OpenInfo, Summary};
+use crate::shared::backend::Backend as AnalysisBackend;
+use blint::{BlintCtx, BlintReports};
+#[allow(unused_imports)]
+use dosai::{DosaiCtx, DosaiReports};
+use golem::GolemCtx;
 use rusi::RusiCtx;
 use ui::theme::Theme;
 
@@ -27,7 +36,7 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use ratatui::backend::{Backend, CrosstermBackend};
+use ratatui::backend::CrosstermBackend;
 use serde_json::json;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -133,9 +142,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let source_root = args.source.clone();
 
     // Detect the language to decide the analysis mode.
+    // For file targets, check if it is a binary artifact (APK, IPA, ELF, PE, etc.).
     let source_dir = source_root.as_ref().map(PathBuf::from).unwrap_or_else(|| path.to_path_buf());
-    let language = bom::detect_language(&source_dir);
-    let is_non_atom = matches!(language.as_deref(), Some("rust" | "go" | "dotnet"));
+    let is_binary_artifact = path.is_file() && is_binary_file(path);
+    let language = if is_binary_artifact {
+        Some("binary".to_string())
+    } else {
+        bom::detect_language(&source_dir)
+    };
+    let is_non_atom = matches!(language.as_deref(), Some("rust" | "go" | "dotnet" | "binary"));
 
     if is_non_atom {
         return run_non_atom_mode(
@@ -251,7 +266,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     Some(AgentCtx {
                         provider,
                         engine: Some(engine_arc.clone()),
-                        rusi: None,
+                        backend: None,
                         source_root: source_root.clone(),
                         system_prompt,
                         max_tokens: 8192,
@@ -454,7 +469,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     Some(AgentCtx {
                         provider,
                         engine: None,
-                        rusi: None,
+                        backend: None,
                         source_root: source_root.clone(),
                         system_prompt: String::new(),
                         max_tokens: 8192,
@@ -513,31 +528,81 @@ fn run_non_atom_mode(
         find_existing_boms(source_dir)
     };
 
-    // Try to load existing rusi report (fast file check).
-    let existing_rusi: Option<RusiCtx> = if language.as_deref() == Some("rust") {
-        let rusi_path = rusi::rusi_report_path(source_dir);
-        if rusi_path.is_file() {
-            rusi::loader::LoadedReport::from_file(&rusi_path).ok().map(|report| RusiCtx {
-                report,
-                source_root: source_dir.to_string_lossy().to_string(),
-                callgraph_path: None,
-                dataflow_path: None,
-            })
-        } else {
-            None
+    // Try to load existing report for each backend (fast file check).
+    let existing_backend: Option<BackendCtx> = match language.as_deref() {
+        Some("rust") => {
+            let rusi_path = rusi::rusi_report_path(source_dir);
+            if rusi_path.is_file() {
+                rusi::loader::LoadedReport::from_file(&rusi_path).ok().map(|report| {
+                    Box::new(RusiCtx {
+                        report,
+                        source_root: source_dir.to_string_lossy().to_string(),
+                        callgraph_path: None,
+                        dataflow_path: None,
+                    }) as BackendCtx
+                })
+            } else {
+                None
+            }
         }
-    } else {
-        None
+        Some("go") => {
+            let golem_path = golem::golem_report_path(source_dir);
+            if golem_path.is_file() {
+                golem::loader::LoadedReport::from_file(&golem_path).ok().map(|report| {
+                    Box::new(GolemCtx {
+                        report,
+                        source_root: source_dir.to_string_lossy().to_string(),
+                        callgraph_path: None,
+                        dataflow_path: None,
+                    }) as BackendCtx
+                })
+            } else {
+                None
+            }
+        }
+        Some("dotnet") => {
+            let df_path = dosai::dosai_dataflows_path(source_dir);
+            if df_path.is_file() {
+                dosai::loader::DosaiReports::load(source_dir).ok().map(|reports| {
+                    let source_root_str = source_dir.to_string_lossy().to_string();
+                    Box::new(DosaiCtx {
+                        dataflows: reports.dataflows,
+                        methods: reports.methods,
+                        crypto: reports.crypto,
+                        source_root: source_root_str,
+                    }) as BackendCtx
+                })
+            } else {
+                None
+            }
+        }
+        Some("binary") => {
+            // For binary artifacts, check for existing metadata file.
+            let stem = source_dir.file_stem().and_then(|s| s.to_str()).unwrap_or("artifact");
+            let meta_path = source_dir.parent().map(|p| p.join(format!("{stem}-metadata.json")));
+            if let Some(ref mp) = meta_path
+                && mp.is_file()
+                && let Ok(reports) = BlintReports::load(stem, source_dir.parent().unwrap_or(Path::new(".")))
+            {
+                Some(Box::new(BlintCtx {
+                    reports,
+                    artifact_path: source_dir.to_string_lossy().to_string(),
+                }) as BackendCtx)
+            } else {
+                None
+            }
+        }
+        _ => None,
     };
 
     // Fast path: all data already exists — proceed synchronously as before.
     let bom_ready = bom_store.loaded;
-    let rusi_ready = existing_rusi.is_some() || language.as_deref() != Some("rust");
-    if bom_ready && rusi_ready {
+    let backend_ready = existing_backend.is_some() || !matches!(language.as_deref(), Some("rust" | "go" | "dotnet" | "binary"));
+    if bom_ready && backend_ready {
         return finish_non_atom_startup(
             source_dir, source_root, language, config, theme,
             custom_system_prompt, ask, reports_dir,
-            bom_store, existing_rusi.map(Arc::new),
+            bom_store, existing_backend,
         );
     }
 
@@ -554,20 +619,24 @@ fn run_non_atom_mode(
                 }
             }
         }
-        let rusi_ctx = if language.as_deref() == Some("rust") {
-            match load_or_generate_rusi(source_dir, true) {
-                Ok(ctx) => Some(Arc::new(ctx)),
-                Err(e) => { eprintln!("Warning: rusi: {e}"); None }
+        let backend: Option<BackendCtx> = match language.as_deref() {
+            Some("rust") => load_or_generate_rusi(source_dir, true).ok().map(|ctx| Box::new(ctx) as BackendCtx),
+            Some("go") => load_or_generate_golem(source_dir, true).ok().map(|ctx| Box::new(ctx) as BackendCtx),
+            Some("dotnet") => load_or_generate_dosai(source_dir, true).ok().map(|ctx| Box::new(ctx) as BackendCtx),
+            Some("binary") => {
+                // Binary: need the file path
+                None
             }
-        } else { None };
+            _ => None,
+        };
         return finish_non_atom_startup(
             source_dir, source_root, language, config, theme,
             custom_system_prompt, ask, reports_dir,
-            bom_store, rusi_ctx,
+            bom_store, backend,
         );
     }
 
-    // Slow path: spawn background tasks for cdxgen and/or rusi.
+    // Slow path: spawn background tasks for cdxgen and/or analysis tool.
     let source_root_str = source_root.clone().unwrap_or_else(|| source_dir.to_string_lossy().to_string());
     let bg_progress = Arc::new(Mutex::new(Vec::new()));
 
@@ -599,27 +668,74 @@ fn run_non_atom_mode(
         });
     }
 
-    // rusi task (if Rust and no existing report).
-    if language.as_deref() == Some("rust") && existing_rusi.is_none() {
-        bg_progress.lock().unwrap().push(BgTaskInfo { name: "rusi".into(), status: BgStatus::Running });
-        let progress = bg_progress.clone();
-        let sdir = source_dir.to_path_buf();
-        thread::spawn(move || {
-            match rusi::run_rusi(&sdir) {
-                Ok(_) => {
-                    let mut tasks = progress.lock().unwrap();
-                    if let Some(t) = tasks.iter_mut().find(|t| t.name == "rusi") {
-                        t.status = BgStatus::Done;
+    // Backend analysis task (if no existing report).
+    if existing_backend.is_none() {
+        match language.as_deref() {
+            Some("rust") => {
+                bg_progress.lock().unwrap().push(BgTaskInfo { name: "rusi".into(), status: BgStatus::Running });
+                let progress = bg_progress.clone();
+                let sdir = source_dir.to_path_buf();
+                thread::spawn(move || {
+                    match rusi::run_rusi(&sdir) {
+                        Ok(_) => {
+                            let mut tasks = progress.lock().unwrap();
+                            if let Some(t) = tasks.iter_mut().find(|t| t.name == "rusi") {
+                                t.status = BgStatus::Done;
+                            }
+                        }
+                        Err(e) => {
+                            let mut tasks = progress.lock().unwrap();
+                            if let Some(t) = tasks.iter_mut().find(|t| t.name == "rusi") {
+                                t.status = BgStatus::Failed(e);
+                            }
+                        }
                     }
-                }
-                Err(e) => {
-                    let mut tasks = progress.lock().unwrap();
-                    if let Some(t) = tasks.iter_mut().find(|t| t.name == "rusi") {
-                        t.status = BgStatus::Failed(e);
-                    }
-                }
+                });
             }
-        });
+            Some("go") => {
+                bg_progress.lock().unwrap().push(BgTaskInfo { name: "golem".into(), status: BgStatus::Running });
+                let progress = bg_progress.clone();
+                let sdir = source_dir.to_path_buf();
+                thread::spawn(move || {
+                    match golem::run_golem(&sdir) {
+                        Ok(_) => {
+                            let mut tasks = progress.lock().unwrap();
+                            if let Some(t) = tasks.iter_mut().find(|t| t.name == "golem") {
+                                t.status = BgStatus::Done;
+                            }
+                        }
+                        Err(e) => {
+                            let mut tasks = progress.lock().unwrap();
+                            if let Some(t) = tasks.iter_mut().find(|t| t.name == "golem") {
+                                t.status = BgStatus::Failed(e);
+                            }
+                        }
+                    }
+                });
+            }
+            Some("dotnet") => {
+                bg_progress.lock().unwrap().push(BgTaskInfo { name: "dosai".into(), status: BgStatus::Running });
+                let progress = bg_progress.clone();
+                let sdir = source_dir.to_path_buf();
+                thread::spawn(move || {
+                    match dosai::run_dosai(&sdir) {
+                        Ok(_) => {
+                            let mut tasks = progress.lock().unwrap();
+                            if let Some(t) = tasks.iter_mut().find(|t| t.name == "dosai") {
+                                t.status = BgStatus::Done;
+                            }
+                        }
+                        Err(e) => {
+                            let mut tasks = progress.lock().unwrap();
+                            if let Some(t) = tasks.iter_mut().find(|t| t.name == "dosai") {
+                                t.status = BgStatus::Failed(e);
+                            }
+                        }
+                    }
+                });
+            }
+            _ => {}
+        }
     }
 
     // Create App with deferred init.
@@ -630,10 +746,12 @@ fn run_non_atom_mode(
     app.deferred_source_root = source_root.clone();
     app.deferred_reports_dir = Some(reports_dir.to_string_lossy().to_string());
 
-    // Set rusi if it was already loaded (from existing file before bg task).
-    if let Some(ctx) = existing_rusi {
-        app.rusi = Some(Arc::new(ctx));
+    // Set backend context if already loaded (from existing file before bg task).
+    if let Some(b) = existing_backend {
+        app.backend = Some(b);
     }
+
+    let backend = app.backend.as_ref().map(|b| b.clone_box());
 
     let agent_ctx = if config.enabled {
         match agent::create_provider(config) {
@@ -642,7 +760,7 @@ fn run_non_atom_mode(
                 Some(AgentCtx {
                     provider,
                     engine: None,
-                    rusi: app.rusi.clone(),
+                    backend,
                     source_root: Some(source_root_str.clone()),
                     system_prompt: String::new(),
                     max_tokens: 8192,
@@ -680,6 +798,9 @@ fn run_non_atom_mode(
     result.map_err(|e| Box::new(e) as Box<dyn std::error::Error>)
 }
 
+/// A boxed backend for non-atom analysis.
+pub type BackendCtx = Box<dyn AnalysisBackend>;
+
 /// Shared fast-path initialisation for non-atom mode when data already exists.
 #[allow(clippy::too_many_arguments)]
 fn finish_non_atom_startup(
@@ -692,7 +813,7 @@ fn finish_non_atom_startup(
     ask: Option<String>,
     reports_dir: PathBuf,
     bom_store: BomStore,
-    rusi_ctx: Option<Arc<RusiCtx>>,
+    backend: Option<BackendCtx>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let source_root_str = source_root.clone().unwrap_or_else(|| source_dir.to_string_lossy().to_string());
     let bom_summary = if bom_store.loaded { bom_store.summary() } else { String::new() };
@@ -703,28 +824,28 @@ fn finish_non_atom_startup(
         Some(top.join("\n"))
     } else { None };
 
-    let summary_text = rusi_ctx.as_ref().map(|r| r.summary()).unwrap_or_else(|| {
-        format!("Language: {lang}\nNo structured analysis available. Use ripgrep/read_file to explore the codebase.", lang = language.as_deref().unwrap_or("unknown"))
-    });
+    let summary_text = match &backend {
+        Some(ctx) => ctx.summary(),
+        None => format!("Language: {lang}\nNo structured analysis available. Use ripgrep/read_file to explore the codebase.", lang = language.as_deref().unwrap_or("unknown")),
+    };
 
     let system_prompt = match custom_system_prompt {
         Some(sp) => sp,
-        None => {
-            if rusi_ctx.is_some() {
-                crate::rusi::build_rusi_system_prompt(&summary_text, Some(&bom_summary), bom_components.as_deref(), None)
-            } else {
+        None => match &backend {
+            Some(ctx) => ctx.system_prompt(&summary_text, Some(&bom_summary), bom_components.as_deref(), None),
+            None => {
                 build_agent_only_prompt(language.as_deref().unwrap_or("unknown"), &summary_text, &bom_summary, bom_components.as_deref())
             }
-        }
+        },
     };
 
     if let Some(question) = ask {
-        return run_headless_agent_non_atom(config, rusi_ctx, source_root_str, system_prompt, question);
+        return run_headless_agent_non_atom(config, backend, source_root_str, system_prompt, question);
     }
 
     let mut app = App::new(None, source_dir.to_string_lossy().to_string(), Summary::default());
     app.atom_path = source_dir.to_string_lossy().to_string();
-    app.rusi = rusi_ctx.clone();
+    app.backend = backend.as_ref().map(|b| b.clone_box());
 
     if bom_store.loaded {
         app.bom_store = Some(bom_store);
@@ -746,7 +867,7 @@ fn finish_non_atom_startup(
                 Some(AgentCtx {
                     provider,
                     engine: None,
-                    rusi: rusi_ctx.clone(),
+                    backend: backend.as_ref().map(|b| b.clone_box()),
                     source_root: Some(source_root_str.clone()),
                     system_prompt,
                     max_tokens: 8192,
@@ -838,6 +959,109 @@ fn load_or_generate_rusi(source_dir: &Path, headless: bool) -> Result<RusiCtx, S
     })
 }
 
+/// Try to load an existing golem report or run golem to generate one.
+fn load_or_generate_golem(source_dir: &Path, headless: bool) -> Result<GolemCtx, String> {
+    let report_path = golem::golem_report_path(source_dir);
+
+    if report_path.is_file() {
+        eprintln!("Loading existing golem report: {}", report_path.display());
+        let report = golem::loader::LoadedReport::from_file(&report_path)?;
+        return Ok(GolemCtx {
+            report,
+            source_root: source_dir.to_string_lossy().to_string(),
+            callgraph_path: None,
+            dataflow_path: None,
+        });
+    }
+
+    if headless {
+        eprintln!("No golem report found. Running golem analysis (headless)...");
+        let out_path = golem::run_golem(source_dir)?;
+        let report = golem::loader::LoadedReport::from_file(&out_path)?;
+        return Ok(GolemCtx {
+            report,
+            source_root: source_dir.to_string_lossy().to_string(),
+            callgraph_path: Some(source_dir.join("golem-callgraph.graphml").to_string_lossy().to_string()),
+            dataflow_path: Some(source_dir.join("golem-dataflow.graphml").to_string_lossy().to_string()),
+        });
+    }
+
+    let msg = format!(
+        "No golem analysis found for {d}\n\
+         Run golem to analyze this Go codebase? This may take a few minutes.",
+        d = source_dir.display()
+    );
+    if !bom::prompt_yes_no(&msg) {
+        return Err("golem analysis cancelled by user".into());
+    }
+
+    eprint!("Running golem analysis... ");
+    let _ = std::io::stderr().flush();
+    let out_path = golem::run_golem(source_dir)?;
+    eprintln!("done.");
+
+    let report = golem::loader::LoadedReport::from_file(&out_path)?;
+    Ok(GolemCtx {
+        report,
+        source_root: source_dir.to_string_lossy().to_string(),
+        callgraph_path: Some(source_dir.join("golem-callgraph.graphml").to_string_lossy().to_string()),
+        dataflow_path: Some(source_dir.join("golem-dataflow.graphml").to_string_lossy().to_string()),
+    })
+}
+
+/// Try to load existing dosai reports or run dosai to generate them.
+fn load_or_generate_dosai(source_dir: &Path, headless: bool) -> Result<DosaiCtx, String> {
+    let df_path = dosai::dosai_dataflows_path(source_dir);
+
+    if df_path.is_file() {
+        eprintln!("Loading existing dosai reports from: {}", source_dir.display());
+        let reports = dosai::loader::DosaiReports::load(source_dir)?;
+        return Ok(DosaiCtx {
+            dataflows: reports.dataflows,
+            methods: reports.methods,
+            crypto: reports.crypto,
+            source_root: source_dir.to_string_lossy().to_string(),
+        });
+    }
+
+    if headless {
+        eprintln!("No dosai reports found. Running dosai analysis (headless)...");
+        let outputs = dosai::run_dosai(source_dir)?;
+        if outputs.is_empty() {
+            return Err("dosai analysis produced no output files".into());
+        }
+        let reports = dosai::loader::DosaiReports::load(source_dir)?;
+        return Ok(DosaiCtx {
+            dataflows: reports.dataflows,
+            methods: reports.methods,
+            crypto: reports.crypto,
+            source_root: source_dir.to_string_lossy().to_string(),
+        });
+    }
+
+    let msg = format!(
+        "No dosai analysis found for {d}\n\
+         Run dosai to analyze this .NET codebase? This may take a few minutes.",
+        d = source_dir.display()
+    );
+    if !bom::prompt_yes_no(&msg) {
+        return Err("dosai analysis cancelled by user".into());
+    }
+
+    eprint!("Running dosai analysis... ");
+    let _ = std::io::stderr().flush();
+    let _outputs = dosai::run_dosai(source_dir)?;
+    eprintln!("done.");
+
+    let reports = dosai::loader::DosaiReports::load(source_dir)?;
+    Ok(DosaiCtx {
+        dataflows: reports.dataflows,
+        methods: reports.methods,
+        crypto: reports.crypto,
+        source_root: source_dir.to_string_lossy().to_string(),
+    })
+}
+
 /// Build a minimal system prompt for agent-only mode (no structured analysis data).
 fn build_agent_only_prompt(
     language: &str,
@@ -905,13 +1129,13 @@ fn run_headless_agent(
     let ctx = AgentCtx {
         provider,
         engine: Some(Arc::new(Mutex::new(engine))),
-        rusi: None,
+        backend: None,
         source_root,
         system_prompt,
         max_tokens: 8192,
         no_thinking: config.no_thinking,
-                    effort: config.effort.clone(),
-                    allowed_tools: None,
+        effort: config.effort.clone(),
+        allowed_tools: None,
         cancel: Arc::new(AtomicBool::new(false)),
     };
     eprintln!("Asking: {question}");
@@ -923,7 +1147,7 @@ fn run_headless_agent(
 /// Headless agent for non-atom modes (rusi or agent-only).
 fn run_headless_agent_non_atom(
     config: &Config,
-    rusi_ctx: Option<Arc<RusiCtx>>,
+    backend: Option<BackendCtx>,
     source_root: String,
     system_prompt: String,
     question: String,
@@ -936,7 +1160,7 @@ fn run_headless_agent_non_atom(
     let ctx = AgentCtx {
         provider,
         engine: None,
-        rusi: rusi_ctx,
+        backend,
         source_root: Some(source_root),
         system_prompt,
         max_tokens: 8192,
@@ -952,7 +1176,7 @@ fn run_headless_agent_non_atom(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn run_app<B: Backend>(
+fn run_app<B: ratatui::backend::Backend>(
     terminal: &mut ratatui::Terminal<B>,
     app: &mut App,
     theme: &Theme,
@@ -999,26 +1223,19 @@ fn run_app<B: Backend>(
                             Some(top.join("\n"))
                         } else { None }
                     });
-                    let rusi_for_app = app.rusi.clone();
-                    let system_prompt = match &custom_system_prompt {
-                        Some(sp) => sp.clone(),
-                        None => {
+                    let system_prompt = match (&custom_system_prompt, &app.backend) {
+                        (Some(sp), _) => sp.clone(),
+                        (None, Some(b)) => {
                             let console_history = app.build_console_history();
-                            if app.rusi.is_some() {
-                                let rusi_summary = app.rusi.as_ref().map(|r| r.summary()).unwrap_or_default();
-                                crate::rusi::build_rusi_system_prompt(
-                                    &rusi_summary,
-                                    bom_summary.as_deref(),
-                                    bom_components_summary.as_deref(),
-                                    Some(&console_history),
-                                )
-                            } else {
-                                AgentCtx::build_system_prompt(
-                                    &app.summary.language, &app.summary.version, &app.summary.rows,
-                                    bom_summary.as_deref(), bom_components_summary.as_deref(),
-                                    Some(&console_history),
-                                )
-                            }
+                            b.system_prompt(&b.summary(), bom_summary.as_deref(), bom_components_summary.as_deref(), Some(&console_history))
+                        }
+                        (None, None) => {
+                            let console_history = app.build_console_history();
+                            AgentCtx::build_system_prompt(
+                                &app.summary.language, &app.summary.version, &app.summary.rows,
+                                bom_summary.as_deref(), bom_components_summary.as_deref(),
+                                Some(&console_history),
+                            )
                         }
                     };
                     let cancel = Arc::new(AtomicBool::new(false));
@@ -1026,7 +1243,7 @@ fn run_app<B: Backend>(
                     agent_ctx = Some(AgentCtx {
                         provider,
                         engine: app.engine.clone(),
-                        rusi: rusi_for_app,
+                        backend: app.backend.as_ref().map(|b| b.clone_box()),
                         source_root: source_root.clone(),
                         system_prompt,
                         max_tokens: 8192,
@@ -1048,7 +1265,7 @@ fn run_app<B: Backend>(
                 let (tx, rx) = std::sync::mpsc::channel::<agent::provider::AgentEvent>();
                 app.agent_rx = Some(rx);
                 let engine_for_thread = ctx.engine.clone();
-                let rusi_for_thread = ctx.rusi.clone();
+                let backend_for_thread = ctx.backend.as_ref().map(|b| b.clone_box());
                 let cancel_for_thread = ctx.cancel.clone();
                 let provider = ctx.provider;
                 let max_tokens = ctx.max_tokens;
@@ -1058,7 +1275,7 @@ fn run_app<B: Backend>(
                     let thread_ctx = AgentCtx {
                         provider,
                         engine: engine_for_thread,
-                        rusi: rusi_for_thread,
+                        backend: backend_for_thread,
                         source_root: source_root_for_thread,
                         system_prompt,
                         max_tokens,
@@ -1380,7 +1597,7 @@ fn try_complete_startup(app: &mut App, source_root: &Option<String>, reports_dir
     }
 }
 
-/// Deferred init for non-atom mode: load generated BOM / rusi files and update App.
+/// Deferred init for non-atom mode: load generated BOM / backend reports and update App.
 fn try_complete_non_atom_startup(app: &mut App, source_root: &Option<String>, reports_dir: &Path) {
     // Load BOM from reports directory.
     let mut bom_store = bom::find_existing_boms(reports_dir);
@@ -1392,18 +1609,60 @@ fn try_complete_non_atom_startup(app: &mut App, source_root: &Option<String>, re
         app.bom_store = Some(bom_store);
     }
 
-    // Load rusi report if present.
-    if app.rusi.is_none() {
-        let rusi_path = rusi::rusi_report_path(Path::new(&app.atom_path));
+    // Load the appropriate backend report if not already loaded.
+    let source_dir = Path::new(&app.atom_path);
+    if app.backend.is_none() {
+        // Try rusi (Rust)
+        let rusi_path = rusi::rusi_report_path(source_dir);
         if rusi_path.is_file()
             && let Ok(report) = rusi::loader::LoadedReport::from_file(&rusi_path)
         {
-            app.rusi = Some(Arc::new(RusiCtx {
+            app.backend = Some(Box::new(RusiCtx {
                 report,
                 source_root: app.atom_path.clone(),
                 callgraph_path: None,
                 dataflow_path: None,
             }));
+        }
+        // Try golem (Go)
+        if app.backend.is_none() {
+            let golem_path = golem::golem_report_path(source_dir);
+            if golem_path.is_file()
+                && let Ok(report) = golem::loader::LoadedReport::from_file(&golem_path)
+            {
+                app.backend = Some(Box::new(GolemCtx {
+                    report,
+                    source_root: app.atom_path.clone(),
+                    callgraph_path: None,
+                    dataflow_path: None,
+                }));
+            }
+        }
+        // Try dosai (.NET)
+        if app.backend.is_none() {
+            let df_path = dosai::dosai_dataflows_path(source_dir);
+            if df_path.is_file()
+                && let Ok(reports) = dosai::loader::DosaiReports::load(source_dir)
+            {
+                app.backend = Some(Box::new(DosaiCtx {
+                    dataflows: reports.dataflows,
+                    methods: reports.methods,
+                    crypto: reports.crypto,
+                    source_root: app.atom_path.clone(),
+                }));
+            }
+        }
+        // Try blint (binary)
+        if app.backend.is_none() {
+            let stem = source_dir.file_stem().and_then(|s| s.to_str()).unwrap_or("artifact");
+            if let Some(parent) = source_dir.parent()
+                && let Ok(reports) = BlintReports::load(stem, parent)
+            {
+                app.backend = Some(Box::new(BlintCtx {
+                    reports,
+                    artifact_path: app.atom_path.clone(),
+                }));
+            }
         }
     }
 
@@ -1666,17 +1925,34 @@ fn build_dump_prompt_non_atom(
     source_dir: &Path,
     language: &Option<String>,
 ) -> Result<String, Box<dyn std::error::Error>> {
-    if language.as_deref() == Some("rust") {
-        let rusi_ctx = load_or_generate_rusi(source_dir, true)
-            .map_err(|e| format!("rusi: {e}"))?;
-        let summary_text = rusi_ctx.summary();
-        let prompt = crate::rusi::build_rusi_system_prompt(&summary_text, None, None, None);
-        Ok(prompt)
-    } else {
-        let lang = language.as_deref().unwrap_or("unknown");
-        let summary_text = format!("Language: {lang}\nNo structured analysis available.");
-        let prompt = build_agent_only_prompt(lang, &summary_text, "", None);
-        Ok(prompt)
+    match language.as_deref() {
+        Some("rust") => {
+            let rusi_ctx = load_or_generate_rusi(source_dir, true)
+                .map_err(|e| format!("rusi: {e}"))?;
+            let summary_text = rusi_ctx.summary();
+            let prompt = crate::rusi::build_rusi_system_prompt(&summary_text, None, None, None);
+            Ok(prompt)
+        }
+        Some("go") => {
+            let golem_ctx = load_or_generate_golem(source_dir, true)
+                .map_err(|e| format!("golem: {e}"))?;
+            let summary_text = golem_ctx.summary();
+            let prompt = crate::golem::build_golem_system_prompt(&summary_text, None, None, None);
+            Ok(prompt)
+        }
+        Some("dotnet") => {
+            let dosai_ctx = load_or_generate_dosai(source_dir, true)
+                .map_err(|e| format!("dosai: {e}"))?;
+            let summary_text = dosai_ctx.summary();
+            let prompt = crate::dosai::build_dosai_system_prompt(&summary_text, None, None, None);
+            Ok(prompt)
+        }
+        _ => {
+            let lang = language.as_deref().unwrap_or("unknown");
+            let summary_text = format!("Language: {lang}\nNo structured analysis available.");
+            let prompt = build_agent_only_prompt(lang, &summary_text, "", None);
+            Ok(prompt)
+        }
     }
 }
 
@@ -1690,4 +1966,16 @@ fn build_template_prompt() -> String {
         SummaryRow { label: "Tags".into(), count: 0 },
     ];
     AgentCtx::build_system_prompt("<language>", "<version>", &rows, None, None, None)
+}
+
+/// Check whether a file path matches known binary/artifact extensions.
+fn is_binary_file(path: &std::path::Path) -> bool {
+    let ext = match path.extension().and_then(|e| e.to_str()) {
+        Some(e) => e.to_lowercase(),
+        None => return false,
+    };
+    matches!(
+        ext.as_str(),
+        "apk" | "aab" | "apkm" | "ipa" | "so" | "dll" | "dylib" | "exe" | "wasm" | "elf"
+    )
 }

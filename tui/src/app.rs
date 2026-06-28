@@ -8,7 +8,7 @@ use crate::commands;
 use crate::engine::Engine;
 use crate::model::{Flow, FlowSet, NodeDetail, ResultTable, Summary};
 use crate::repl::Repl;
-use crate::rusi::RusiCtx;
+use crate::shared::backend::Backend;
 
 use ratatui::layout::Rect;
 use std::collections::HashSet;
@@ -274,8 +274,8 @@ pub struct App {
     pub bom_store: Option<BomStore>,
     pub bom_generated: bool,
 
-    // Rusi analysis context (for Rust codebases).
-    pub rusi: Option<Arc<RusiCtx>>,
+    // Loaded analysis backend (rusi/golem/dosai/blint).
+    pub backend: Option<Box<dyn Backend>>,
 
     // Background startup tasks (cdxgen, atom, rusi) and initialisation phase.
     pub bg_progress: Arc<Mutex<Vec<BgTaskInfo>>>,
@@ -359,7 +359,7 @@ impl App {
             agent_last_tool: None,
             bom_store: None,
             bom_generated: false,
-            rusi: None,
+            backend: None,
             bg_progress: Arc::new(Mutex::new(Vec::new())),
             init_phase: InitPhase::Ready,
             deferred_atom_path: None,
@@ -474,10 +474,11 @@ impl App {
                     match crate::agent::slash_command(&cmd) {
                         Some(sc) => {
                             self.agent_slash_prompt = Some(sc.body);
-                            // In rusi mode, map atom_* tool names to rusi_* equivalents.
+                            // Map atom_* tool names to backend-specific equivalents.
+                            let backend_name = self.backend.as_ref().map(|b| b.backend_name()).unwrap_or("");
                             self.agent_slash_tools = sc.tools.map(|tools| {
-                                if self.rusi.is_some() {
-                                    tools.into_iter().map(|t| map_atom_to_rusi_tool(&t)).collect()
+                                if !backend_name.is_empty() {
+                                    tools.into_iter().map(|t| map_atom_to_backend_tool(&t, backend_name)).collect()
                                 } else {
                                     tools
                                 }
@@ -1532,18 +1533,30 @@ fn looks_like_dsl_or_command(t: &str) -> bool {
     false
 }
 
-/// Map atom_* tool names to rusi_* equivalents for rusi analysis mode.
-pub fn map_atom_to_rusi_tool(tool: &str) -> String {
+/// Map atom_* tool names to backend-specific equivalents (rusi/golem/dosai/blint).
+/// The `backend` parameter determines which prefix to use.
+pub fn map_atom_to_backend_tool(tool: &str, backend: &str) -> String {
+    let prefix = match backend {
+        "golem" => "golem",
+        "dosai" => "dosai",
+        "blint" => "blint",
+        _ => "rusi", // default to rusi for backward compatibility
+    };
     match tool {
-        "atom_summary" => "rusi_summary",
-        "atom_query" => "rusi_query",
-        "atom_dsl_eval" => "rusi_query",
-        "atom_flows" | "atom_flows_through" => "rusi_flows",
-        "atom_detail" => "rusi_detail",
-        "atom_algorithms" => "rusi_callgraph",
-        _ => tool,
+        "atom_summary" => format!("{prefix}_summary"),
+        "atom_query" => format!("{prefix}_query"),
+        "atom_dsl_eval" => format!("{prefix}_query"),
+        "atom_flows" | "atom_flows_through" => format!("{prefix}_flows"),
+        "atom_detail" => format!("{prefix}_detail"),
+        "atom_algorithms" => format!("{prefix}_callgraph"),
+        _ => tool.to_string(),
     }
-    .to_string()
+}
+
+/// Legacy wrapper for backward compatibility.
+#[allow(dead_code)]
+pub fn map_atom_to_rusi_tool(tool: &str) -> String {
+    map_atom_to_backend_tool(tool, "rusi")
 }
 
 fn contains(r: &Rect, col: u16, row: u16) -> bool {

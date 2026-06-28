@@ -5,8 +5,10 @@ pub mod runner;
 pub use loader::LoadedReport;
 pub use runner::{run_rusi, rusi_report_path};
 
-use serde_json::json;
+use crate::shared::backend::Backend;
+use serde_json::{json, Value};
 
+#[derive(Clone)]
 pub struct RusiCtx {
     /// Loaded rusi JSON report.
     pub report: LoadedReport,
@@ -37,25 +39,42 @@ impl RusiCtx {
             "callgraph" => query::query_callgraph(&self.report.report, pattern, limit),
             "dataflow" => query::query_dataflow(&self.report.report, pattern, limit),
             "crypto" => query::query_crypto(&self.report.report, pattern),
-            _ => format!("Unknown query kind '{kind}'. Valid kinds: packages, files, imports, declarations, usages, security_signals, callgraph, dataflow, crypto"),
+            "detail" => query::detail_declaration(&self.report.report, pattern.unwrap_or("")),
+            "flows" => query::query_dataflow(&self.report.report, pattern, limit),
+            _ => format!("Unknown query kind '{kind}'. Valid kinds: packages, files, imports, declarations, usages, security_signals, callgraph, dataflow, crypto, detail, flows"),
         }
     }
 
+    #[allow(dead_code)]
     pub fn detail(&self, name: &str) -> String {
         query::detail_declaration(&self.report.report, name)
     }
 
+    #[allow(dead_code)]
     pub fn callgraph(&self, pattern: Option<&str>, limit: usize) -> String {
         query::query_callgraph(&self.report.report, pattern, limit)
     }
 
+    #[allow(dead_code)]
     pub fn dataflow(&self, pattern: Option<&str>, limit: usize) -> String {
         query::query_dataflow(&self.report.report, pattern, limit)
     }
 
+    #[allow(dead_code)]
     pub fn crypto(&self, pattern: Option<&str>) -> String {
         query::query_crypto(&self.report.report, pattern)
     }
+}
+
+impl Backend for RusiCtx {
+    fn summary(&self) -> String { self.summary() }
+    fn query(&self, kind: &str, pattern: Option<&str>, limit: usize) -> String { self.query(kind, pattern, limit) }
+    fn backend_name(&self) -> &'static str { "rusi" }
+    fn tool_definitions(&self) -> Vec<Value> { rusi_tool_definitions() }
+    fn system_prompt(&self, summary_text: &str, bom_summary: Option<&str>, bom_components: Option<&str>, console_history: Option<&str>) -> String {
+        build_rusi_system_prompt(summary_text, bom_summary, bom_components, console_history)
+    }
+    fn clone_box(&self) -> Box<dyn Backend> { Box::new(self.clone()) }
 }
 
 /// Build the rusi-specific system prompt for the LLM agent.
