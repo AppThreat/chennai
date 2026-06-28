@@ -8,11 +8,14 @@
 //! 4. Repeat until the model produces a final answer (end_turn / stop).
 
 pub mod anthropic;
+pub mod debug_log;
 pub mod openai;
 pub mod provider;
+pub mod render;
 pub mod shell;
 pub mod tools;
 pub mod transcript;
+pub use debug_log::DebugLogger;
 
 use crate::config::{Config, ProviderKind};
 use crate::engine::Engine;
@@ -174,6 +177,10 @@ pub struct AgentCtx {
     /// commands to scope the toolset). `None` means all tools.
     pub allowed_tools: Option<Vec<String>>,
     pub cancel: Arc<AtomicBool>,
+    /// Optional debug logger that records custom tool calls (atom_, bom_, rusi_,
+    /// golem_, dosai_, blint_) to timestamped JSON files under
+    /// `<source_root>/.chen/chennai-debug-logs/`.  Enabled via `--debug`.
+    pub debug_logger: Option<DebugLogger>,
 }
 
 impl AgentCtx {
@@ -235,21 +242,21 @@ Version: {version}
 ## chen DSL quick-start (for atom_dsl_eval — write valid expressions)
 Use `atom_traversal_docs` to look up any traversal root, step method, or generic operation (filter, where, repeat, collect, …) — always available.
 Discovery patterns (use these first to explore the codebase):
-  atom.method.name("executeQuery|execute|query").callIn.take(20).toJson   (call sites of matching methods — PREFERRED, fastest)
+  atom.method.name("executeQuery|execute|query").call.take(20).toJson   (call sites of matching methods — PREFERRED, fastest)
   atom.method.name("executeQuery|execute|query").toJson          (method definitions by name)
   atom.method.isExternal.take(50).toJson                         (external / library method calls)
-  atom.call.name("executeQuery|execute|query|prepare").take(20).toJson    (calls by method name — when callIn is too narrow)
+  atom.call.name("executeQuery|execute|query|prepare").take(20).toJson    (calls by method name — when the method call traversal is too narrow)
   atom.call.code("regex").take(20).toJson                        (calls by raw source text — slowest, last resort)
   atom.tag.name("sql|framework-input|database").take(50).toJson  (tagged nodes)
 Security patterns (find source-to-sink flows):
   atom.flows                                                     (all data-flow paths)
   atom.flows.reachableBy                                         (flows reachable from untrusted input)
   atom.tag.name("sql").call.reachableBy(atom.tag.name("framework-input")).toJson   (flow from input to SQL, requires tags)
-  atom.method.name("execute|query|exec|eval|open|read|write").callIn.where(_.tag.name("framework-input")).take(20).toJson   (dangerous calls reachable from input)
+  atom.method.name("execute|query|exec|eval|open|read|write").call.where(_.tag.name("framework-input")).take(20).toJson   (dangerous calls reachable from input)
 When tag-based queries return empty, drop the tag filter:
-  atom.method.name("executeQuery|execute|query|SELECT|INSERT|UPDATE|DELETE|DROP").callIn.take(20).toJson   (SQL-like calls)
-  atom.method.name("exec|system|popen|subprocess|shell").callIn.take(20).toJson                            (command injection calls)
-Prefer `.method.name(regex).callIn` over `.call.code` / `.call.name`: it is indexed by method
+  atom.method.name("executeQuery|execute|query|SELECT|INSERT|UPDATE|DELETE|DROP").call.take(20).toJson   (SQL-like calls)
+  atom.method.name("exec|system|popen|subprocess|shell").call.take(20).toJson                            (command injection calls)
+Prefer `.method.name(regex).call` over `.call.code` / `.call.name`: it is indexed by method
 and runs far faster than scanning raw call source text. Reach for `.call.code` only when you
 must match a literal source substring that has no method name.
 Limit data volume: append a slicing step before `.toJson` so you only ship back what you need —
@@ -257,8 +264,16 @@ Limit data volume: append a slicing step before `.toJson` so you only ship back 
 `.size` / `.count` (just the count when you only need how many). Start narrow (take 10-20),
 widen only if the sample is insufficient. Never request a full unbounded result set first.
 Always end a traversal you want back with `.toJson` (the engine appends it if omitted).
-Names and code are regex-matched. If an expression errors, the engine returns the parser error
-verbatim as the tool result — read it and self-correct.
+Names and code are matched with Scala/Java regex syntax (java.util.regex), and the pattern
+must match the WHOLE string (it is anchored), so wrap partial matches in `.*`:
+  `.*` matches everything                       atom.method.name(".*").take(20).toJson
+  `.*query.*` substring match (case-sensitive)  atom.method.name(".*query.*").call.take(20).toJson
+  `(?i).*query.*` case-insensitive substring    atom.method.name("(?i).*query.*").call.take(20).toJson
+  `\\.` a literal dot (escape with double backslash in the string)   atom.call.code(".*os\\.system.*").take(20).toJson
+  `foo|bar` alternation                         atom.method.name("(?i).*(exec|system|popen).*").call.take(20).toJson
+Because matching is anchored, a bare `exec` will NOT match `executeQuery`; use `.*exec.*`.
+If an expression errors, the engine returns the parser error verbatim as the tool result —
+read it and self-correct.
 
 {identity_rules}
 
@@ -272,13 +287,12 @@ verbatim as the tool result — read it and self-correct.
    evidence than an atom tool result.
 3. **Security vulnerability analysis**: For specific vulnerability types (SQL injection,
    path traversal, command injection, XSS), use atom_dsl_eval with
-   `atom.method.name(regex).callIn` (preferred — fastest) to find call sites, then chain
+   `atom.method.name(regex).call` (preferred — fastest) to find call sites, then chain
    with `.where(_.tag.name("framework-input"))` or use atom_flows to find source-to-sink
    paths. Fall back to `atom.call.name` or `atom.call.code` only when method-name matching
-   misses the pattern. Do NOT use `atom.imports` for vulnerability analysis, it only shows
-   import statements, not how APIs are called. Always cap results with `.take(n)` so you
-   pull a sample first rather than the full set. Ripgrep can find method names but CANNOT
-   prove reachability, taint flow, or whether input reaches a dangerous function.
+   misses the pattern. Always cap results with `.take(n)` so you pull a sample first rather
+   than the full set. Ripgrep can find method names but CANNOT prove reachability, taint
+   flow, or whether input reaches a dangerous function.
 4. **Do not call ripgrep to confirm atom tool results.** When atom_query returns empty
    results for a tag or category, that is authoritative -- the atom has no nodes with
    that tag. When atom_dsl_eval or atom_flows return a set of paths, those paths are
@@ -298,7 +312,7 @@ verbatim as the tool result — read it and self-correct.
    reachable from untrusted input.
 
 ## Response style
-Explain architectures and data flows with neat ASCII diagrams where they clarify the structure. Write in straightforward technical prose. Minimise bullet lists; favour short paragraphs or inline descriptions instead. Do not use em-dashes, emoji, or decorative formatting. Every finding must still carry file:line evidence. Keep responses short but substantive. Do not begin every message with "Let me" or similar filler openings.
+Explain architectures and data flows with neat ASCII diagrams where they clarify the structure. Write in straightforward technical prose. Minimise bullet lists; favour short paragraphs or inline descriptions instead. Do not use em-dashes, emoji, or decorative formatting. Every finding must still carry file:line evidence. Keep responses short but substantive. Do not begin every message with "Let me" or similar filler openings. After each tool result, briefly share observations or insights — it keeps the transcript lively and shows your reasoning progress.
 
 ## Efficiency rules
 Wait for atom tool results to arrive before calling ripgrep or read_file. Calling ripgrep in the same turn as atom_dsl_eval or atom_flows means you are guessing instead of reading evidence. One well-chosen atom query eliminates the need for several ripgrep calls.
@@ -321,7 +335,7 @@ pub struct ToolExecResult {
 }
 
 pub fn dispatch_tool(ctx: &AgentCtx, call_id: &str, name: &str, input: &Value) -> ToolExecResult {
-    match name {
+    let result = match name {
         "atom_traversal_docs" => traversal_docs_dispatch(call_id, input),
         "atom_summary" => engine_request(ctx, call_id, "summary", input),
         "atom_query" => engine_request(ctx, call_id, "query", input),
@@ -346,7 +360,14 @@ pub fn dispatch_tool(ctx: &AgentCtx, call_id: &str, name: &str, input: &Value) -
             content: format!("unknown tool: {other}"),
             is_error: true,
         },
+    };
+
+    if let Some(ref logger) = ctx.debug_logger
+        && DebugLogger::is_tracked(name) {
+            logger.log(name, input, &result.content, result.is_error);
     }
+
+    result
 }
 
 /// Unified dispatch for all backend tool calls via the Backend trait.
@@ -556,7 +577,12 @@ fn engine_request(ctx: &AgentCtx, call_id: &str, cmd: &str, input: &Value) -> To
             // note so the model flags low confidence instead of fabricating
             // reachability. See the "Grounding rules" in the system prompt.
             let note = analysis_unavailable_note(cmd, &data);
-            let text = serde_json::to_string_pretty(&data).unwrap_or_else(|_| data.to_string());
+            // Prefer Markdown: LLMs parse tables/lists better than double-escaped
+            // JSON and it costs fewer tokens. Fall back to pretty JSON for shapes
+            // the renderer doesn't model. The engine still receives `.toJson`
+            // expressions; only the agent-facing rendering changes.
+            let text = render::render_engine_result(cmd, &data)
+                .unwrap_or_else(|| serde_json::to_string_pretty(&data).unwrap_or_else(|_| data.to_string()));
             let mut content = truncate_content(&text, MAX_TOOL_RESULT_BYTES);
             if let Some(n) = note {
                 content = format!("{n}\n\n{content}");
@@ -587,7 +613,7 @@ String args are REGEX, anchored with neither ^ nor $ (substring match). Use `Exa
 Common steps:\n\
   atom.method.name(\"regex\")            method defs by name (also .fullName, .filename, .signature)\n\
   atom.method.internal / .external      app-defined vs library methods (NOT .isExternal as a step)\n\
-  atom.method.name(\"x\").caller / .callee / .callIn / .parameter / .literal\n\
+  atom.method.name(\"x\").caller / .callee / .call / .parameter / .literal\n\
   atom.call.code(\"regex\")              call sites by source text (prefer over .name for real patterns)\n\
   atom.call.name(\"regex\") / .methodFullName(\"regex\") / .argument\n\
   atom.literal.code(\"regex\") / atom.identifier.typeFullName(\"regex\")\n\
@@ -1073,6 +1099,7 @@ mod tests {
             effort: "high".into(),
             allowed_tools: None,
             cancel: Arc::new(AtomicBool::new(false)),
+            debug_logger: None,
         };
         let result = dispatch_tool(&ctx, "id1", "nonexistent_tool", &serde_json::json!({}));
         assert!(result.is_error);
@@ -1092,6 +1119,7 @@ mod tests {
             effort: "high".into(),
             allowed_tools: None,
             cancel: Arc::new(AtomicBool::new(false)),
+            debug_logger: None,
         };
         let result = dispatch_tool(&ctx, "id1", "bom_query", &serde_json::json!({"query": "express"}));
         assert!(!result.is_error);

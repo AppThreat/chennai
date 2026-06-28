@@ -56,6 +56,9 @@ pub struct Config {
     /// When true, omit the `thinking` block from request bodies (for providers that don't support
     /// Anthropic's adaptive thinking parameter, e.g. DeepSeek's Anthropic-compatible endpoint).
     pub no_thinking: bool,
+    /// When true, tool calls (atom_*, bom_*, rusi_*, golem_*, dosai_*, blint_*)
+    /// are logged to timestamped JSON files under `.chen/chennai-debug-logs/`.
+    pub debug: bool,
 }
 
 impl Config {
@@ -91,7 +94,7 @@ impl Config {
             .or(file_cfg.effort)
             .unwrap_or_else(|| "high".to_string());
 
-        Config { provider, model, base_url, api_key, enabled, no_thinking: cli_no_thinking, effort }
+        Config { provider, model, base_url, api_key, enabled, no_thinking: cli_no_thinking, effort, debug: false }
     }
 
     /// Read the config file at `~/.config/chennai/config.toml`.

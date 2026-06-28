@@ -2,7 +2,7 @@
 
 pub mod theme;
 
-use crate::app::{AgentEntry, App, BgStatus, InitPhase, Panel};
+use crate::app::{tool_label, AgentEntry, App, BgStatus, InitPhase, Panel};
 use crate::model::Cell as ModelCell;
 use theme::Theme;
 
@@ -1121,14 +1121,18 @@ fn build_agent_lines<'a>(app: &'a App, theme: &Theme, _line_counts: &[usize], wi
             AgentEntry::ToolCall { name, input, result, .. } => {
                 if result.is_none() {
                     let spin = SPINNER_FRAMES[(app.agent_spinner / 2) % SPINNER_FRAMES.len()];
-                    let input_str = serde_json::to_string(input).unwrap_or_default();
-                    let preview: String = input_str.chars().take(width.saturating_sub(8)).collect();
-                    lines.push(Line::from(vec![
+                    let display = tool_label(name);
+                    let mut spans = vec![
                         Span::styled(spin.to_string(), Style::default().fg(theme.accent)),
                         Span::styled(" ", Style::default().fg(theme.fg)),
-                        Span::styled(name.clone(), Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)),
-                        Span::styled(format!("({preview})"), Style::default().fg(theme.muted)),
-                    ]));
+                        Span::styled(display.to_string(), Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)),
+                    ];
+                    if display == *name {
+                        let input_str = serde_json::to_string(input).unwrap_or_default();
+                        let preview: String = input_str.chars().take(width.saturating_sub(8)).collect();
+                        spans.push(Span::styled(format!("({preview})"), Style::default().fg(theme.muted)));
+                    }
+                    lines.push(Line::from(spans));
                 }
             }
             AgentEntry::Error(msg) => {

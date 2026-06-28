@@ -13,7 +13,7 @@ mod rusi;
 mod shared;
 mod ui;
 
-use agent::AgentCtx;
+use agent::{AgentCtx, DebugLogger};
 use app::{App, BgStatus, BgTaskInfo, InitPhase, Panel};
 use bom::{find_existing_boms, BomStore};
 use config::Config;
@@ -85,6 +85,10 @@ struct Args {
     /// Path to a custom system prompt file. Overrides the built-in system prompt entirely.
     #[arg(long)]
     system_prompt: Option<PathBuf>,
+    /// Enable debug logging of custom tool calls (atom_*, bom_*, rusi_*, golem_*,
+    /// dosai_*, blint_*) to timestamped JSON files under `.chen/chennai-debug-logs/`.
+    #[arg(long, default_value_t = false)]
+    debug: bool,
     /// Subcommand to run instead of launching the TUI.
     #[command(subcommand)]
     command: Option<CliCommand>,
@@ -137,7 +141,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "a project path (directory or .atom file) is required — use `chennai setup` to install tools"
     )?;
 
-    let config = Config::load_with_base_url(args.provider.as_deref(), args.model.as_deref(), args.api_key.as_deref(), args.base_url.as_deref(), args.no_thinking, args.effort.as_deref());
+    let mut config = Config::load_with_base_url(args.provider.as_deref(), args.model.as_deref(), args.api_key.as_deref(), args.base_url.as_deref(), args.no_thinking, args.effort.as_deref());
+    config.debug = args.debug;
     let theme = match args.theme.as_str() { "light" => Theme::light(), _ => Theme::dark() };
     let source_root = args.source.clone();
 
@@ -285,6 +290,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         effort: config.effort.clone(),
                         allowed_tools: None,
                         cancel: Arc::new(AtomicBool::new(false)),
+                        debug_logger: if config.debug { DebugLogger::new(agent_source_root.as_deref()) } else { None },
                     })
                 }
                 Err(e) => {
@@ -496,6 +502,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         effort: config.effort.clone(),
                         allowed_tools: None,
                         cancel: Arc::new(AtomicBool::new(false)),
+                        debug_logger: if config.debug { DebugLogger::new(agent_source_root.as_deref()) } else { None },
                     })
                 }
                 Err(e) => {
@@ -768,6 +775,7 @@ fn run_non_atom_mode(
                     effort: config.effort.clone(),
                     allowed_tools: None,
                     cancel: Arc::new(AtomicBool::new(false)),
+                    debug_logger: if config.debug { DebugLogger::new(Some(&source_root_str)) } else { None },
                 })
             }
             Err(e) => {
@@ -892,6 +900,7 @@ fn finish_non_atom_startup(
                     effort: config.effort.clone(),
                     allowed_tools: None,
                     cancel: Arc::new(AtomicBool::new(false)),
+                    debug_logger: if config.debug { DebugLogger::new(Some(&source_root_str)) } else { None },
                 })
             }
             Err(e) => {
@@ -1171,7 +1180,7 @@ No structured analysis data is available for this language. You must explore the
 5. When available, use the SBOM to understand third-party dependencies.
 
 ## Response style
-Explain architectures and data flows with neat ASCII diagrams where they clarify the structure. Write in straightforward technical prose. Minimise bullet lists; favour short paragraphs or inline descriptions instead. Do not use em-dashes, emoji, or decorative formatting. Every finding must still carry file:line evidence. Keep responses short but substantive. Do not begin every message with "Let me" or similar filler openings.
+Explain architectures and data flows with neat ASCII diagrams where they clarify the structure. Write in straightforward technical prose. Minimise bullet lists; favour short paragraphs or inline descriptions instead. Do not use em-dashes, emoji, or decorative formatting. Every finding must still carry file:line evidence. Keep responses short but substantive. Do not begin every message with "Let me" or similar filler openings. After each tool result, briefly share observations or insights — it keeps the transcript lively and shows your reasoning progress.
 
 You are an authorized security review of the user's own code. Analyze it directly.
 "#)
@@ -1190,6 +1199,7 @@ fn run_headless_agent(
     }
     let provider = agent::create_provider(&config).map_err(|e| format!("provider: {e}"))?;
     let system_prompt = AgentCtx::build_system_prompt(&summary.language, &summary.version, &summary.rows, None, None, None);
+    let debug_logger = if config.debug { DebugLogger::new(source_root.as_deref()) } else { None };
     let ctx = AgentCtx {
         provider,
         engine: Some(Arc::new(Mutex::new(engine))),
@@ -1201,6 +1211,7 @@ fn run_headless_agent(
         effort: config.effort.clone(),
         allowed_tools: None,
         cancel: Arc::new(AtomicBool::new(false)),
+        debug_logger,
     };
     eprintln!("Asking: {question}");
     let result = agent::run_headless(&ctx, &question)?;
@@ -1221,6 +1232,7 @@ fn run_headless_agent_non_atom(
         std::process::exit(1);
     }
     let provider = agent::create_provider(config).map_err(|e| format!("provider: {e}"))?;
+    let debug_logger = if config.debug { DebugLogger::new(Some(&source_root)) } else { None };
     let ctx = AgentCtx {
         provider,
         engine: None,
@@ -1232,6 +1244,7 @@ fn run_headless_agent_non_atom(
         effort: config.effort.clone(),
         allowed_tools: None,
         cancel: Arc::new(AtomicBool::new(false)),
+        debug_logger,
     };
     eprintln!("Asking: {question}");
     let result = agent::run_headless(&ctx, &question)?;
@@ -1372,6 +1385,7 @@ fn run_app<B: ratatui::backend::Backend>(
                         effort: config.effort.clone(),
                         allowed_tools: None,
                         cancel,
+                        debug_logger: if config.debug { DebugLogger::new(source_root.as_deref()) } else { None },
                     });
                 }
             if let Some(ctx) = agent_ctx.take() {
@@ -1391,6 +1405,7 @@ fn run_app<B: ratatui::backend::Backend>(
                 let provider = ctx.provider;
                 let max_tokens = ctx.max_tokens;
                 let source_root_for_thread = ctx.source_root.clone();
+                let debug_logger = ctx.debug_logger.clone();
 
                 thread::spawn(move || {
                     let thread_ctx = AgentCtx {
@@ -1404,6 +1419,7 @@ fn run_app<B: ratatui::backend::Backend>(
                         effort,
                         allowed_tools,
                         cancel: cancel_for_thread,
+                        debug_logger,
                     };
                     agent::run_agent(&thread_ctx, &question, tx);
                 });

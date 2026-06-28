@@ -42,6 +42,16 @@ pub enum InitPhase {
     Ready,
 }
 
+/// Map a raw tool name to a user-facing label shown in the transcript and footer.
+/// Non-custom shell tools (ripgrep, read_file, git_*) are collapsed to `"reading code"`.
+/// Custom analysis tools (atom_*, bom_*, rusi_*, golem_*, dosai_*, blint_*) keep their name.
+pub fn tool_label(name: &str) -> &str {
+    match name {
+        "ripgrep" | "read_file" | "git_diff" | "git_log" | "git_show" => "reading code",
+        _ => name,
+    }
+}
+
 /// A single entry in the agent transcript, built from streamed [`AgentEvent`]s for rendering.
 #[derive(Debug, Clone)]
 pub enum AgentEntry {
@@ -1522,15 +1532,17 @@ impl App {
                     }
                 }
                 self.agent_current_text.push_str(&t);
+                self.agent_last_tool = Some("thinking".into());
             }
             AgentEvent::ThinkingDelta(t) => {
                 self.agent_current_thinking.push_str(&t);
+                self.agent_last_tool = Some("thinking".into());
             }
             AgentEvent::ToolCall { id, name, input } => {
                 // Flush accumulated text.
                 self.flush_current_text();
                 self.flush_current_thinking();
-                self.agent_last_tool = Some(name.clone());
+                self.agent_last_tool = Some(tool_label(&name).to_string());
                 self.agent_transcript.push(AgentEntry::ToolCall {
                     _id: id, name, input, result: None, is_error: false,
                 });
