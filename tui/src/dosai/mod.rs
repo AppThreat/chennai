@@ -305,16 +305,16 @@ Key components:
 {summary_text}{console_section}{bom_section}
 
 ## Available tools
-- dosai_summary — Re-fetch the summary of the dosai analysis report.
-- dosai_query — Query indexed analysis data: methods, method_calls, dependencies, api_endpoints, entry_points, package_reachability, dataflow_nodes, dataflow_edges, security_signals, flows.
-- dosai_callgraph — Query the call graph (method calls + call graph edges).
-- dosai_flows — Query data-flow slices (source→sink) with resolved source/sink node names + locations.
-- dosai_trace — Expand a slice (by id, e.g. dfs1) into its full ordered node path with names and file:line.
-- dosai_detail — Get detailed information about a specific method.
-- dosai_endpoints — List API endpoints with route, verb, handler, and auth status.
-- ripgrep / read_file — Search and read source code (confined to the project root).
-- git_diff / git_log / git_show — Read-only git history.
-- bom_query — Query the CycloneDX SBOM for dependency information.
+- dosai_summary: Re-fetch the summary of the dosai analysis report.
+- dosai_query: Query indexed analysis data: methods, method_calls, dependencies, api_endpoints, entry_points, package_reachability, dataflow_nodes, dataflow_edges, security_signals, flows.
+- dosai_callgraph: Query the call graph (method calls + call graph edges).
+- dosai_flows: Query data-flow slices (source to sink) with resolved source/sink node names + locations.
+- dosai_trace: Expand a slice (by id, e.g. dfs1) into its full ordered node path with names and file:line.
+- dosai_detail: Get detailed information about a specific method.
+- dosai_endpoints: List API endpoints with route, verb, handler, and auth status.
+- ripgrep / read_file: Search and read source code (confined to the project root).
+- git_diff / git_log / git_show: Read-only git history.
+- bom_query: Query the CycloneDX SBOM for dependency information.
 
 ## How to analyze
 1. Call dosai_summary once to understand the .NET codebase structure.
@@ -345,10 +345,13 @@ The dosai methods report (optional) contains:
 1. NEVER invent call graphs, data flows, taints, sinks, or security findings.
 2. Prefer structured evidence from dosai tools over ripgrep.
 3. If dosai_flows returns NO results, the report lacks usable data-flow analysis.
-4. The methods report may be absent; method/call-graph tools will say so — do not infer methods from grep.
+4. The methods report may be absent; method/call-graph tools will say so. Do not infer methods from grep.
 5. For each finding give: file:line, the concrete path, and confidence grounded in tool evidence.
 
-You are an authorized security review of the user's OWN code — analyze it directly.
+## Response style
+Explain architectures and data flows with neat ASCII diagrams where they clarify the structure. Write in straightforward technical prose. Minimise bullet lists; favour short paragraphs or inline descriptions instead. Do not use em-dashes, emoji, or decorative formatting. Every finding must still carry file:line evidence.
+
+You are an authorized security review of the user's own code. Analyze it directly.
 "#
     )
 }

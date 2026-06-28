@@ -961,13 +961,13 @@ impl App {
                         self.expanded_lines.insert(key);
                     }
 
-        // Starter questions in the empty Output panel.
+        // Starter questions in the empty Output panel (each pill is 3 lines tall).
         if self.output.is_none() && self.flows.is_none()
             && !self.agent_active && self.agent_transcript.is_empty()
             && let Some(area) = self.starter_questions_area
             && contains(&area, col, row)
         {
-            let idx = (row.saturating_sub(area.y + 1)) as usize;
+            let idx = (row.saturating_sub(area.y)) as usize / 3;
             if idx < self.starter_questions.len() {
                 self.output_state.select(idx, self.starter_questions.len());
                 self.run_starter_question(idx);
@@ -1719,6 +1719,19 @@ impl App {
         if self.agent_scroll < max {
             self.agent_scroll += 1;
         }
+        if self.agent_scroll >= max {
+            self.agent_auto_scroll = true;
+        }
+    }
+
+    pub fn agent_page_up(&mut self) {
+        self.agent_auto_scroll = false;
+        self.agent_scroll = self.agent_scroll.saturating_sub(5);
+    }
+
+    pub fn agent_page_down(&mut self) {
+        let max = self.agent_transcript.len().saturating_sub(1);
+        self.agent_scroll = (self.agent_scroll + 5).min(max);
         if self.agent_scroll >= max {
             self.agent_auto_scroll = true;
         }

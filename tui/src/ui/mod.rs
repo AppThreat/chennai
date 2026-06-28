@@ -408,7 +408,7 @@ fn render_output_table(frame: &mut Frame, app: &mut App, theme: &Theme, area: Re
             } else {
                 app.project_language.as_deref().unwrap_or("the")
             };
-            let mut lines = vec![
+            let heading_lines = vec![
                 Line::from(Span::styled(
                     format!("How can I help you with the {lang} project today?"),
                     Style::default().fg(theme.muted),
@@ -419,33 +419,18 @@ fn render_output_table(frame: &mut Frame, app: &mut App, theme: &Theme, area: Re
                     Style::default().fg(theme.header).add_modifier(Modifier::BOLD),
                 )),
             ];
+
             let selected = if app.focus == Panel::Output && app.output.is_none() {
                 app.output_state.selected
             } else {
                 usize::MAX
             };
             let qs = &app.starter_questions;
-            for (i, q) in qs.iter().enumerate() {
-                let is_sel = i == selected;
-                let icon = if is_sel { "▸" } else { " " };
-                let bullet_style = if is_sel {
-                    Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().fg(theme.muted)
-                };
-                let text_style = if is_sel {
-                    Style::default().fg(theme.accent)
-                } else {
-                    Style::default().fg(theme.fg)
-                };
-                lines.push(Line::from(vec![
-                    Span::styled(format!(" {} ", icon), bullet_style),
-                    Span::styled(q.label.as_str(), text_style),
-                ]));
-            }
 
-            let q_total = 3 + qs.len();
-            let q_area_height = (q_total as u16 + 2).min(inner.height);
+            let heading_h = 3u16;
+            let pill_h = 3u16;
+            let q_inner_h = heading_h + pill_h * qs.len() as u16;
+            let q_area_height = (q_inner_h + 2).min(inner.height);
 
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
@@ -455,22 +440,61 @@ fn render_output_table(frame: &mut Frame, app: &mut App, theme: &Theme, area: Re
             let repl_bg = Color::Rgb(0x2b, 0x3a, 0x42);
             let repl_border = Color::Rgb(0x5a, 0x7c, 0x90);
             let q_area = chunks[1];
-            let block = Block::default()
+            let outer_block = Block::default()
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(repl_border))
                 .style(Style::default().bg(repl_bg));
-            let q_inner = block.inner(q_area);
-            frame.render_widget(block, q_area);
+            let q_inner = outer_block.inner(q_area);
+            frame.render_widget(outer_block, q_area);
+
+
+            let pill_bg = Color::Rgb(0x2b, 0x3a, 0x42);
+            let heading_area = Rect {
+                x: q_inner.x,
+                y: q_inner.y,
+                width: q_inner.width,
+                height: heading_h,
+            };
+            frame.render_widget(
+                Paragraph::new(heading_lines).alignment(Alignment::Center),
+                heading_area,
+            );
+
+            let pill_top = q_inner.y + heading_h;
+            for (i, q) in qs.iter().enumerate() {
+                let is_sel = i == selected;
+                let border_color = if is_sel { theme.accent } else { theme.muted };
+                let text_color = if is_sel { theme.accent } else { theme.fg };
+
+                let pill_area = Rect {
+                    x: q_inner.x,
+                    y: pill_top + (i as u16) * pill_h,
+                    width: q_inner.width,
+                    height: pill_h,
+                };
+                let pill_block = Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(border_color))
+                    .style(Style::default().bg(pill_bg));
+                let pill_inner = pill_block.inner(pill_area);
+                frame.render_widget(pill_block, pill_area);
+
+                frame.render_widget(
+                    Paragraph::new(Line::from(Span::styled(
+                        q.label.as_str(),
+                        Style::default().fg(text_color),
+                    )))
+                    .alignment(Alignment::Center),
+                    pill_inner,
+                );
+            }
 
             app.starter_questions_area = Some(Rect {
                 x: q_inner.x,
-                y: q_inner.y + 3,
+                y: pill_top,
                 width: q_inner.width,
-                height: qs.len() as u16,
+                height: qs.len() as u16 * pill_h,
             });
-
-            let hint = Paragraph::new(lines).alignment(Alignment::Center);
-            frame.render_widget(hint, q_inner);
         } else {
             let hint = Paragraph::new(vec![
                 Line::from(Span::styled(
@@ -1065,8 +1089,10 @@ fn build_agent_lines<'a>(app: &'a App, theme: &Theme, _line_counts: &[usize], wi
                 // rendered Line per source line keeps the scroll math (which uses
                 // `entry_line_count`) in sync.
                 let mut in_code = false;
+                let mut table_buf: Vec<&str> = Vec::new();
                 for line in text.split('\n') {
                     if let Some(lang) = line.trim_start().strip_prefix("```") {
+                        flush_table_buf(&mut lines, &mut table_buf, theme);
                         in_code = !in_code;
                         let label = if in_code && !lang.trim().is_empty() {
                             format!("``` {}", lang.trim())
@@ -1079,10 +1105,14 @@ fn build_agent_lines<'a>(app: &'a App, theme: &Theme, _line_counts: &[usize], wi
                             Span::styled("│ ", Style::default().fg(theme.muted)),
                             Span::styled(line.to_string(), Style::default().fg(theme.code)),
                         ]));
+                    } else if is_table_line(line) {
+                        table_buf.push(line);
                     } else {
+                        flush_table_buf(&mut lines, &mut table_buf, theme);
                         lines.push(render_markdown_line(line, theme));
                     }
                 }
+                flush_table_buf(&mut lines, &mut table_buf, theme);
             }
             AgentEntry::Thinking(text) => {
                 if app.agent_thinking_expanded {
@@ -1101,21 +1131,16 @@ fn build_agent_lines<'a>(app: &'a App, theme: &Theme, _line_counts: &[usize], wi
                     ]));
                 }
             }
-            AgentEntry::ToolCall { name, input, result, is_error, .. } => {
-                let input_str = serde_json::to_string(input).unwrap_or_default();
-                let preview: String = input_str.chars().take(width.saturating_sub(8)).collect();
-                lines.push(Line::from(vec![
-                    Span::styled("⚙ ", Style::default().fg(theme.accent)),
-                    Span::styled(name.clone(), Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)),
-                    Span::styled(format!("({preview})"), Style::default().fg(theme.muted)),
-                ]));
-                if let Some(res) = result {
-                    let res_preview: String = res.chars().take(width.saturating_sub(4)).collect();
-                    let res_style = if *is_error { Style::default().fg(theme.error) } else { Style::default().fg(theme.num) };
+            AgentEntry::ToolCall { name, input, result, .. } => {
+                if result.is_none() {
+                    let spin = SPINNER_FRAMES[(app.agent_spinner / 2) % SPINNER_FRAMES.len()];
+                    let input_str = serde_json::to_string(input).unwrap_or_default();
+                    let preview: String = input_str.chars().take(width.saturating_sub(8)).collect();
                     lines.push(Line::from(vec![
-                        Span::styled("  └─ ", Style::default().fg(theme.muted)),
-                        Span::styled(if *is_error { "error: " } else { "" }, Style::default().fg(theme.error)),
-                        Span::styled(res_preview, res_style),
+                        Span::styled(spin.to_string(), Style::default().fg(theme.accent)),
+                        Span::styled(" ", Style::default().fg(theme.fg)),
+                        Span::styled(name.clone(), Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)),
+                        Span::styled(format!("({preview})"), Style::default().fg(theme.muted)),
                     ]));
                 }
             }
@@ -1166,10 +1191,15 @@ fn agent_footer_line<'a>(app: &App, theme: &Theme) -> Line<'a> {
     Line::from(spans)
 }
 
-/// Render one non-code markdown line: headings, bullet lists, and inline
-/// `**bold**` / `` `code` `` spans. Produces exactly one [`Line`].
+/// Render one non-code markdown line: headings, bullet lists, numbered lists,
+/// blockquotes, horizontal rules, and inline `**bold**` / `` `code` `` spans.
+/// Produces exactly one [`Line`].
 fn render_markdown_line<'a>(line: &str, theme: &Theme) -> Line<'a> {
     let trimmed = line.trim_start();
+    let indent_len = line.len() - trimmed.len();
+    let indent = &line[..indent_len];
+
+    // Headings
     let heading = |text: &str, level: u8| -> Line<'a> {
         let marker = match level { 1 => "▌ ", 2 => "▌ ", _ => "· " };
         Line::from(vec![
@@ -1184,28 +1214,171 @@ fn render_markdown_line<'a>(line: &str, theme: &Theme) -> Line<'a> {
     if let Some(h) = trimmed.strip_prefix("## ") { return heading(h, 2); }
     if let Some(h) = trimmed.strip_prefix("# ") { return heading(h, 1); }
 
-    // Bullet list (preserve indentation).
-    let indent_len = line.len() - trimmed.len();
+    // Horizontal rules: ---, ***, ___
+    if trimmed.chars().all(|c| c == '-' || c == '*' || c == '_') && trimmed.len() >= 3 {
+        return Line::from(Span::styled(
+            "─".repeat(line.len()),
+            Style::default().fg(theme.muted),
+        ));
+    }
+
+    // Blockquotes: > text
+    if let Some(rest) = trimmed.strip_prefix("> ") {
+        let mut spans = vec![Span::styled(
+            format!("{indent}▏"),
+            Style::default().fg(theme.muted),
+        )];
+        spans.extend(inline_spans(rest, Style::default().fg(theme.muted), theme));
+        return Line::from(spans);
+    }
+
+    // Bullet lists: - or *
     if let Some(rest) = trimmed.strip_prefix("- ").or_else(|| trimmed.strip_prefix("* ")) {
         let mut spans = vec![Span::styled(
-            format!("{}• ", &line[..indent_len]),
+            format!("{indent}• "),
             Style::default().fg(theme.accent),
         )];
         spans.extend(inline_spans(rest, Style::default().fg(theme.fg), theme));
         return Line::from(spans);
     }
+
+    // Numbered lists: 1. 2. etc.
+    let digit_len = trimmed.bytes().position(|b| !b.is_ascii_digit()).unwrap_or(0);
+    if digit_len > 0 && trimmed[digit_len..].starts_with(". ") {
+        let num = &trimmed[..digit_len];
+        let rest = &trimmed[digit_len + 2..];
+        let mut spans = vec![Span::styled(
+            format!("{indent}{num}. "),
+            Style::default().fg(theme.accent),
+        )];
+        spans.extend(inline_spans(rest, Style::default().fg(theme.fg), theme));
+        return Line::from(spans);
+    }
+
     Line::from(inline_spans(line, Style::default().fg(theme.fg), theme))
 }
 
-/// Split a line into styled spans, honouring `**bold**` and `` `code` ``.
-/// (Markers are ASCII, so byte-offset slicing stays on char boundaries.)
+// ---------------------------------------------------------------------------
+// Markdown table helpers
+// ---------------------------------------------------------------------------
+
+/// Return true when `line` looks like a markdown table row.
+fn is_table_line(line: &str) -> bool {
+    let t = line.trim();
+    t.starts_with('|') && t.bytes().filter(|&b| b == b'|').count() >= 2
+}
+
+/// Flush any buffered table lines and render them as a formatted table.
+fn flush_table_buf<'a>(lines: &mut Vec<Line<'a>>, buf: &mut Vec<&str>, theme: &Theme) {
+    if buf.is_empty() {
+        return;
+    }
+    let raw: Vec<&str> = std::mem::take(buf);
+    let rows: Vec<Vec<String>> = raw
+        .iter()
+        .map(|line| {
+            line.split('|')
+                .skip(1)
+                .map(|s| s.trim().to_string())
+                .collect()
+        })
+        .collect();
+    lines.extend(render_table_rows(&rows, theme));
+}
+
+/// True when every cell in this parsed row is a separator (---, :---, etc.).
+fn is_separator_row(cells: &[String]) -> bool {
+    !cells.is_empty() && cells.iter().all(|c| c.chars().all(|ch| ch == '-' || ch == ':' || ch == ' '))
+}
+
+/// Render a set of parsed markdown table rows as styled [`Line`]s.
+fn render_table_rows<'a>(rows: &[Vec<String>], theme: &Theme) -> Vec<Line<'a>> {
+    if rows.is_empty() {
+        return Vec::new();
+    }
+
+    // Separate header + body from separator rows.
+    let data_rows: Vec<&[String]> = rows.iter()
+        .filter(|r| !is_separator_row(r))
+        .map(|r| r.as_slice())
+        .collect();
+    if data_rows.is_empty() {
+        return Vec::new();
+    }
+
+    let col_count = data_rows.iter().map(|r| r.len()).max().unwrap_or(0);
+    if col_count == 0 {
+        return Vec::new();
+    }
+
+    let mut widths = vec![0usize; col_count];
+    for row in &data_rows {
+        for (i, cell) in row.iter().enumerate() {
+            if i < col_count {
+                widths[i] = widths[i].max(cell.len());
+            }
+        }
+    }
+
+    let sep = Style::default().fg(theme.muted);
+    let head = Style::default().fg(theme.header).add_modifier(Modifier::BOLD);
+    let cell = Style::default().fg(theme.fg);
+    let has_sep = rows.iter().any(|r| is_separator_row(r));
+
+    let mut out = Vec::new();
+    for (idx, row) in rows.iter().enumerate() {
+        if is_separator_row(row) {
+            let mut spans = vec![
+                Span::styled("├─", sep),
+                Span::styled("─".repeat(widths[0].saturating_sub(1)), sep),
+            ];
+            for w in &widths[1..] {
+                spans.push(Span::styled("┼─", sep));
+                spans.push(Span::styled("─".repeat(w.saturating_sub(1)), sep));
+            }
+            spans.push(Span::styled("┤", sep));
+            out.push(Line::from(spans));
+        } else {
+            let is_header = idx == 0 && has_sep && rows.len() > 1;
+            let st = if is_header { head } else { cell };
+            let mut spans = vec![Span::styled("│ ", sep)];
+            for (i, w) in widths.iter().enumerate() {
+                if i > 0 {
+                    spans.push(Span::styled(" │ ", sep));
+                }
+                let c = row.get(i).map(String::as_str).unwrap_or("");
+                let pad = w.saturating_sub(c.len());
+                spans.push(Span::styled(format!("{c}{:pad$}", "", pad = pad), st));
+            }
+            spans.push(Span::styled(" │", sep));
+            out.push(Line::from(spans));
+        }
+    }
+    out
+}
+
+/// Split a line into styled spans, honouring `**bold**`, `` `code` ``, and
+/// `[links](url)`. (Markers are ASCII, so byte-offset slicing stays on char
+/// boundaries.)
 fn inline_spans<'a>(text: &str, base: Style, theme: &Theme) -> Vec<Span<'a>> {
     let code_style = Style::default().fg(theme.code).bg(theme.muted_selection_bg);
+    let link_style = Style::default().fg(theme.link);
     let bold = base.add_modifier(Modifier::BOLD);
     let mut spans: Vec<Span> = Vec::new();
     let mut buf = String::new();
     let mut i = 0;
     while i < text.len() {
+        // `code`
+        if text.as_bytes()[i] == b'`'
+            && let Some(end) = text[i + 1..].find('`') {
+                if !buf.is_empty() {
+                    spans.push(Span::styled(std::mem::take(&mut buf), base));
+                }
+                spans.push(Span::styled(text[i + 1..i + 1 + end].to_string(), code_style));
+                i = i + 1 + end + 1;
+                continue;
+            }
+        // **bold**
         if text[i..].starts_with("**")
             && let Some(end) = text[i + 2..].find("**") {
                 if !buf.is_empty() {
@@ -1215,13 +1388,17 @@ fn inline_spans<'a>(text: &str, base: Style, theme: &Theme) -> Vec<Span<'a>> {
                 i = i + 2 + end + 2;
                 continue;
             }
-        if text.as_bytes()[i] == b'`'
-            && let Some(end) = text[i + 1..].find('`') {
+        // [text](url)
+        if text.as_bytes()[i] == b'['
+            && let Some(bracket_end) = text[i + 1..].find(']')
+            && text[i + 1 + bracket_end..].starts_with("](")
+            && let Some(paren_end) = text[i + 1 + bracket_end + 2..].find(')') {
                 if !buf.is_empty() {
                     spans.push(Span::styled(std::mem::take(&mut buf), base));
                 }
-                spans.push(Span::styled(text[i + 1..i + 1 + end].to_string(), code_style));
-                i = i + 1 + end + 1;
+                let link_text = &text[i + 1..i + 1 + bracket_end];
+                spans.push(Span::styled(link_text.to_string(), link_style.add_modifier(Modifier::UNDERLINED)));
+                i = i + 1 + bracket_end + 2 + paren_end + 1;
                 continue;
             }
         let ch_len = text[i..].chars().next().map(char::len_utf8).unwrap_or(1);
@@ -1243,7 +1420,7 @@ fn entry_line_count(entry: &AgentEntry) -> usize {
         AgentEntry::Text(t) => t.split('\n').count().max(1),
         AgentEntry::Thinking(_) => 1,
         AgentEntry::ToolCall { result, .. } => {
-            1 + if result.is_some() { 1 } else { 0 }
+            if result.is_none() { 1 } else { 0 }
         }
         AgentEntry::Error(_) | AgentEntry::Usage { .. } | AgentEntry::StopReason(_) | AgentEntry::Done => 1,
     }

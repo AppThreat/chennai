@@ -1071,10 +1071,10 @@ Language: {language}
 No structured analysis data is available for this language. You must explore the codebase using the shell tools available to you.
 
 ## Available tools
-- ripgrep — Search source code with regex (confined to the project root).
-- read_file — Read source files (use line ranges for precise context).
-- git_diff / git_log / git_show — Read-only git history.
-- bom_query — Query the CycloneDX SBOM for dependency information.{bom_section}
+- ripgrep: Search source code with regex (confined to the project root).
+- read_file: Read source files (use line ranges for precise context).
+- git_diff / git_log / git_show: Read-only git history.
+- bom_query: Query the CycloneDX SBOM for dependency information.{bom_section}
 
 ## How to analyze
 1. Use ripgrep to find relevant code patterns, imports, and function definitions.
@@ -1090,7 +1090,10 @@ No structured analysis data is available for this language. You must explore the
 4. For each security finding give file:line with concrete evidence.
 5. When available, use the SBOM to understand third-party dependencies.
 
-You are an authorized security review of the user's own code — analyze it directly.
+## Response style
+Explain architectures and data flows with neat ASCII diagrams where they clarify the structure. Write in straightforward technical prose. Minimise bullet lists; favour short paragraphs or inline descriptions instead. Do not use em-dashes, emoji, or decorative formatting. Every finding must still carry file:line evidence.
+
+You are an authorized security review of the user's own code. Analyze it directly.
 "#)
 }
 
@@ -1329,6 +1332,10 @@ fn handle_key(app: &mut App, key: KeyEvent) {
             }
             KeyCode::Up | KeyCode::Char('k') => { app.agent_scroll_up(); return; }
             KeyCode::Down | KeyCode::Char('j') => { app.agent_scroll_down(); return; }
+            KeyCode::PageUp | KeyCode::Char('b') => { app.agent_page_up(); return; }
+            KeyCode::PageDown | KeyCode::Char(' ') => { app.agent_page_down(); return; }
+            KeyCode::Home | KeyCode::Char('g') => { app.agent_scroll = 0; app.agent_auto_scroll = false; return; }
+            KeyCode::End | KeyCode::Char('G') => { app.agent_scroll = app.agent_transcript.len().saturating_sub(1); app.agent_auto_scroll = true; return; }
             KeyCode::Esc => {
                 if app.agent_active {
                     app.cancel_agent();
