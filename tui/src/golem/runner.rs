@@ -34,10 +34,13 @@ pub fn golem_dataflow_path(source_dir: &Path) -> PathBuf {
 
 /// Run golem analysis on `source_dir`, writing outputs into `out_dir`.
 ///
-/// Invokes `golem analyze --dir <src> --dataflow all --callgraph static --format json
-/// --out <report> --dataflow-graph-out <df-graphml>`. `--dataflow all` produces the
-/// fullest data-flow output (summaries, nodes, edges, and slices when present); the
-/// call graph is embedded in the JSON report (golem has no separate call-graph sidecar flag).
+/// Invokes `golem analyze --dir <src> --dataflow all --include-all-flows --include-stdlib
+/// --callgraph static --format json --out <report> --dataflow-graph-out <df-graphml>`.
+/// `--dataflow all` produces the fullest data-flow output, while `--include-all-flows`
+/// (plus `--include-stdlib`) forces golem to materialize concrete source→sink `slices`
+/// instead of only inferring per-function summaries — without them the `slices` array is
+/// empty. The call graph is embedded in the JSON report (golem has no separate call-graph
+/// sidecar flag).
 pub fn run_golem(source_dir: &Path, out_dir: &Path) -> Result<PathBuf, String> {
     let golem_bin = find_golem()?;
 
@@ -54,6 +57,8 @@ pub fn run_golem(source_dir: &Path, out_dir: &Path) -> Result<PathBuf, String> {
             &source_dir.to_string_lossy(),
             "--dataflow",
             "all",
+            "--include-all-flows",
+            "--include-stdlib",
             "--callgraph",
             "static",
             "--format",

@@ -392,14 +392,20 @@ pub fn query_dataflow(report: &Value, pattern: Option<&str>, limit: usize) -> St
         "# Data Flow (mode: {mode}, {sources} sources, {sinks} sinks, {slices} slices)"
     )];
 
-    let summaries = df.get("summaries").and_then(Value::as_array);
-    match summaries {
-        Some(arr) if !arr.is_empty() => {
+    // Prefer materialized slices (richest evidence) when present, then fall back to
+    // per-function summaries, then to raw flagged source/sink nodes.
+    let slice_arr = df.get("slices").and_then(Value::as_array);
+    let summary_arr = df.get("summaries").and_then(Value::as_array);
+    match (slice_arr, summary_arr) {
+        (Some(arr), _) if !arr.is_empty() => {
+            lines.push(format_slices(arr, pattern, limit));
+        }
+        (_, Some(arr)) if !arr.is_empty() => {
             lines.push(format_summaries(arr, pattern, limit));
         }
         _ => {
             lines.push(
-                "  No function taint summaries reported. Showing flagged source/sink nodes instead:"
+                "  No taint slices or function summaries reported. Showing flagged source/sink nodes instead:"
                     .to_string(),
             );
             lines.push(format_flagged_nodes(df.get("nodes").and_then(Value::as_array), pattern, limit));
@@ -407,6 +413,93 @@ pub fn query_dataflow(report: &Value, pattern: Option<&str>, limit: usize) -> St
     }
 
     lines.join("\n")
+}
+
+/// Extract a `(filename, line)` position from a golem data-flow node id.
+///
+/// Slice node ids are pipe-delimited and encode the position near the end as
+/// `…|<filename>|<line>|<column>|<category>`, e.g.
+/// `df-node|source|fn|symbol|name|/path/file.go|319|20|parameter`. We read the
+/// filename and line from the trailing fixed-position fields. Returns `("?", 0)`
+/// when the id is too short or the line is not numeric.
+fn node_id_loc(id: &str) -> (String, i64) {
+    let parts: Vec<&str> = id.split('|').collect();
+    if parts.len() >= 4 {
+        let file = parts[parts.len() - 4].to_string();
+        let line = parts[parts.len() - 3].parse::<i64>().unwrap_or(0);
+        return (file, line);
+    }
+    ("?".to_string(), 0)
+}
+
+/// Render fully materialized taint slices ranked by severity then confidence.
+///
+/// Each slice is a concrete source→sink path. We surface the named source/sink
+/// functions, the firing rule, severity, taint kinds, and the source/sink file
+/// positions (decoded from the node ids).
+fn format_slices(slices: &[Value], pattern: Option<&str>, limit: usize) -> String {
+    let matched: Vec<&Value> = slices
+        .iter()
+        .filter(|s| {
+            pattern_match(field_str(s, "sourceFunction"), pattern)
+                || pattern_match(field_str(s, "sinkFunction"), pattern)
+                || pattern_match(field_str(s, "ruleId"), pattern)
+                || pattern_match(field_str(s, "sinkCategory"), pattern)
+                || pattern_match(field_str(s, "sourcePackagePath"), pattern)
+        })
+        .collect();
+
+    let mut ranked = matched;
+    ranked.sort_by_key(|s| {
+        std::cmp::Reverse((
+            severity_rank(field_str(s, "severity")),
+            confidence_rank(field_str(s, "confidence")),
+            field_i64(s, "riskScore"),
+        ))
+    });
+
+    let mut lines: Vec<String> = vec![format!(
+        "  Taint slices (showing {} of {}, ranked by severity):",
+        ranked.len().min(limit),
+        slices.len()
+    )];
+
+    for s in ranked.into_iter().take(limit) {
+        let severity = field_str(s, "severity");
+        let confidence = field_str(s, "confidence");
+        let rule = field_str(s, "ruleName");
+        let src_fn = field_str(s, "sourceFunction");
+        let src_name = field_str(s, "sourceName");
+        let sink_fn = field_str(s, "sinkFunction");
+        let sink_name = field_str(s, "sinkName");
+        let path_len = field_i64(s, "pathLength");
+        let taints = s["taintKinds"]
+            .as_array()
+            .map(|t| t.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", "))
+            .unwrap_or_default();
+        let (src_file, src_line) = node_id_loc(field_str(s, "sourceId"));
+        let (sink_file, sink_line) = node_id_loc(field_str(s, "sinkId"));
+
+        lines.push(format!("    [{severity}][conf={confidence}] {rule}"));
+        lines.push(format!("         source: {src_fn} ({src_name}) at {src_file}:{src_line}"));
+        lines.push(format!("         sink:   {sink_fn} ({sink_name}) at {sink_file}:{sink_line}"));
+        if !taints.is_empty() {
+            lines.push(format!("         taint: {taints} | path length: {path_len}"));
+        }
+    }
+
+    lines.join("\n")
+}
+
+/// Rank a severity label so `critical > high > medium > low > unknown`.
+fn severity_rank(severity: &str) -> u8 {
+    match severity.to_lowercase().as_str() {
+        "critical" => 4,
+        "high" => 3,
+        "medium" => 2,
+        "low" => 1,
+        _ => 0,
+    }
 }
 
 /// Render per-function taint summaries ranked by confidence.
@@ -791,6 +884,18 @@ mod tests {
                 ],
                 "summaries": [
                     { "function": "myapp/mapper.Map", "packagePath": "myapp/mapper", "paramToSink": [ { "parameterIndex": 0, "categories": ["unsafe"] } ], "confidence": "medium" }
+                ],
+                "slices": [
+                    {
+                        "sourceId": "df-node|source|myapp.handler|parameter req : string|req|/app/handler.go|42|20|parameter",
+                        "sinkId": "df-node|sink|myapp.run|exec.Command|Command|/app/run.go|88|17|process-exec",
+                        "sourceFunction": "myapp.handler", "sourceName": "req",
+                        "sinkFunction": "myapp.run", "sinkName": "Command",
+                        "sinkCategory": "process-exec", "sourcePackagePath": "myapp",
+                        "taintKinds": ["user-input", "process-exec"], "pathLength": 3,
+                        "ruleId": "GOLEM-DATAFLOW-CMD-INJECTION", "ruleName": "User input reaches process execution",
+                        "severity": "critical", "riskScore": 95, "confidence": "high"
+                    }
                 ]
             },
             "crypto": {
@@ -865,9 +970,24 @@ mod tests {
     }
 
     #[test]
-    fn test_query_dataflow_uses_summaries() {
+    fn test_query_dataflow_prefers_slices() {
+        // When materialized slices are present they win over summaries: the formatter
+        // surfaces the named source→sink path, the rule, severity, and decoded positions.
         let result = query_dataflow(&test_report(), None, 50);
-        assert!(result.contains("1 sources, 1 sinks"));
+        assert!(result.contains("Taint slices"));
+        assert!(result.contains("[critical][conf=high]"));
+        assert!(result.contains("User input reaches process execution"));
+        assert!(result.contains("myapp.handler (req) at /app/handler.go:42"));
+        assert!(result.contains("myapp.run (Command) at /app/run.go:88"));
+        assert!(result.contains("user-input, process-exec"));
+    }
+
+    #[test]
+    fn test_query_dataflow_falls_back_to_summaries() {
+        // Default scans leave `slices` empty; the formatter then uses per-function summaries.
+        let mut report = test_report();
+        report["dataFlow"]["slices"] = json!([]);
+        let result = query_dataflow(&report, None, 50);
         assert!(result.contains("myapp/mapper.Map"));
         assert!(result.contains("param[0] → unsafe"));
     }
@@ -875,6 +995,7 @@ mod tests {
     #[test]
     fn test_query_dataflow_falls_back_to_nodes() {
         let mut report = test_report();
+        report["dataFlow"]["slices"] = json!([]);
         report["dataFlow"]["summaries"] = json!([]);
         let result = query_dataflow(&report, None, 50);
         assert!(result.contains("exec.Command"));
