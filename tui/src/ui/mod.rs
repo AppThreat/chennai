@@ -45,7 +45,7 @@ pub fn render(frame: &mut Frame, app: &mut App, theme: &Theme) {
     // Once a result is showing, the Summary panel collapses to a single line to give the result
     // more room; it expands again whenever it has focus (Tab or a click lands on it).
     let summary_collapsed =
-        app.focus != Panel::Summary && (app.output.is_some() || app.flows.is_some());
+        app.focus != Panel::Summary && (app.output.is_some() || app.flows.is_some() || app.agent_active);
     let summary_constraint = if summary_collapsed {
         Constraint::Length(1)
     } else {

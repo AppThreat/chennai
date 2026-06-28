@@ -1,6 +1,6 @@
 name                     := "chennai-engine"
 ThisBuild / organization := "io.appthreat"
-ThisBuild / version      := "0.6.0"
+ThisBuild / version      := "0.7.0"
 ThisBuild / scalaVersion := "3.8.4"
 
 val chenVersion   = "3.0.0"
