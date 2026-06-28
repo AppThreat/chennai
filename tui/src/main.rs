@@ -330,6 +330,8 @@ fn run_non_atom_mode(
     if !bom_store.loaded {
         let sdir = source_dir;
         let odir = &reports_dir;
+        eprint!("Running cdxgen to generate SBOM... ");
+        let _ = std::io::stderr().flush();
         for lifecycle in bom::LIFECYCLES {
             if let Ok(path) = bom::generate_bom(sdir, odir, lifecycle, language.as_deref()) {
                 let mut store = BomStore::new();
@@ -339,6 +341,7 @@ fn run_non_atom_mode(
                 }
             }
         }
+        eprintln!("done.");
     }
 
     let bom_summary = if bom_store.loaded { bom_store.summary() } else { String::new() };
