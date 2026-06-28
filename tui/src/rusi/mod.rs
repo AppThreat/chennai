@@ -41,7 +41,8 @@ impl RusiCtx {
             "crypto" => query::query_crypto(&self.report.report, pattern),
             "detail" => query::detail_declaration(&self.report.report, pattern.unwrap_or("")),
             "flows" => query::query_dataflow(&self.report.report, pattern, limit),
-            _ => format!("Unknown query kind '{kind}'. Valid kinds: packages, files, imports, declarations, usages, security_signals, callgraph, dataflow, crypto, detail, flows"),
+            "endpoints" | "api_endpoints" => query::query_endpoints(&self.report.report, pattern),
+            _ => format!("Unknown query kind '{kind}'. Valid kinds: packages, files, imports, declarations, usages, security_signals, callgraph, dataflow, crypto, detail, flows, endpoints"),
         }
     }
 
@@ -121,6 +122,7 @@ Key components:
 - rusi_flows — Query data-flow slices (source→sink paths). Each slice has a source, a sink, categories, and a path.
 - rusi_detail — Get detailed information about a specific declaration (function, method, struct) including its signature, location, callers, and callees.
 - rusi_crypto — Query cryptographic evidence (libraries, components, materials, findings).
+- rusi_endpoints — List HTTP API endpoints (axum, actix-web, rocket) with method, path, handler, and framework.
 - ripgrep / read_file — Search and read source code (confined to the project root). Use these for source-level detail.
 - git_diff / git_log / git_show — Read-only git history.
 - bom_query — Query the CycloneDX SBOM for dependency information.
@@ -192,7 +194,24 @@ pub fn rusi_tool_definitions() -> Vec<serde_json::Value> {
         rusi_flows_tool(),
         rusi_detail_tool(),
         rusi_crypto_tool(),
+        rusi_endpoints_tool(),
     ]
+}
+
+fn rusi_endpoints_tool() -> serde_json::Value {
+    json!({
+        "name": "rusi_endpoints",
+        "description": "List HTTP API endpoints discovered by rusi (axum, actix-web, rocket) with HTTP method, fully-qualified path, handler function, and framework. Empty for workspaces with no supported web framework.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "pattern": {
+                    "type": "string",
+                    "description": "Optional case-insensitive pattern to filter endpoints by path, handler, or framework"
+                }
+            }
+        }
+    })
 }
 
 fn rusi_summary_tool() -> serde_json::Value {
@@ -216,8 +235,8 @@ fn rusi_query_tool() -> serde_json::Value {
             "properties": {
                 "kind": {
                     "type": "string",
-                    "description": "Entity type to query: packages, files, imports, declarations, usages, security_signals, callgraph, dataflow, crypto",
-                    "enum": ["packages", "files", "imports", "declarations", "usages", "security_signals", "callgraph", "dataflow", "crypto"]
+                    "description": "Entity type to query: packages, files, imports, declarations, usages, security_signals, callgraph, dataflow, crypto, endpoints",
+                    "enum": ["packages", "files", "imports", "declarations", "usages", "security_signals", "callgraph", "dataflow", "crypto", "endpoints"]
                 },
                 "pattern": {
                     "type": "string",
@@ -335,8 +354,11 @@ mod tests {
                     "data_flow_slice_count": 1,
                     "crypto_library_count": 1,
                     "crypto_component_count": 2,
-                    "api_endpoint_count": 0
+                    "api_endpoint_count": 1
                 },
+                "api_endpoints": [
+                    { "id": "ep-1", "method": "GET", "path": "/api/v1/users", "framework": "axum", "handler": "myapp::handlers::list_users", "package_path": "myapp", "purl": "pkg:cargo/myapp@0.1.0", "file_path": "src/handlers.rs", "position": { "filename": "src/handlers.rs", "line": 20, "column": 1 } }
+                ],
                 "packages": [
                     { "name": "myapp", "version": "0.1.0", "purl": "pkg:cargo/myapp@0.1.0", "files": ["src/main.rs", "src/lib.rs"] }
                 ],
@@ -468,6 +490,15 @@ mod tests {
     }
 
     #[test]
+    fn test_rusi_query_endpoints() {
+        let ctx = load_test_report();
+        let result = ctx.query("endpoints", None, 50);
+        assert!(result.contains("GET /api/v1/users"));
+        assert!(result.contains("axum"));
+        assert!(result.contains("src/handlers.rs:20"));
+    }
+
+    #[test]
     fn test_rusi_detail() {
         let ctx = load_test_report();
         let result = ctx.detail("run_command");
@@ -486,7 +517,8 @@ mod tests {
         assert!(names.contains(&"rusi_flows"));
         assert!(names.contains(&"rusi_detail"));
         assert!(names.contains(&"rusi_crypto"));
-        assert_eq!(defs.len(), 6);
+        assert!(names.contains(&"rusi_endpoints"));
+        assert_eq!(defs.len(), 7);
     }
 
     #[test]

@@ -8,11 +8,15 @@
 //! This module merges the reports at load time so the query layer can reference both.
 //!
 //! # Schema notes
-//! Uses lowerCamelCase like golem. Key top-level arrays:
+//! dosai serializes with **PascalCase** keys and flat `FileName`/`LineNumber` positions.
+//! Key top-level arrays:
 //! | File | Arrays |
 //! |---|---|
-//! | dataflows | `nodes`, `edges`, `slices`, `methodSummaries`, `packageReachability`, `dangerousApiReachability`, `weaknessCandidates`, `entryPoints` |
-//! | methods | `methods`, `methodCalls`, `apiEndpoints`, `entryPoints`, `packageReachability`, `assemblyInformation` |
+//! | dataflows | `Nodes`, `Edges`, `Slices`, `MethodSummaries`, `PackageReachability`, `DangerousApiReachability`, `WeaknessCandidates`, `EntryPoints` |
+//! | methods | `Methods`, `MethodCalls`, `ApiEndpoints`, `EntryPoints`, `PackageReachability`, `CallGraph`, `Dependencies` |
+//!
+//! The methods report is optional — `dosai methods` can fail to load assemblies on some
+//! inputs, so the methods-backed tools degrade gracefully when it is absent.
 
 pub mod loader;
 pub mod query;
@@ -54,7 +58,9 @@ impl DosaiCtx {
             "methods" => query::query_methods(&methods_val.cloned(), pattern, limit),
             "method_calls" => query::query_method_calls(&methods_val.cloned(), pattern, limit),
             "dependencies" => self.query_dependencies(pattern).unwrap_or_else(|e| e),
-            "api_endpoints" => query::query_endpoints(&methods_val.cloned(), pattern),
+            "api_endpoints" | "endpoints" => {
+                query::query_endpoints(&self.dataflows.report, &methods_val.cloned(), pattern)
+            }
             "entry_points" => self.query_entry_points(pattern),
             "package_reachability" => self.query_package_reachability(pattern, limit),
             "dataflow_nodes" => query::query_dataflow_nodes(&self.dataflows.report, pattern, limit),
@@ -62,13 +68,14 @@ impl DosaiCtx {
             "security_signals" => query::query_security_signals(&self.dataflows.report, pattern, limit),
             "dataflow" => query::query_slices(&self.dataflows.report, pattern, limit),
             "flows" => query::query_slices(&self.dataflows.report, pattern, limit),
+            "trace" => query::query_trace(&self.dataflows.report, pattern, limit),
             "callgraph" => self.callgraph(pattern, limit),
             "detail" => {
                 let name = pattern.unwrap_or("");
                 let methods_val = self.methods.as_ref().map(|m| &m.report);
                 query::detail_method(&methods_val.cloned(), name)
             }
-            _ => format!("Unknown query kind '{kind}'. Valid kinds: methods, method_calls, dependencies, api_endpoints, entry_points, package_reachability, dataflow_nodes, dataflow_edges, security_signals, dataflow, flows, callgraph, detail"),
+            _ => format!("Unknown query kind '{kind}'. Valid kinds: methods, method_calls, dependencies, api_endpoints, entry_points, package_reachability, dataflow_nodes, dataflow_edges, security_signals, dataflow, flows, trace, callgraph, detail"),
         }
     }
 
@@ -94,39 +101,60 @@ impl DosaiCtx {
         query::detail_method(&methods_val.cloned(), name)
     }
 
+    /// List dependencies, preferring the dataflows `PackageReachability` (which records
+    /// whether each package URL is reachable) and falling back to the methods `Dependencies`.
     fn query_dependencies(&self, pattern: Option<&str>) -> Result<String, String> {
-        let deps = self.dataflows.report["packageReachability"].as_array()
-            .or_else(|| self.methods.as_ref().and_then(|m| m.report["packageReachability"].as_array()));
-        match deps {
-            Some(arr) => {
-                let mut lines: Vec<String> = Vec::new();
-                lines.push(format!("# Package Reachability ({} total)", arr.len()));
-                for dep in arr {
-                    let name = dep["name"].as_str().unwrap_or("?");
-                    let version = dep["version"].as_str().unwrap_or("?");
-                    let reachable = dep["isReachable"].as_bool().unwrap_or(false);
-                    if pattern_match(name, pattern) || pattern_match(version, pattern) {
-                        let reach_str = if reachable { "REACHABLE" } else { "not reachable" };
-                        lines.push(format!("  {name}@{version} ({reach_str})"));
-                    }
+        if let Some(arr) = self.dataflows.report["PackageReachability"].as_array() {
+            let mut lines: Vec<String> = vec![format!("# Package Reachability ({} total)", arr.len())];
+            for dep in arr {
+                let purl = dep["Purl"].as_str().unwrap_or("?");
+                if !pattern_match(purl, pattern) {
+                    continue;
                 }
-                Ok(lines.join("\n"))
+                let reachable = dep["Reachable"].as_bool().unwrap_or(false);
+                let confidence = dep["Confidence"].as_str().unwrap_or("?");
+                let reach_str = if reachable { "REACHABLE" } else { "not reachable" };
+                lines.push(format!("  {purl} ({reach_str}, confidence {confidence})"));
             }
-            None => Ok("No package reachability data available.".to_string()),
+            return Ok(lines.join("\n"));
         }
+
+        if let Some(arr) = self.methods.as_ref().and_then(|m| m.report["Dependencies"].as_array()) {
+            let mut lines: Vec<String> = vec![format!("# Dependencies ({} total)", arr.len())];
+            for dep in arr {
+                let name = dep["Name"].as_str().unwrap_or("?");
+                let purl = dep["Purl"].as_str().unwrap_or("?");
+                if pattern_match(name, pattern) || pattern_match(purl, pattern) {
+                    lines.push(format!("  {name} — {purl}"));
+                }
+            }
+            return Ok(lines.join("\n"));
+        }
+
+        Ok("No dependency data available.".to_string())
     }
 
+    /// List analysis entry points (HTTP routes, `Main`, etc.) from the dataflows report.
     fn query_entry_points(&self, pattern: Option<&str>) -> String {
-        let entries = self.dataflows.report["entryPoints"].as_array()
-            .or_else(|| self.methods.as_ref().and_then(|m| m.report["entryPoints"].as_array()));
+        let entries = self.dataflows.report["EntryPoints"]
+            .as_array()
+            .or_else(|| self.methods.as_ref().and_then(|m| m.report["EntryPoints"].as_array()));
         match entries {
             Some(arr) => {
-                let mut lines: Vec<String> = Vec::new();
-                lines.push(format!("# Entry Points ({} total)", arr.len()));
+                let mut lines: Vec<String> = vec![format!("# Entry Points ({} total)", arr.len())];
                 for ep in arr {
-                    let name = ep["name"].as_str().unwrap_or("?");
-                    if pattern_match(name, pattern) {
-                        lines.push(format!("  {name}"));
+                    let kind = ep["Kind"].as_str().unwrap_or("?");
+                    let route = ep["Route"].as_str().unwrap_or("");
+                    let verb = ep["HttpMethod"].as_str().unwrap_or("");
+                    let file = ep["FileName"].as_str().unwrap_or("?");
+                    let line = ep["LineNumber"].as_i64().unwrap_or(0);
+                    if !pattern_match(kind, pattern) && !pattern_match(route, pattern) {
+                        continue;
+                    }
+                    if route.is_empty() {
+                        lines.push(format!("  [{kind}] at {file}:{line}"));
+                    } else {
+                        lines.push(format!("  [{kind}] {verb} {route} at {file}:{line}"));
                     }
                 }
                 lines.join("\n")
@@ -135,24 +163,29 @@ impl DosaiCtx {
         }
     }
 
+    /// List package reachability (does taint analysis reach each package URL).
     fn query_package_reachability(&self, pattern: Option<&str>, limit: usize) -> String {
-        let reach = self.dataflows.report["packageReachability"].as_array()
-            .or_else(|| self.methods.as_ref().and_then(|m| m.report["packageReachability"].as_array()));
+        let reach = self.dataflows.report["PackageReachability"]
+            .as_array()
+            .or_else(|| self.methods.as_ref().and_then(|m| m.report["PackageReachability"].as_array()));
         match reach {
             Some(arr) => {
                 let mut matched: Vec<&serde_json::Value> = arr.iter().collect();
                 if let Some(pat) = pattern {
-                    matched.retain(|r| pattern_match(r["name"].as_str().unwrap_or(""), Some(pat)));
+                    matched.retain(|r| pattern_match(r["Purl"].as_str().unwrap_or(""), Some(pat)));
                 }
-                let show = matched.iter().take(limit);
-                let mut lines: Vec<String> = Vec::new();
-                lines.push(format!("# Package Reachability ({} matched, showing first {})", matched.len(), show.len()));
+                let show: Vec<&serde_json::Value> = matched.iter().take(limit).copied().collect();
+                let mut lines: Vec<String> = vec![format!(
+                    "# Package Reachability ({} of {} matched, showing first {})",
+                    matched.len(),
+                    arr.len(),
+                    show.len()
+                )];
                 for r in show {
-                    let name = r["name"].as_str().unwrap_or("?");
-                    let version = r["version"].as_str().unwrap_or("?");
-                    let reachable = r["isReachable"].as_bool().unwrap_or(false);
+                    let purl = r["Purl"].as_str().unwrap_or("?");
+                    let reachable = r["Reachable"].as_bool().unwrap_or(false);
                     let reach_str = if reachable { "REACHABLE" } else { "not reachable" };
-                    lines.push(format!("  {name}@{version} ({reach_str})"));
+                    lines.push(format!("  {purl} ({reach_str})"));
                 }
                 lines.join("\n")
             }
@@ -160,54 +193,61 @@ impl DosaiCtx {
         }
     }
 
+    /// List data-flow edges from the dataflows report (`SourceId → TargetId` with a label).
     fn query_dataflow_edges(&self, pattern: Option<&str>, limit: usize) -> String {
-        let edges = match self.dataflows.report["edges"].as_array() {
+        let edges = match self.dataflows.report["Edges"].as_array() {
             Some(arr) => arr,
             None => return "No data-flow edge data available.".to_string(),
         };
 
         let matched: Vec<&serde_json::Value> = if let Some(pat) = pattern {
             let pat_lower = pat.to_lowercase();
-            edges.iter().filter(|e| {
-                e["sourceName"].as_str().unwrap_or("").to_lowercase().contains(&pat_lower)
-                    || e["targetName"].as_str().unwrap_or("").to_lowercase().contains(&pat_lower)
-            }).take(limit).collect()
+            edges
+                .iter()
+                .filter(|e| {
+                    e["Label"].as_str().unwrap_or("").to_lowercase().contains(&pat_lower)
+                        || e["Kind"].as_str().unwrap_or("").to_lowercase().contains(&pat_lower)
+                })
+                .take(limit)
+                .collect()
         } else {
             edges.iter().take(limit).collect()
         };
 
-        let mut lines: Vec<String> = Vec::new();
-        lines.push(format!("# Data-Flow Edges ({} total, showing {})", edges.len(), matched.len()));
+        let mut lines: Vec<String> =
+            vec![format!("# Data-Flow Edges ({} total, showing {})", edges.len(), matched.len())];
         for e in matched {
-            let src = e["sourceName"].as_str().unwrap_or("?");
-            let tgt = e["targetName"].as_str().unwrap_or("?");
-            let label = e["label"].as_str().unwrap_or("");
-            lines.push(format!("  {src} → {tgt} [{label}]"));
+            let src = e["SourceId"].as_str().unwrap_or("?");
+            let tgt = e["TargetId"].as_str().unwrap_or("?");
+            let label = e["Label"].as_str().unwrap_or("");
+            let kind = e["Kind"].as_str().unwrap_or("");
+            lines.push(format!("  {src} → {tgt} [{kind}: {label}]"));
         }
         lines.join("\n")
     }
 
+    /// List call-graph edges from the methods report (`MethodCallEdge` records).
     fn query_callgraph_edges(&self, pattern: Option<&str>, limit: usize) -> String {
         let cg = match &self.methods {
-            Some(m) => m.report["callGraph"].as_object(),
+            Some(m) => m.report["CallGraph"].as_object(),
             None => None,
         };
-        let cg = match cg {
-            Some(c) => c,
-            None => return String::new(),
-        };
-
-        let edges = match cg["edges"].as_array() {
+        let edges = match cg.and_then(|c| c["Edges"].as_array()) {
             Some(arr) => arr,
             None => return String::new(),
         };
 
         let matched: Vec<&serde_json::Value> = if let Some(pat) = pattern {
             let pat_lower = pat.to_lowercase();
-            edges.iter().filter(|e| {
-                e["callerName"].as_str().unwrap_or("").to_lowercase().contains(&pat_lower)
-                    || e["calleeName"].as_str().unwrap_or("").to_lowercase().contains(&pat_lower)
-            }).take(limit).collect()
+            edges
+                .iter()
+                .filter(|e| {
+                    e["SourceId"].as_str().unwrap_or("").to_lowercase().contains(&pat_lower)
+                        || e["TargetId"].as_str().unwrap_or("").to_lowercase().contains(&pat_lower)
+                        || e["CalledMethodName"].as_str().unwrap_or("").to_lowercase().contains(&pat_lower)
+                })
+                .take(limit)
+                .collect()
         } else {
             edges.iter().take(limit).collect()
         };
@@ -216,12 +256,11 @@ impl DosaiCtx {
             return String::new();
         }
 
-        let mut lines: Vec<String> = Vec::new();
-        lines.push(format!("# Call Graph Edges (showing {})", matched.len()));
+        let mut lines: Vec<String> = vec![format!("# Call Graph Edges (showing {})", matched.len())];
         for e in matched {
-            let caller = e["callerName"].as_str().unwrap_or("?");
-            let callee = e["calleeName"].as_str().unwrap_or("?");
-            let call_type = e["callType"].as_str().unwrap_or("");
+            let caller = e["SourceName"].as_str().or_else(|| e["SourceId"].as_str()).unwrap_or("?");
+            let callee = e["TargetName"].as_str().or_else(|| e["TargetId"].as_str()).or_else(|| e["CalledMethodName"].as_str()).unwrap_or("?");
+            let call_type = e["CallType"].as_str().unwrap_or("");
             lines.push(format!("  {caller} → {callee} ({call_type})"));
         }
         lines.join("\n")
@@ -269,7 +308,8 @@ Key components:
 - dosai_summary — Re-fetch the summary of the dosai analysis report.
 - dosai_query — Query indexed analysis data: methods, method_calls, dependencies, api_endpoints, entry_points, package_reachability, dataflow_nodes, dataflow_edges, security_signals, flows.
 - dosai_callgraph — Query the call graph (method calls + call graph edges).
-- dosai_flows — Query data-flow slices (source→sink paths) with method summaries.
+- dosai_flows — Query data-flow slices (source→sink) with resolved source/sink node names + locations.
+- dosai_trace — Expand a slice (by id, e.g. dfs1) into its full ordered node path with names and file:line.
 - dosai_detail — Get detailed information about a specific method.
 - dosai_endpoints — List API endpoints with route, verb, handler, and auth status.
 - ripgrep / read_file — Search and read source code (confined to the project root).
@@ -286,24 +326,27 @@ Key components:
 7. Use dosai_query with kind="package_reachability" to identify reachable dependencies.
 
 ## Data model reference
-The dosai dataflows report contains:
-- nodes: name, kind, file, line, isSource, isSink
-- edges: sourceName, targetName, label
-- slices: sourceName, sinkName, ruleName, pathLength, methodSummary
-- weaknessCandidates: cweId, name, severity, description, file, line
-- dangerousApiReachability: api, method, isReachable
-- packageReachability: name, version, isReachable
+dosai uses PascalCase keys and flat FileName/LineNumber positions.
 
-The dosai methods report contains:
-- methods: name, signature, file, line, assembly, isEntryPoint
-- methodCalls: caller, callee, file, line
-- apiEndpoints: route, verb, handler, requiresAuth
+The dosai dataflows report contains:
+- Nodes: Name, Kind, Category, FileName, LineNumber, IsSource, IsSink
+- Slices: SourceCategory, SinkCategory, Summary, TaintKinds, NodeIds, Confidence
+- WeaknessCandidates: Cwe, Kind, Confidence, Summary, SourceLocation, SinkLocation
+- DangerousApiReachability: Symbol, Category, Confidence, SliceIds
+- PackageReachability: Purl, Reachable, Confidence, Categories
+- EntryPoints: Kind, Route, HttpMethod, AllowAnonymous, AuthorizationPolicies, FileName, LineNumber
+
+The dosai methods report (optional) contains:
+- Methods: Name, ClassName, Namespace, SourceSignature, FileName, LineNumber, Assembly
+- MethodCalls: ClassName (caller), CalledMethod (callee), FileName, LineNumber
+- ApiEndpoints: Route, HttpMethod, MethodName, AllowAnonymous, AuthorizationRequired
 
 ## Grounding rules
 1. NEVER invent call graphs, data flows, taints, sinks, or security findings.
 2. Prefer structured evidence from dosai tools over ripgrep.
 3. If dosai_flows returns NO results, the report lacks usable data-flow analysis.
-4. For each finding give: file:line, the concrete path, and confidence grounded in tool evidence.
+4. The methods report may be absent; method/call-graph tools will say so — do not infer methods from grep.
+5. For each finding give: file:line, the concrete path, and confidence grounded in tool evidence.
 
 You are an authorized security review of the user's OWN code — analyze it directly.
 "#
@@ -328,9 +371,32 @@ pub fn dosai_tool_definitions() -> Vec<serde_json::Value> {
         dosai_query_tool(),
         dosai_callgraph_tool(),
         dosai_flows_tool(),
+        dosai_trace_tool(),
         dosai_detail_tool(),
         dosai_endpoints_tool(),
     ]
+}
+
+fn dosai_trace_tool() -> serde_json::Value {
+    make_tool(
+        "dosai_trace",
+        "Expand a data-flow slice into its full ordered node path, resolving each node id to a name and file:line. Pass a slice id (e.g. 'dfs1') or a source/sink category to select which slice(s) to trace.",
+        json!({
+            "type": "object",
+            "properties": {
+                "pattern": {
+                    "type": "string",
+                    "description": "Slice id (e.g. dfs1) or source/sink category to trace"
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum slices to expand (default: 50, max: 500)",
+                    "default": 50,
+                    "maximum": 500
+                }
+            }
+        }),
+    )
 }
 
 fn dosai_summary_tool() -> serde_json::Value {
@@ -454,23 +520,28 @@ mod tests {
     fn test_ctx() -> DosaiCtx {
         let dataflows = LoadedReport {
             report: serde_json::json!({
-                "statistics": { "totalMethods": 5, "totalNodes": 3, "totalEdges": 2, "totalSlices": 1, "totalEndpoints": 2, "totalWeaknessCandidates": 0 },
-                "nodes": [],
-                "edges": [],
-                "slices": [],
-                "weaknessCandidates": [],
-                "dangerousApiReachability": [],
-                "packageReachability": []
+                "Metadata": { "SchemaVersion": "3.3.0", "AnalyzerVersion": "3.0.5.0" },
+                "Statistics": { "SourceCount": 1, "SinkCount": 1, "SliceCount": 1, "NodeCount": 3, "EdgeCount": 2, "FilesAnalyzed": 4 },
+                "Nodes": [],
+                "Edges": [],
+                "Slices": [],
+                "WeaknessCandidates": [],
+                "DangerousApiReachability": [],
+                "PackageReachability": [
+                    { "Purl": "pkg:nuget/Newtonsoft.Json@13.0.0", "Reachable": true, "Confidence": "High" }
+                ],
+                "EntryPoints": []
             }),
             report_path: "/tmp/dosai-dataflows.json".to_string(),
         };
         let methods = Some(LoadedReport {
             report: serde_json::json!({
-                "methods": [
-                    { "name": "Main", "signature": "void Main()", "file": "Program.cs", "line": 1, "assembly": "app.dll", "isEntryPoint": true }
+                "Methods": [
+                    { "Name": "Main", "ClassName": "Program", "Namespace": "MyApp", "SourceSignature": "void Main()", "FileName": "Program.cs", "LineNumber": 1, "Assembly": "app.dll" }
                 ],
-                "methodCalls": [],
-                "apiEndpoints": []
+                "MethodCalls": [],
+                "ApiEndpoints": [],
+                "CallGraph": { "Edges": [], "Nodes": [] }
             }),
             report_path: "/tmp/dosai-methods.json".to_string(),
         });
@@ -482,7 +553,7 @@ mod tests {
         let ctx = test_ctx();
         let summary = ctx.summary();
         assert!(summary.contains("dosai"));
-        assert!(summary.contains("Methods: 5"));
+        assert!(summary.contains("3 nodes, 2 edges"));
     }
 
     #[test]
@@ -493,6 +564,14 @@ mod tests {
     }
 
     #[test]
+    fn test_dosai_query_dependencies() {
+        let ctx = test_ctx();
+        let result = ctx.query("dependencies", None, 50);
+        assert!(result.contains("Newtonsoft.Json"));
+        assert!(result.contains("REACHABLE"));
+    }
+
+    #[test]
     fn test_dosai_tool_definitions() {
         let defs = dosai_tool_definitions();
         let names: Vec<&str> = defs.iter().filter_map(|d| d["name"].as_str()).collect();
@@ -500,9 +579,10 @@ mod tests {
         assert!(names.contains(&"dosai_query"));
         assert!(names.contains(&"dosai_callgraph"));
         assert!(names.contains(&"dosai_flows"));
+        assert!(names.contains(&"dosai_trace"));
         assert!(names.contains(&"dosai_detail"));
         assert!(names.contains(&"dosai_endpoints"));
-        assert_eq!(defs.len(), 6);
+        assert_eq!(defs.len(), 7);
     }
 
     #[test]

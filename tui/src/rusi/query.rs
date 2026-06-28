@@ -530,3 +530,49 @@ pub fn detail_declaration(report: &Value, name: &str) -> String {
 
     lines.join("\n")
 }
+
+/// List HTTP API endpoints discovered by rusi's api-discovery pass.
+///
+/// rusi resolves endpoints for axum, actix-web, and rocket and composes nested
+/// route prefixes into the fully-qualified path. Each `ApiEndpoint` carries
+/// `method`, `path`, `framework`, `handler`, `file_path`, and `position`. The
+/// array is empty for workspaces that import no supported web framework.
+pub fn query_endpoints(report: &Value, pattern: Option<&str>) -> String {
+    let endpoints = match report["api_endpoints"].as_array() {
+        Some(arr) => arr,
+        None => return "No API endpoint data available.".to_string(),
+    };
+
+    let matched: Vec<&Value> = endpoints
+        .iter()
+        .filter(|ep| {
+            let path = ep["path"].as_str().unwrap_or("");
+            let handler = ep["handler"].as_str().unwrap_or("");
+            let framework = ep["framework"].as_str().unwrap_or("");
+            match pattern {
+                Some(pat) => {
+                    let p = pat.to_lowercase();
+                    path.to_lowercase().contains(&p)
+                        || handler.to_lowercase().contains(&p)
+                        || framework.to_lowercase().contains(&p)
+                }
+                None => true,
+            }
+        })
+        .collect();
+
+    let mut lines: Vec<String> =
+        vec![format!("# API Endpoints ({} total, showing {})", endpoints.len(), matched.len())];
+
+    for ep in matched {
+        let method = ep["method"].as_str().unwrap_or("?");
+        let path = ep["path"].as_str().unwrap_or("?");
+        let handler = ep["handler"].as_str().unwrap_or("?");
+        let framework = ep["framework"].as_str().unwrap_or("?");
+        let file = ep["file_path"].as_str().unwrap_or("?");
+        let line = ep["position"]["line"].as_i64().unwrap_or(0);
+        lines.push(format!("  {method} {path} → {handler} ({framework}) at {file}:{line}"));
+    }
+
+    lines.join("\n")
+}

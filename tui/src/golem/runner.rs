@@ -2,7 +2,6 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 pub const GOLEM_REPORT_FILENAME: &str = "golem-report.json";
-pub const GOLEM_CALLGRAPH_FILENAME: &str = "golem-callgraph.graphml";
 pub const GOLEM_DATAFLOW_FILENAME: &str = "golem-dataflow.graphml";
 
 /// Locate the `golem` binary. Checks, in order:
@@ -29,30 +28,24 @@ pub fn golem_report_path(source_dir: &Path) -> PathBuf {
 }
 
 #[allow(dead_code)]
-pub fn golem_callgraph_path(source_dir: &Path) -> PathBuf {
-    source_dir.join(GOLEM_CALLGRAPH_FILENAME)
-}
-
-#[allow(dead_code)]
 pub fn golem_dataflow_path(source_dir: &Path) -> PathBuf {
     source_dir.join(GOLEM_DATAFLOW_FILENAME)
 }
 
-/// Run golem analysis on `source_dir`.
+/// Run golem analysis on `source_dir`, writing outputs into `out_dir`.
 ///
-/// Invokes `golem analyze --dir <src> --dataflow security --callgraph static --format json
-/// --out <report> --dataflow-graph-out <df-graphml> --callgraph-out <cg-graphml>`.
-pub fn run_golem(source_dir: &Path) -> Result<PathBuf, String> {
+/// Invokes `golem analyze --dir <src> --dataflow all --callgraph static --format json
+/// --out <report> --dataflow-graph-out <df-graphml>`. `--dataflow all` produces the
+/// fullest data-flow output (summaries, nodes, edges, and slices when present); the
+/// call graph is embedded in the JSON report (golem has no separate call-graph sidecar flag).
+pub fn run_golem(source_dir: &Path, out_dir: &Path) -> Result<PathBuf, String> {
     let golem_bin = find_golem()?;
 
-    let out_path = source_dir.join(GOLEM_REPORT_FILENAME);
-    if let Some(parent) = out_path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("failed to create output dir {}: {e}", parent.display()))?;
-    }
+    std::fs::create_dir_all(out_dir)
+        .map_err(|e| format!("failed to create output dir {}: {e}", out_dir.display()))?;
+    let out_path = out_dir.join(GOLEM_REPORT_FILENAME);
 
-    let cg_path = source_dir.join(GOLEM_CALLGRAPH_FILENAME);
-    let df_path = source_dir.join(GOLEM_DATAFLOW_FILENAME);
+    let df_path = out_dir.join(GOLEM_DATAFLOW_FILENAME);
 
     let status = Command::new(&golem_bin)
         .args([
@@ -60,7 +53,7 @@ pub fn run_golem(source_dir: &Path) -> Result<PathBuf, String> {
             "--dir",
             &source_dir.to_string_lossy(),
             "--dataflow",
-            "security",
+            "all",
             "--callgraph",
             "static",
             "--format",
@@ -69,8 +62,6 @@ pub fn run_golem(source_dir: &Path) -> Result<PathBuf, String> {
             &out_path.to_string_lossy(),
             "--dataflow-graph-out",
             &df_path.to_string_lossy(),
-            "--callgraph-out",
-            &cg_path.to_string_lossy(),
         ])
         .stdout(std::process::Stdio::inherit())
         .stderr(std::process::Stdio::inherit())
@@ -115,7 +106,6 @@ mod tests {
     fn test_golem_report_path() {
         let dir = Path::new("/tmp/test-project");
         assert_eq!(golem_report_path(dir), dir.join("golem-report.json"));
-        assert_eq!(golem_callgraph_path(dir), dir.join("golem-callgraph.graphml"));
         assert_eq!(golem_dataflow_path(dir), dir.join("golem-dataflow.graphml"));
     }
 }

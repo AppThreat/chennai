@@ -94,6 +94,65 @@ pub fn detect_language(source_dir: &Path) -> Option<String> {
         }
     }
 
+    // Fallback 1: a pre-generated analysis report in the directory implies its backend.
+    for (report, lang) in [
+        ("golem-report.json", "go"),
+        ("rusi-report.json", "rust"),
+        ("dosai-dataflows.json", "dotnet"),
+    ] {
+        if source_dir.join(report).is_file() {
+            return Some(lang.to_string());
+        }
+    }
+
+    // Fallback 2: monorepos often keep build manifests in nested directories rather than
+    // at the root. Do a shallow recursive search (skipping vendor/build dirs) for the strong
+    // Go / Rust / .NET markers so these projects still route to the right backend.
+    find_nested_language_marker(source_dir, 3)
+}
+
+/// Shallow recursive search for strong language markers (`go.mod`, `Cargo.toml`,
+/// `*.sln` / `*.csproj` / `*.fsproj` / `*.vbproj`) up to `max_depth` directory levels.
+/// Common dependency/build/VCS directories are skipped to keep this fast.
+fn find_nested_language_marker(dir: &Path, max_depth: usize) -> Option<String> {
+    if max_depth == 0 {
+        return None;
+    }
+    let entries = std::fs::read_dir(dir).ok()?;
+    let mut subdirs: Vec<std::path::PathBuf> = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if matches!(
+                name.as_ref(),
+                ".git" | "node_modules" | "vendor" | "target" | "bin" | "obj" | ".chen" | "dist"
+            ) {
+                continue;
+            }
+            subdirs.push(path);
+        } else if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+            if name == "go.mod" {
+                return Some("go".to_string());
+            }
+            if name == "Cargo.toml" {
+                return Some("rust".to_string());
+            }
+            if name.ends_with(".sln")
+                || name.ends_with(".csproj")
+                || name.ends_with(".fsproj")
+                || name.ends_with(".vbproj")
+            {
+                return Some("dotnet".to_string());
+            }
+        }
+    }
+    for sub in subdirs {
+        if let Some(lang) = find_nested_language_marker(&sub, max_depth - 1) {
+            return Some(lang);
+        }
+    }
     None
 }
 
@@ -369,6 +428,24 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("Cargo.toml"), "[package]").unwrap();
         assert_eq!(detect_language(dir.path()).as_deref(), Some("rust"));
+    }
+
+    #[test]
+    fn test_detect_language_nested_go_monorepo() {
+        // No root go.mod, but a nested module exists (common in microservice monorepos).
+        let dir = tempfile::tempdir().unwrap();
+        let nested = dir.path().join("services").join("api");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(nested.join("go.mod"), "module example.com/api").unwrap();
+        assert_eq!(detect_language(dir.path()).as_deref(), Some("go"));
+    }
+
+    #[test]
+    fn test_detect_language_from_existing_report() {
+        // A pre-generated backend report implies its language even with no source markers.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("golem-report.json"), "{}").unwrap();
+        assert_eq!(detect_language(dir.path()).as_deref(), Some("go"));
     }
 
     #[test]

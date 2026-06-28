@@ -50,11 +50,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("dosai-dataflows.json"),
-            r#"{"metadata":{"tool":"dosai"},"statistics":{"totalMethods":5}}"#,
+            r#"{"Metadata":{"Tool":"Dosai"},"Statistics":{"NodeCount":5}}"#,
         )
         .unwrap();
         let reports = DosaiReports::load(dir.path()).unwrap();
-        assert_eq!(reports.dataflows.report["metadata"]["tool"].as_str(), Some("dosai"));
+        assert_eq!(reports.dataflows.report["Metadata"]["Tool"].as_str(), Some("Dosai"));
         assert!(reports.methods.is_none());
         assert!(reports.crypto.is_none());
     }
@@ -62,8 +62,8 @@ mod tests {
     #[test]
     fn test_dosai_loader_all_reports() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("dosai-dataflows.json"), r#"{"statistics":{"totalMethods":5}}"#).unwrap();
-        std::fs::write(dir.path().join("dosai-methods.json"), r#"{"methods":[{"name":"Main"}]}"#).unwrap();
+        std::fs::write(dir.path().join("dosai-dataflows.json"), r#"{"Statistics":{"NodeCount":5}}"#).unwrap();
+        std::fs::write(dir.path().join("dosai-methods.json"), r#"{"Methods":[{"Name":"Main"}]}"#).unwrap();
         std::fs::write(dir.path().join("dosai-crypto.json"), r#"{"findings":[]}"#).unwrap();
         let reports = DosaiReports::load(dir.path()).unwrap();
         assert!(reports.methods.is_some());

@@ -24,17 +24,13 @@ pub struct BlintReports {
 impl BlintReports {
     /// Load all available blint reports for a given artifact file.
     ///
-    /// Expects output files named `<artifact_stem>-metadata.json` etc. in `output_dir`.
+    /// blint names its output files after the **full input file name including its
+    /// extension** — e.g. an input `app.apk` produces `app.apk-metadata.json`,
+    /// `app.apk-findings.json`, etc. `artifact_basename` must therefore be the file
+    /// name with extension (not the stem). The SBOM and callgraph are written to
+    /// fixed names (`sbom.cdx.json`, `callgraph.graphml`).
     pub fn load(artifact_basename: &str, output_dir: &Path) -> Result<Self, String> {
-        let stem = artifact_basename.trim_end_matches(".apk")
-            .trim_end_matches(".ipa")
-            .trim_end_matches(".aab")
-            .trim_end_matches(".apkm")
-            .trim_end_matches(".exe")
-            .trim_end_matches(".dll")
-            .trim_end_matches(".so")
-            .trim_end_matches(".dylib")
-            .trim_end_matches(".wasm");
+        let stem = artifact_basename;
 
         let metadata_path = output_dir.join(format!("{stem}-metadata.json"));
         let metadata = LoadedReport::from_file(&metadata_path)
@@ -68,14 +64,11 @@ impl BlintReports {
             None
         };
 
-        let callgraph_path = output_dir.join("callgraph.graphml");
-        let callgraph_path = if callgraph_path.is_file() {
-            Some(callgraph_path.to_string_lossy().to_string())
-        } else {
-            None
-        };
+        // blint exports the callgraph as `<stem>.graphml` (the stem varies by binary),
+        // so accept the fixed name if present, otherwise the first `*.graphml` in the dir.
+        let callgraph_path = first_graphml(output_dir).map(|p| p.to_string_lossy().to_string());
 
-        let artifact_type = detect_artifact_type(stem);
+        let artifact_type = detect_artifact_type(stem, &metadata.report);
 
         Ok(BlintReports {
             metadata,
@@ -89,10 +82,44 @@ impl BlintReports {
     }
 }
 
-/// Detect the binary artifact type from the filename or metadata.
-fn detect_artifact_type(_stem: &str) -> String {
-    // In a real scenario, we'd check magic bytes or the metadata JSON header,
-    // but for now we derive from the filename suffix at the caller level.
+/// Return a GraphML callgraph export from `dir`: the fixed `callgraph.graphml` if present,
+/// otherwise the first file with a `.graphml` extension (blint names it `<stem>.graphml`).
+fn first_graphml(dir: &Path) -> Option<std::path::PathBuf> {
+    let fixed = dir.join("callgraph.graphml");
+    if fixed.is_file() {
+        return Some(fixed);
+    }
+    std::fs::read_dir(dir).ok()?.flatten().map(|e| e.path()).find(|p| {
+        p.extension().and_then(|e| e.to_str()) == Some("graphml")
+    })
+}
+
+/// Detect the binary artifact type, preferring blint's own metadata fields
+/// (`exe_type` / `binary_type`) and falling back to the file-name extension.
+fn detect_artifact_type(basename: &str, metadata: &serde_json::Value) -> String {
+    if let Some(exe) = metadata["exe_type"].as_str() {
+        match exe {
+            "dexbinary" => return "apk".to_string(),
+            other if !other.is_empty() => return other.to_string(),
+            _ => {}
+        }
+    }
+    if let Some(bt) = metadata["binary_type"].as_str()
+        && !bt.is_empty()
+    {
+        return bt.to_string();
+    }
+    let lower = basename.to_lowercase();
+    for (suffix, kind) in [
+        (".apkm", "apk"), (".apk", "apk"), (".aab", "apk"),
+        (".ipa", "ipa"), (".wasm", "wasm"),
+        (".dll", "pe"), (".exe", "pe"),
+        (".so", "elf"), (".dylib", "macho"),
+    ] {
+        if lower.ends_with(suffix) {
+            return kind.to_string();
+        }
+    }
     "unknown".to_string()
 }
 
@@ -101,36 +128,38 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_blint_loader_metadata_only() {
+    fn test_blint_loader_uses_full_filename_with_extension() {
+        // blint names outputs after the full file name including the extension.
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
-            dir.path().join("test-metadata.json"),
-            r#"{"binary_type":"ELF","machine_type":"x86_64","imports":[]}"#,
+            dir.path().join("app.apk-metadata.json"),
+            r#"{"exe_type":"dexbinary","functions":[]}"#,
         )
         .unwrap();
-        let reports = BlintReports::load("test.apk", dir.path()).unwrap();
-        assert_eq!(reports.metadata.report["binary_type"].as_str(), Some("ELF"));
+        let reports = BlintReports::load("app.apk", dir.path()).unwrap();
+        assert_eq!(reports.metadata.report["exe_type"].as_str(), Some("dexbinary"));
+        assert_eq!(reports.artifact_type, "apk");
         assert!(reports.findings.is_none());
-        assert!(reports.reviews.is_none());
     }
 
     #[test]
     fn test_blint_loader_all_files() {
         let dir = tempfile::tempdir().unwrap();
-        let base = "myapp";
-        std::fs::write(dir.path().join(format!("{base}-metadata.json")), r#"{"binary_type":"ELF"}"#).unwrap();
+        let base = "myapp.exe";
+        std::fs::write(dir.path().join(format!("{base}-metadata.json")), r#"{"binary_type":"PE32"}"#).unwrap();
         std::fs::write(dir.path().join(format!("{base}-findings.json")), r#"{"findings":[]}"#).unwrap();
-        std::fs::write(dir.path().join(format!("{base}-reviews.json")), r#"{"capabilities":[]}"#).unwrap();
+        std::fs::write(dir.path().join(format!("{base}-reviews.json")), r#"{"reviews":[]}"#).unwrap();
         std::fs::write(dir.path().join(format!("{base}-fuzzables.json")), r#"[]"#).unwrap();
         std::fs::write(dir.path().join("sbom.cdx.json"), r#"{"bomFormat":"CycloneDX"}"#).unwrap();
         std::fs::write(dir.path().join("callgraph.graphml"), r#"<?xml?>"#).unwrap();
 
-        let reports = BlintReports::load("myapp.exe", dir.path()).unwrap();
+        let reports = BlintReports::load(base, dir.path()).unwrap();
         assert!(reports.findings.is_some());
         assert!(reports.reviews.is_some());
         assert!(reports.fuzzables.is_some());
         assert!(reports.sbom.is_some());
         assert!(reports.callgraph_path.is_some());
+        assert_eq!(reports.artifact_type, "PE32");
     }
 
     #[test]

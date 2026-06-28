@@ -1,18 +1,11 @@
-//! Golem (Go) analysis backend — models the `golem` CLI output.
+//! Golem (Go) analysis backend — models the `golem analyze` CLI output.
 //!
-//! Golem's JSON schema uses camelCase (e.g., `callGraph`, `dataFlow`, `securitySignals`)
-//! and emits richly structured data-flow slices with `riskScore`, `flowKey`, `taintKinds`,
-//! and `sanitizerNodeIds`. This module parallels the `rusi` backend with golem-specific
-//! field mappings in `query.rs`.
-//!
-//! # Schema note
-//! | rusi (snake_case) | golem (camelCase) |
-//! |---|---|
-//! | `call_graph` | `callGraph` |
-//! | `data_flow` | `dataFlow` |
-//! | `security_signals` | `securitySignals` |
-//! | `qualified_name` | `qualifiedName` |
-//! | `file_path` | `filePath` |
+//! Golem's JSON schema uses camelCase keys (e.g., `callGraph`, `dataFlow`,
+//! `securitySignals`). Data flow is represented as per-function taint `summaries`
+//! plus flagged source/sink `nodes` (not a flat slice list), and source positions
+//! are nested under `range.start` or `position`. The schema-specific field mappings
+//! live in [`query`]; this module wires up the [`crate::shared::backend::Backend`]
+//! trait, tool definitions, and the system prompt.
 
 pub mod loader;
 pub mod query;
@@ -61,8 +54,9 @@ impl GolemCtx {
             "flows" => query::query_slices_ranked(&self.report.report, limit),
             "sources" => query::query_source_sink_categories(&self.report.report, "sources"),
             "sinks" => query::query_source_sink_categories(&self.report.report, "sinks"),
+            "endpoints" | "api_endpoints" => query::query_endpoints(&self.report.report, pattern),
             "detail" => query::detail_declaration(&self.report.report, pattern.unwrap_or("")),
-            _ => format!("Unknown query kind '{kind}'. Valid kinds: packages, files, imports, declarations, usages, security_signals, callgraph, dataflow, crypto, flows, sources, sinks, detail"),
+            _ => format!("Unknown query kind '{kind}'. Valid kinds: packages, files, imports, declarations, usages, security_signals, callgraph, dataflow, crypto, flows, sources, sinks, endpoints, detail"),
         }
     }
 
@@ -141,13 +135,14 @@ Key components:
 
 ## Available tools
 - golem_summary — Re-fetch the summary of the golem analysis report.
-- golem_query — Query indexed analysis data: packages, files, imports, declarations, usages, security_signals, callgraph, dataflow, crypto, flows, sources, sinks.
+- golem_query — Query indexed analysis data: packages, files, imports, declarations, usages, security_signals, callgraph, dataflow, crypto, flows, sources, sinks, endpoints.
 - golem_callgraph — Query the call graph (show nodes and edges matching a name pattern).
-- golem_flows — Query data-flow slices (source→sink paths). Each slice has a source, a sink, categories, risk score, confidence, and taint kinds.
+- golem_flows — Query data-flow evidence: per-function taint summaries (which parameters reach which sink categories) plus flagged source/sink nodes.
 - golem_detail — Get detailed information about a specific declaration (function, method, struct) including its signature, location, callers, and callees.
-- golem_crypto — Query cryptographic evidence (libraries, assets, operations, materials, findings).
-- golem_sources — List distinct source categories with counts (e.g., env, file, http-request).
+- golem_crypto — Query cryptographic evidence (libraries, materials, findings).
+- golem_sources — List distinct source categories with counts (e.g., parameter, env, file, http-request).
 - golem_sinks — List distinct sink categories with counts (e.g., process-exec, sql-query, network-request).
+- golem_endpoints — List HTTP API endpoints with method, path, handler, and framework.
 - ripgrep / read_file — Search and read source code (confined to the project root).
 - git_diff / git_log / git_show — Read-only git history.
 - bom_query — Query the CycloneDX SBOM for dependency information.
@@ -157,38 +152,40 @@ Key components:
 2. Use golem_query with kind="declarations" to find functions, methods, structs.
 3. Use golem_query with kind="usages" to find API/library call sites.
 4. Use golem_callgraph to trace call relationships between functions.
-5. Use golem_flows to find security-relevant data-flow paths, ranked by risk score.
+5. Use golem_flows to find security-relevant taint summaries, ranked by confidence.
 6. Use golem_sources and golem_sinks to orient yourself before tracing flows.
 7. Use golem_detail to zoom into a specific declaration.
 8. Use golem_crypto to review cryptographic usage.
 
 ## Data model reference
-The golem report uses camelCase fields. Key entity types:
+The golem report uses camelCase fields. Source positions are nested: declarations,
+usages, imports, security signals and crypto use `range.start.filename` / `range.start.line`;
+call-graph nodes and edges use `position.filename` / `position.line`. Key entity types:
 
 ### packages
 Fields: name, version, purl, files
 
 ### declarations
-Fields: name, qualifiedName, kind (function, method, struct), filePath, signature, line
+Fields: name, kind (function, method, struct, type), packagePath, receiver, signature, range
 
 ### usages
-Fields: name (callee symbol), kind (call, method-call), enclosingDeclaration, position (filename, line)
+Fields: name (callee symbol), qualifiedName, kind (call, selector), enclosing.name, range
 
 ### security_signals
-Fields: category, severity, confidence, description, filePath
+Fields: category, severity, confidence, symbol, description, recommendation, range
 
 ### callgraph
-Nodes: name, qualifiedName, kind, filePath, local/external
-Edges: sourceName → targetName, callType
+Nodes: name, kind, packagePath, local/external, position
+Edges: sourceName → targetName, callType, position
 
 ### dataflow
-Slices: sourceName, sinkName, sourceCategory, sinkCategory, ruleName, pathLength, flowKey, riskScore, severity, confidence, taintKinds, sanitizerNodeIds
+summaries: function, packagePath, paramToSink (parameterIndex, categories), confidence
+nodes: name, category, source/sink booleans, taintKinds, position
 
 ### crypto
 Libraries: path, family
-Assets: kind, algorithm, provider, operation
-Materials: kind, name
-Findings: category, severity, summary
+Materials: type, name, symbol
+Findings: ruleId, severity, summary
 
 ## Grounding rules
 1. NEVER invent call graphs, data flows, taints, sinks, or security findings. Every claim must trace to a tool result.
@@ -214,7 +211,24 @@ pub fn golem_tool_definitions() -> Vec<serde_json::Value> {
         golem_crypto_tool(),
         golem_sources_tool(),
         golem_sinks_tool(),
+        golem_endpoints_tool(),
     ]
+}
+
+fn golem_endpoints_tool() -> serde_json::Value {
+    make_tool(
+        "golem_endpoints",
+        "List HTTP API endpoints (routes) discovered by golem, with HTTP method, path, handler function, and web framework.",
+        json!({
+            "type": "object",
+            "properties": {
+                "pattern": {
+                    "type": "string",
+                    "description": "Optional case-insensitive pattern to filter endpoints by path, handler, or framework"
+                }
+            }
+        }),
+    )
 }
 
 fn golem_summary_tool() -> serde_json::Value {
@@ -278,7 +292,7 @@ fn golem_callgraph_tool() -> serde_json::Value {
 fn golem_flows_tool() -> serde_json::Value {
     make_tool(
         "golem_flows",
-        "Query data-flow source-to-sink slices from the golem report. Each slice has a source, sink, risk score, severity, confidence, taint kinds, and path length. Results are ranked by risk score. Pass an optional pattern to filter.",
+        "Query data-flow evidence from the golem report: per-function taint summaries (which parameters reach which sink categories, with confidence) plus flagged source/sink nodes. Results are ranked by confidence. Pass an optional pattern to filter.",
         json!({
             "type": "object",
             "properties": {
@@ -356,49 +370,36 @@ mod tests {
             report: serde_json::json!({
                 "tool": { "name": "golem", "version": "2.5.1" },
                 "stats": {
-                    "packageCount": 1,
-                    "fileCount": 2,
-                    "importCount": 3,
-                    "declarationCount": 4,
-                    "usageCount": 5,
-                    "securitySignalCount": 1,
-                    "callGraphNodeCount": 3,
-                    "callGraphEdgeCount": 2,
-                    "dataFlowNodeCount": 4,
-                    "dataFlowSliceCount": 1,
-                    "cryptoLibraryCount": 1,
-                    "cryptoComponentCount": 2
+                    "packageCount": 1, "fileCount": 2, "importCount": 3, "declarationCount": 4,
+                    "usageCount": 5, "securitySignalCount": 1, "apiEndpointCount": 0,
+                    "cryptoLibraryCount": 1, "cryptoMaterialCount": 0, "cryptoFindingCount": 0
                 },
                 "packages": [
-                    { "name": "myapp", "version": "0.1.0", "purl": "pkg:go/myapp@0.1.0", "files": ["main.go"] }
+                    { "name": "myapp", "version": "0.1.0", "purl": "pkg:golang/myapp@0.1.0", "files": ["main.go"] }
                 ],
                 "declarations": [
-                    { "name": "main", "qualifiedName": "myapp.main", "kind": "function", "filePath": "main.go", "signature": "func main()", "line": 5 }
+                    { "name": "main", "kind": "function", "packagePath": "myapp", "signature": "func main()", "range": { "start": { "filename": "main.go", "line": 5 } } }
                 ],
                 "usages": [
-                    { "kind": "call", "name": "os.Getenv", "enclosingDeclaration": "myapp.main", "position": { "filename": "main.go", "line": 6 } }
+                    { "kind": "call", "name": "Getenv", "qualifiedName": "os.Getenv", "enclosing": { "name": "main" }, "range": { "start": { "filename": "main.go", "line": 6 } } }
                 ],
                 "callGraph": {
                     "mode": "static",
+                    "stats": { "nodeCount": 1, "edgeCount": 0 },
                     "nodes": [
-                        { "name": "main", "qualifiedName": "myapp.main", "kind": "function", "filePath": "main.go", "local": true, "external": false, "line": 5 }
+                        { "name": "main", "kind": "function", "packagePath": "myapp", "local": true, "external": false, "position": { "filename": "main.go", "line": 5 } }
                     ],
                     "edges": []
                 },
                 "dataFlow": {
                     "mode": "security",
+                    "stats": { "sourceCount": 1, "sinkCount": 0, "sliceCount": 0, "summaryCount": 0 },
                     "nodes": [
-                        { "kind": "source", "name": "os.Getenv", "source": true, "sink": false, "category": "env" }
+                        { "kind": "source", "name": "input", "source": true, "sink": false, "category": "env" }
                     ],
-                    "edges": [],
-                    "slices": []
+                    "summaries": []
                 },
-                "crypto": {
-                    "libraries": [],
-                    "assets": [],
-                    "materials": [],
-                    "findings": []
-                }
+                "crypto": { "libraries": [], "materials": [], "findings": [] }
             }),
             report_path: "/tmp/golem.json".to_string(),
         };
@@ -416,13 +417,22 @@ mod tests {
         let summary = ctx.summary();
         assert!(summary.contains("golem"));
         assert!(summary.contains("Declarations: 4"));
+        assert!(summary.contains("Call graph: 1 nodes, 0 edges"));
     }
 
     #[test]
     fn test_golem_query_declarations() {
         let ctx = test_ctx();
         let result = ctx.query("declarations", Some("main"), 50);
-        assert!(result.contains("myapp.main"));
+        assert!(result.contains("main"));
+        assert!(result.contains("main.go:5"));
+    }
+
+    #[test]
+    fn test_golem_query_endpoints_kind() {
+        let ctx = test_ctx();
+        let result = ctx.query("endpoints", None, 50);
+        assert!(result.contains("No API endpoint data"));
     }
 
     #[test]
@@ -444,7 +454,8 @@ mod tests {
         assert!(names.contains(&"golem_crypto"));
         assert!(names.contains(&"golem_sources"));
         assert!(names.contains(&"golem_sinks"));
-        assert_eq!(defs.len(), 8);
+        assert!(names.contains(&"golem_endpoints"));
+        assert_eq!(defs.len(), 9);
     }
 
     #[test]

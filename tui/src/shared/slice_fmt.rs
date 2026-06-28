@@ -85,25 +85,34 @@ fn floor_char_boundary(s: &str, max: usize) -> usize {
     idx
 }
 
-/// Renders a header line like `"# Entities (42 total)"` or `"# Entities (42 matched, showing first 10)"`.
+/// Renders a header line for a list of results.
+///
+/// When the result set was not filtered (`matched == total`), it renders
+/// `"# Entities (42 total)"`. When a filter or limit applied, it reports how
+/// many entries matched out of the total and how many are shown, e.g.
+/// `"# Entities (10 of 42 matched, showing first 10)"`.
 pub struct ListHeader {
+    /// Section title, e.g. `"Packages"`.
     pub title: &'static str,
+    /// Total number of entries available before filtering.
     pub total: usize,
+    /// Number of entries that matched the active filter.
     pub matched: usize,
+    /// Number of entries actually rendered (after applying `limit`).
     pub shown: usize,
 }
 
 impl std::fmt::Display for ListHeader {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    if self.matched == self.total {
-        write!(f, "# {} ({} total)", self.title, self.total)
-    } else {
-        write!(
-            f,
-            "# {} ({} matched, showing first {})",
-            self.title, self.total, self.shown
-        )
-    }
+        if self.matched == self.total {
+            write!(f, "# {} ({} total)", self.title, self.total)
+        } else {
+            write!(
+                f,
+                "# {} ({} of {} matched, showing first {})",
+                self.title, self.matched, self.total, self.shown
+            )
+        }
     }
 }
 
@@ -193,6 +202,6 @@ mod tests {
     #[test]
     fn test_list_header_filtered() {
         let h = ListHeader { title: "Declarations", total: 100, matched: 10, shown: 10 };
-        assert_eq!(h.to_string(), "# Declarations (100 matched, showing first 10)");
+        assert_eq!(h.to_string(), "# Declarations (10 of 100 matched, showing first 10)");
     }
 }

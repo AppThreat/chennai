@@ -34,17 +34,16 @@ pub fn rusi_dataflow_path(source_dir: &Path) -> PathBuf {
     source_dir.join(RUSI_DATAFLOW_FILENAME)
 }
 
-pub fn run_rusi(source_dir: &Path) -> Result<PathBuf, String> {
+/// Run rusi against `source_dir`, writing the report and graph sidecars into `out_dir`.
+pub fn run_rusi(source_dir: &Path, out_dir: &Path) -> Result<PathBuf, String> {
     let rusi_bin = find_rusi()?;
 
-    let out_path = source_dir.join(RUSI_REPORT_FILENAME);
-    if let Some(parent) = out_path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("failed to create output dir {}: {e}", parent.display()))?;
-    }
+    std::fs::create_dir_all(out_dir)
+        .map_err(|e| format!("failed to create output dir {}: {e}", out_dir.display()))?;
+    let out_path = out_dir.join(RUSI_REPORT_FILENAME);
 
-    let cg_path = source_dir.join(RUSI_CALLGRAPH_FILENAME);
-    let df_path = source_dir.join(RUSI_DATAFLOW_FILENAME);
+    let cg_path = out_dir.join(RUSI_CALLGRAPH_FILENAME);
+    let df_path = out_dir.join(RUSI_DATAFLOW_FILENAME);
 
     let status = Command::new(&rusi_bin)
         .args([

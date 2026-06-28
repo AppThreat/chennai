@@ -24,6 +24,7 @@ pub fn find_dosai() -> Result<PathBuf, String> {
 }
 
 /// Path to the dosai dataflows JSON report inside `source_dir`.
+#[allow(dead_code)]
 pub fn dosai_dataflows_path(source_dir: &Path) -> PathBuf {
     source_dir.join(DOSAI_DATAFLOWS_FILENAME)
 }
@@ -42,27 +43,31 @@ pub fn dosai_crypto_path(source_dir: &Path) -> PathBuf {
 
 /// Run dosai analysis on `source_dir`.
 ///
-/// Executes up to three subcommands:
-/// - `dosai dataflows --path <src> --pattern-packs all --o <dataflows.json>`
-/// - `dosai methods --path <src> --o <methods.json>`
-/// - `dosai crypto --path <src> --format dosai --o <crypto.json>`
+/// The `dataflows` subcommand is **required** — it produces the primary report.
+/// The `methods` and `crypto` subcommands are **best-effort**: `dosai methods` can
+/// abort when it cannot load an input's assemblies (e.g. a missing ASP.NET shared
+/// framework), and that must not prevent the data-flow analysis from being used.
 ///
-/// Returns a list of output file paths that were successfully generated.
-pub fn run_dosai(source_dir: &Path) -> Result<Vec<PathBuf>, String> {
+/// Invokes:
+/// - `dosai dataflows --path <src> --pattern-packs all --o <dataflows.json>` (required)
+/// - `dosai methods --path <src> --o <methods.json>` (best-effort)
+/// - `dosai crypto --path <src> --format dosai --o <crypto.json>` (best-effort)
+///
+/// Returns the list of output file paths that were successfully generated, with the
+/// dataflows report guaranteed to be first.
+pub fn run_dosai(source_dir: &Path, out_dir: &Path) -> Result<Vec<PathBuf>, String> {
     let dosai_bin = find_dosai()?;
 
-    if let Some(parent) = source_dir.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("failed to create output dir {}: {e}", parent.display()))?;
-    }
+    std::fs::create_dir_all(out_dir)
+        .map_err(|e| format!("failed to create output dir {}: {e}", out_dir.display()))?;
 
-    let df_path = source_dir.join(DOSAI_DATAFLOWS_FILENAME);
-    let methods_path = source_dir.join(DOSAI_METHODS_FILENAME);
-    let crypto_path = source_dir.join(DOSAI_CRYPTO_FILENAME);
+    let df_path = out_dir.join(DOSAI_DATAFLOWS_FILENAME);
+    let methods_path = out_dir.join(DOSAI_METHODS_FILENAME);
+    let crypto_path = out_dir.join(DOSAI_CRYPTO_FILENAME);
 
     let mut outputs = Vec::new();
 
-    // 1. Dataflows
+    // 1. Dataflows (required).
     let status = Command::new(&dosai_bin)
         .args([
             "dataflows",
@@ -81,54 +86,42 @@ pub fn run_dosai(source_dir: &Path) -> Result<Vec<PathBuf>, String> {
     if !status.success() {
         return Err(format!("dosai dataflows exited with {status}"));
     }
-    if df_path.is_file() {
-        outputs.push(df_path);
+    if !df_path.is_file() {
+        return Err(format!(
+            "dosai dataflows completed but output file {} was not created",
+            df_path.display()
+        ));
     }
+    outputs.push(df_path);
 
-    // 2. Methods
-    let status = Command::new(&dosai_bin)
-        .args([
-            "methods",
-            "--path",
-            &source_dir.to_string_lossy(),
-            "--o",
-            &methods_path.to_string_lossy(),
-        ])
-        .stdout(std::process::Stdio::inherit())
-        .stderr(std::process::Stdio::inherit())
-        .status()
-        .map_err(|e| format!("failed to execute dosai methods: {e}"))?;
+    // 2. Methods (best-effort — failure is tolerated and logged).
+    run_optional(&dosai_bin, &["methods", "--path", &source_dir.to_string_lossy(), "--o", &methods_path.to_string_lossy()], &methods_path, "methods", &mut outputs);
 
-    if !status.success() {
-        return Err(format!("dosai methods exited with {status}"));
-    }
-    if methods_path.is_file() {
-        outputs.push(methods_path);
-    }
-
-    // 3. Crypto (optional — best-effort)
-    let crypto_ok = Command::new(&dosai_bin)
-        .args([
-            "crypto",
-            "--path",
-            &source_dir.to_string_lossy(),
-            "--format",
-            "dosai",
-            "--o",
-            &crypto_path.to_string_lossy(),
-        ])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status();
-
-    if let Ok(status) = crypto_ok
-        && status.success()
-        && crypto_path.is_file()
-    {
-        outputs.push(crypto_path);
-    }
+    // 3. Crypto (best-effort).
+    run_optional(&dosai_bin, &["crypto", "--path", &source_dir.to_string_lossy(), "--format", "dosai", "--o", &crypto_path.to_string_lossy()], &crypto_path, "crypto", &mut outputs);
 
     Ok(outputs)
+}
+
+/// Run a best-effort dosai subcommand: if it exits non-zero or writes no file, log a
+/// warning and continue. Successful outputs are appended to `outputs`.
+fn run_optional(bin: &Path, args: &[&str], out_path: &Path, label: &str, outputs: &mut Vec<PathBuf>) {
+    match Command::new(bin)
+        .args(args)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+    {
+        Ok(status) if status.success() && out_path.is_file() => {
+            outputs.push(out_path.to_path_buf());
+        }
+        Ok(status) => {
+            eprintln!("dosai {label} did not produce usable output (exit {status}); continuing with dataflows only.");
+        }
+        Err(e) => {
+            eprintln!("dosai {label} could not be executed ({e}); continuing with dataflows only.");
+        }
+    }
 }
 
 fn which(name: &str) -> Option<PathBuf> {
