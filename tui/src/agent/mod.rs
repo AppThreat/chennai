@@ -316,6 +316,19 @@ read it and self-correct.
    third-party dependencies, their licenses, and known vulnerabilities. Cross-reference
    dependency data with data-flow findings to identify vulnerable packages that are
    reachable from untrusted input.
+8. **Scope data-flow queries — never run `dataflows` blind on large codebases.** The
+   `dataflows` preset enumerates EVERY source-to-sink path and is unbounded; on a large
+   atom (>10000 files; check the file count in the atom summary above) it can run for
+   minutes and exhaust memory. Do NOT use it there. Instead query for SPECIFIC reachable
+   flows between a chosen source tag and sink tag. First run atom_query on `tags` to see
+   which source/sink tags this atom actually has, then pass a scoped `expr` to atom_flows
+   of the form `(sink).reachableByFlows(source)`, scoping both ends to a tag and a node
+   kind. Cheat sheet (reachableByFlows between two tags):
+     atom.tag.name("sql").call.reachableByFlows(atom.tag.name("framework-input").parameter, atom.tag.name("framework-input").identifier, atom.tag.name("framework-input").call)
+     atom.tag.name("exec").call.argument.isIdentifier.reachableByFlows(atom.tag.name("cli-source").parameter)
+     atom.tag.name("(service-egress|tracker)").call.reachableByFlows(atom.tag.name("(sensitive-data|pii)").identifier, atom.tag.name("(sensitive-data|pii)").parameter)
+     atom.tag.name("crypto-generate").call.reachableByFlows(atom.tag.name("crypto-algorithm").literal)
+   Prefer the `reachables` preset over `dataflows` when you do need a broad scan.
 
 {response_style}
 

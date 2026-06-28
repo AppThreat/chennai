@@ -181,13 +181,13 @@ fn atom_dsl_eval() -> Value {
 fn atom_flows() -> Value {
     json!({
         "name": "atom_flows",
-        "description": "Compute data flows (source-to-sink paths) in the atom. THIS IS THE PRIMARY TOOL for any question about reachability, taint, 'can untrusted input reach X', injection, or whether a sink is exploitable — ripgrep CANNOT answer these, only atom_flows can prove an end-to-end path. Reach for it whenever the user asks about vulnerabilities, exploitability, or how data moves through the app. Use a preset ('dataflows', 'reachables', 'cryptos'), provide a DSL expression, or specify explicit source and sink expressions. Each flow is an ordered list of steps (source -> propagation -> ... -> sink).",
+        "description": "Compute data flows (source-to-sink paths) in the atom. THIS IS THE PRIMARY TOOL for any question about reachability, taint, 'can untrusted input reach X', injection, or whether a sink is exploitable — ripgrep CANNOT answer these, only atom_flows can prove an end-to-end path. Reach for it whenever the user asks about vulnerabilities, exploitability, or how data moves through the app. Each flow is an ordered list of steps (source -> propagation -> ... -> sink).\n\nSCALING: The 'dataflows' preset enumerates EVERY source-to-sink path and is unbounded — do NOT use it on large codebases (>10000 files). It can run for many minutes and exhaust memory. Instead, query for SPECIFIC reachable flows between a source and a sink by passing a targeted 'expr' (or 'source'+'sink') that scopes both ends to a tag or identifier. Prefer 'reachables' over 'dataflows' as a preset, and always scope custom queries to the narrowest source/sink tags that answer the question.\n\nThe engine resolves flows with `(sink).reachableByFlows(source)`. Scope both ends to tags (`atom.tag.name(\"<tag>\")`) plus a node kind (`.call`, `.parameter`, `.identifier`, `.literal`). Cheat sheet of targeted between-tags queries (pass as 'expr'):\n  // untrusted framework input -> SQL sink\n  atom.tag.name(\"sql\").call.reachableByFlows(atom.tag.name(\"framework-input\").parameter, atom.tag.name(\"framework-input\").identifier, atom.tag.name(\"framework-input\").call)\n  // any tagged source -> command-execution sink (call args too)\n  atom.tag.name(\"exec\").call.argument.isIdentifier.reachableByFlows(atom.tag.name(\"cli-source\").parameter)\n  // sensitive/PII data -> network/tracker egress (JVM/Android)\n  atom.tag.name(\"(service-egress|tracker)\").call.reachableByFlows(atom.tag.name(\"(sensitive-data|pii)\").identifier, atom.tag.name(\"(sensitive-data|pii)\").parameter)\n  // crypto key/IV generation reachable from a weak algorithm literal\n  atom.tag.name(\"crypto-generate\").call.reachableByFlows(atom.tag.name(\"crypto-algorithm\").literal)\nUse atom_query on tags first (`kind:tags`) to discover which source/sink tags actually exist in THIS atom before composing the query. Use a preset ('reachables', 'cryptos'), provide a scoped DSL 'expr', or specify explicit 'source'+'sink' expressions.",
         "input_schema": {
             "type": "object",
             "properties": {
                 "preset": {
                     "type": "string",
-                    "description": "One of the built-in flow presets: 'dataflows' (all flows), 'reachables' (flows attributable to a known package/dependency), 'cryptos' (crypto flows)",
+                    "description": "One of the built-in flow presets: 'dataflows' (ALL flows — unbounded, do NOT use on codebases >10000 files; prefer a scoped 'expr' or 'reachables' instead), 'reachables' (flows attributable to a known package/dependency), 'cryptos' (crypto flows)",
                     "enum": ["dataflows", "reachables", "cryptos"]
                 },
                 "expr": {
@@ -224,7 +224,7 @@ fn atom_flows_through() -> Value {
                 },
                 "preset": {
                     "type": "string",
-                    "description": "Optional base preset to narrow the search space before filtering. Defaults to 'dataflows'.",
+                    "description": "Optional base preset to narrow the search space before filtering. Defaults to 'dataflows', which is unbounded and unsafe on large codebases (>10000 files) — prefer 'reachables' there.",
                     "enum": ["dataflows", "reachables", "cryptos"]
                 }
             }

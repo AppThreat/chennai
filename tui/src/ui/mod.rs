@@ -1070,11 +1070,9 @@ fn render_agent_transcript(frame: &mut Frame, app: &mut App, theme: &Theme, area
 fn build_agent_lines<'a>(app: &'a App, theme: &Theme, _line_counts: &[usize], width: usize) -> Vec<Line<'a>> {
     let mut lines: Vec<Line> = Vec::new();
     for entry in &app.agent_transcript {
+        let start = lines.len();
         match entry {
             AgentEntry::Text(text) => {
-                // Render the assistant prose as lightweight markdown. Exactly one
-                // rendered Line per source line keeps the scroll math (which uses
-                // `entry_line_count`) in sync.
                 let mut in_code = false;
                 let mut table_buf: Vec<&str> = Vec::new();
                 for line in text.split('\n') {
@@ -1096,7 +1094,9 @@ fn build_agent_lines<'a>(app: &'a App, theme: &Theme, _line_counts: &[usize], wi
                         table_buf.push(line);
                     } else {
                         flush_table_buf(&mut lines, &mut table_buf, theme);
-                        lines.push(render_markdown_line(line, theme));
+                        for wrapped in wrap_line(line, width) {
+                            lines.push(render_markdown_line(&wrapped, theme));
+                        }
                     }
                 }
                 flush_table_buf(&mut lines, &mut table_buf, theme);
@@ -1104,10 +1104,12 @@ fn build_agent_lines<'a>(app: &'a App, theme: &Theme, _line_counts: &[usize], wi
             AgentEntry::Thinking(text) => {
                 if app.agent_thinking_expanded {
                     for line in text.split('\n') {
-                        lines.push(Line::from(vec![
-                            Span::styled("💭 ", Style::default().fg(theme.muted)),
-                            Span::styled(line.to_string(), Style::default().fg(theme.muted)),
-                        ]));
+                        for wrapped in wrap_line(line, width.saturating_sub(2)) {
+                            lines.push(Line::from(vec![
+                                Span::styled("💭 ", Style::default().fg(theme.muted)),
+                                Span::styled(wrapped, Style::default().fg(theme.muted)),
+                            ]));
+                        }
                     }
                 } else {
                     let preview: String = text.chars().take(120).collect();
@@ -1136,16 +1138,56 @@ fn build_agent_lines<'a>(app: &'a App, theme: &Theme, _line_counts: &[usize], wi
                 }
             }
             AgentEntry::Error(msg) => {
-                lines.push(Line::from(Span::styled(format!("✗ {msg}"), Style::default().fg(theme.error))));
+                for wrapped in wrap_line(msg, width) {
+                    lines.push(Line::from(Span::styled(
+                        format!("✗ {wrapped}"),
+                        Style::default().fg(theme.error),
+                    )));
+                }
             }
-            // Usage and StopReason entries are internal bookkeeping; do not render them.
             AgentEntry::Usage { .. } | AgentEntry::StopReason(_) => {}
             AgentEntry::Done => {
                 lines.push(Line::from(Span::styled("  ✓ done", Style::default().fg(theme.num))));
             }
         }
+        // Add a blank separator after each rendered entry for vertical spacing.
+        if lines.len() > start {
+            lines.push(Line::from(""));
+        }
     }
     lines
+}
+
+/// Wrap a long line at word boundaries to fit within `width` columns.
+/// Returns multiple lines when the input exceeds the width.
+fn wrap_line(line: &str, width: usize) -> Vec<String> {
+    if width < 8 || line.chars().count() <= width {
+        return vec![line.to_string()];
+    }
+    let mut result: Vec<String> = Vec::new();
+    let chars: Vec<char> = line.chars().collect();
+    let mut start = 0;
+    while start < chars.len() {
+        let end = (start + width).min(chars.len());
+        if end >= chars.len() {
+            result.push(chars[start..].iter().collect());
+            break;
+        }
+        // Try to break at a space (word boundary)
+        if let Some(space) = chars[start..=end].iter().rposition(|&c| c == ' ') {
+            if space > 0 {
+                result.push(chars[start..start + space].iter().collect());
+                start = start + space + 1;
+            } else {
+                result.push(chars[start..end].iter().collect());
+                start = end;
+            }
+        } else {
+            result.push(chars[start..end].iter().collect());
+            start = end;
+        }
+    }
+    result
 }
 
 /// One-line progress/usage footer for the agent panel: spinner + current tool
