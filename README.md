@@ -75,8 +75,10 @@ sudo cp chennai chennai-engine /usr/local/bin/
 After installation the `chennai` command is available globally.
 
 ```
-chennai <path-to-project-or-atom-file> [options]
+chennai [path-to-project-or-atom-file] [options]
 ```
+
+The path is optional; when omitted, chennai analyses the current working directory (resolved to an absolute path).
 
 ### Container image
 
@@ -225,6 +227,9 @@ The BOM data is also injected into AI agent prompts for security and code review
 - `CHENNAI_ENGINE`: Path to the engine binary. Overrides auto-detection.
 - `ANTHROPIC_API_KEY`: API key for Anthropic provider.
 - `OPENAI_API_KEY`: API key for OpenAI-compatible providers.
+- `CHENNAI_PROVIDER`: LLM provider (`anthropic` or `openai`). Same as `--provider`.
+- `CHENNAI_MODEL`: LLM model name. Same as `--model`.
+- `CHENNAI_BASE_URL`: Custom API base URL for OpenAI-compatible endpoints. Same as `--base-url`.
 - `CDXGEN_CMD`: Path to the cdxgen binary.
 - `ATOM_CMD`: Path to the atom CLI binary (e.g. `/path/to/atom/atom.sh`).
 - `RUSI_CMD`: Path to the rusi binary. Overrides PATH lookup.

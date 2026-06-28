@@ -71,17 +71,24 @@ impl Config {
     pub fn load_with_base_url(cli_provider: Option<&str>, cli_model: Option<&str>, cli_api_key: Option<&str>, cli_base_url: Option<&str>, cli_no_thinking: bool, cli_effort: Option<&str>) -> Self {
         let file_cfg = Self::load_file();
 
+        // Precedence for each setting: CLI flag > environment variable > config file > default.
         let provider = cli_provider
-            .or(file_cfg.provider.as_deref())
-            .unwrap_or("anthropic");
+            .map(|s| s.to_string())
+            .or_else(|| env_var("CHENNAI_PROVIDER"))
+            .or(file_cfg.provider)
+            .unwrap_or_else(|| "anthropic".to_string());
         let provider: ProviderKind = provider.parse().unwrap_or(ProviderKind::Anthropic);
 
         let model = cli_model
             .map(|s| s.to_string())
+            .or_else(|| env_var("CHENNAI_MODEL"))
             .or(file_cfg.model)
             .unwrap_or_else(default_model);
 
-        let base_url = cli_base_url.map(|s| s.to_string()).or(file_cfg.base_url);
+        let base_url = cli_base_url
+            .map(|s| s.to_string())
+            .or_else(|| env_var("CHENNAI_BASE_URL"))
+            .or(file_cfg.base_url);
 
         let api_key = cli_api_key
             .map(|s| s.to_string())
@@ -122,6 +129,11 @@ impl Config {
         };
         std::env::var(var).ok().filter(|s| !s.is_empty())
     }
+}
+
+/// Read an environment variable, treating an empty value as unset.
+fn env_var(name: &str) -> Option<String> {
+    std::env::var(name).ok().filter(|s| !s.is_empty())
 }
 
 fn default_model() -> String {
@@ -178,6 +190,43 @@ mod tests {
         unsafe {
             if let Some(k) = prev_anthropic { std::env::set_var("ANTHROPIC_API_KEY", k); }
             if let Some(k) = prev_openai { std::env::set_var("OPENAI_API_KEY", k); }
+        }
+    }
+
+    #[test]
+    fn env_vars_set_provider_model_base_url_and_cli_overrides_env() {
+        let prev = [
+            ("CHENNAI_PROVIDER", std::env::var("CHENNAI_PROVIDER").ok()),
+            ("CHENNAI_MODEL", std::env::var("CHENNAI_MODEL").ok()),
+            ("CHENNAI_BASE_URL", std::env::var("CHENNAI_BASE_URL").ok()),
+        ];
+        unsafe {
+            std::env::set_var("CHENNAI_PROVIDER", "openai");
+            std::env::set_var("CHENNAI_MODEL", "gpt-4o");
+            std::env::set_var("CHENNAI_BASE_URL", "https://example.test/v1");
+        }
+
+        // Env vars apply when no CLI flags are given.
+        let cfg = Config::load_with_base_url(None, None, None, None, false, None);
+        assert_eq!(cfg.provider, ProviderKind::OpenAI);
+        assert_eq!(cfg.model, "gpt-4o");
+        assert_eq!(cfg.base_url.as_deref(), Some("https://example.test/v1"));
+
+        // CLI flags take precedence over env vars.
+        let cfg = Config::load_with_base_url(
+            Some("anthropic"), Some("claude-x"), None, Some("https://cli.test"), false, None,
+        );
+        assert_eq!(cfg.provider, ProviderKind::Anthropic);
+        assert_eq!(cfg.model, "claude-x");
+        assert_eq!(cfg.base_url.as_deref(), Some("https://cli.test"));
+
+        unsafe {
+            for (k, v) in prev {
+                match v {
+                    Some(val) => std::env::set_var(k, val),
+                    None => std::env::remove_var(k),
+                }
+            }
         }
     }
 

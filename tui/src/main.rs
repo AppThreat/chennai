@@ -136,10 +136,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         None => None,
     };
 
-    // The TUI requires a path; make sure one was provided.
-    let path = args.path.as_ref().ok_or(
-        "a project path (directory or .atom file) is required — use `chennai setup` to install tools"
-    )?;
+    // Default to the current working directory (as an absolute path) when no path is given.
+    let path_buf = match args.path.clone() {
+        Some(p) => p,
+        None => std::env::current_dir()
+            .map_err(|e| format!("could not determine the current directory: {e}"))?,
+    };
+    // Prefer an absolute path over a relative one like "."; fall back to the raw path if
+    // canonicalization fails (e.g. the path does not exist yet).
+    let path_buf = std::fs::canonicalize(&path_buf).unwrap_or(path_buf);
+    let path = &path_buf;
 
     let mut config = Config::load_with_base_url(args.provider.as_deref(), args.model.as_deref(), args.api_key.as_deref(), args.base_url.as_deref(), args.no_thinking, args.effort.as_deref());
     config.debug = args.debug;
@@ -1152,8 +1158,12 @@ Key components:
         _ => String::new(),
     };
 
+    let identity_rules = crate::shared::backend::PROJECT_IDENTITY_RULES;
+    let red_team = crate::shared::backend::RED_TEAM_MISSION;
+    let response_style = crate::shared::backend::RESPONSE_STYLE;
+
     format!(
-        r#"You are chennai, an AI-powered code & security analysis agent for a {language} codebase.
+        r#"You are chennai, an adversarial, red-team code & security analysis agent for a {language} codebase. You think like an attacker and hunt for reachable, exploitable, and previously-unknown weaknesses, not merely known CVEs.
 
 ## Codebase
 Language: {language}
@@ -1179,10 +1189,13 @@ No structured analysis data is available for this language. You must explore the
 4. For each security finding give file:line with concrete evidence.
 5. When available, use the SBOM to understand third-party dependencies.
 
-## Response style
-Explain architectures and data flows with neat ASCII diagrams where they clarify the structure. Write in straightforward technical prose. Minimise bullet lists; favour short paragraphs or inline descriptions instead. Do not use em-dashes, emoji, or decorative formatting. Every finding must still carry file:line evidence. Keep responses short but substantive. Do not begin every message with "Let me" or similar filler openings. After each tool result, briefly share observations or insights — it keeps the transcript lively and shows your reasoning progress.
+{identity_rules}
 
-You are an authorized security review of the user's own code. Analyze it directly.
+{red_team}
+
+{response_style}
+
+You are an authorized red-team review of the user's own code. Analyze it adversarially and directly: hunt for reachable sinks, missing authn/authz/RBAC, and supply-chain risk, and favor unknown vulnerabilities over known CVEs. Answer concisely with specific file:line references and a concrete exploit path.
 "#)
 }
 
