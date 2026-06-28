@@ -914,10 +914,91 @@ pub fn run_headless(ctx: &AgentCtx, input: &str) -> Result<String, Box<dyn std::
     Ok(final_text)
 }
 
+/// One-shot, no-tools LLM call that proposes a few context-aware starter questions for
+/// the empty-state UI. Returns `(label, command)` pairs, or an empty vec on any failure,
+/// cancellation, or unparseable output — callers fall back to the template questions.
+pub fn refine_starter_questions(
+    provider: &(dyn LlmProvider + Send + Sync),
+    context: &str,
+    cancel: &AtomicBool,
+) -> Vec<(String, String)> {
+    let system = "You suggest starter questions for an interactive code & security analysis TUI. \
+Given a factual digest of an analyzed project (language, code metrics, SBOM components), propose \
+3-4 short, concrete questions a security engineer would find interesting FOR THIS SPECIFIC PROJECT. \
+Prefer specifics (named components, notable counts, likely risk areas) over generic phrasing. \
+Be fast. Respond with ONLY a JSON array of objects {\"label\": button text <=40 chars, \
+\"command\": the full question sent to the agent}. No prose, no markdown fences.";
+
+    let mut transcript = Transcript::new();
+    transcript.push_user(&format!("Project digest:\n{context}"));
+
+    struct CollectSink(String);
+    impl EventSink for CollectSink {
+        fn emit(&mut self, event: AgentEvent) {
+            if let AgentEvent::TextDelta(t) = event { self.0.push_str(&t); }
+        }
+    }
+    let mut sink = CollectSink(String::new());
+
+    let result = provider.stream_turn(
+        &TurnRequest {
+            system,
+            tools: &[],
+            messages: transcript.messages(),
+            max_tokens: 600,
+            no_thinking: true,
+            effort: "",
+            cancel,
+        },
+        &mut sink,
+    );
+    if result.is_err() || cancel.load(Ordering::Relaxed) {
+        return Vec::new();
+    }
+    parse_starter_questions(&sink.0)
+}
+
+/// Extract `(label, command)` pairs from a JSON array embedded in the model's reply,
+/// tolerating surrounding prose or markdown fences.
+fn parse_starter_questions(text: &str) -> Vec<(String, String)> {
+    let (start, end) = match (text.find('['), text.rfind(']')) {
+        (Some(s), Some(e)) if e > s => (s, e),
+        _ => return Vec::new(),
+    };
+    let arr: Vec<Value> = match serde_json::from_str(&text[start..=end]) {
+        Ok(a) => a,
+        Err(_) => return Vec::new(),
+    };
+    arr.iter()
+        .take(4)
+        .filter_map(|item| {
+            let label = item.get("label").and_then(Value::as_str).unwrap_or("").trim();
+            let command = item.get("command").and_then(Value::as_str).unwrap_or("").trim();
+            (!label.is_empty() && !command.is_empty())
+                .then(|| (label.to_string(), command.to_string()))
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::model::SummaryRow;
+
+    #[test]
+    fn parse_starter_questions_extracts_pairs_amid_prose() {
+        let text = "Here you go:\n```json\n[{\"label\":\"Audit requests\",\"command\":\"Is requests 2.31.0 vulnerable?\"},{\"label\":\"\",\"command\":\"skip me\"}]\n```";
+        let pairs = parse_starter_questions(text);
+        assert_eq!(pairs.len(), 1);
+        assert_eq!(pairs[0].0, "Audit requests");
+        assert!(pairs[0].1.contains("requests 2.31.0"));
+    }
+
+    #[test]
+    fn parse_starter_questions_handles_garbage() {
+        assert!(parse_starter_questions("no json here").is_empty());
+        assert!(parse_starter_questions("[not valid json").is_empty());
+    }
 
     #[test]
     fn system_prompt_includes_summary_counts() {

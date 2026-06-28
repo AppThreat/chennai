@@ -305,6 +305,17 @@ pub struct App {
     pub starter_questions: Vec<StarterQuestion>,
     /// Hit-test rect for the starter questions list during render.
     pub starter_questions_area: Option<Rect>,
+    /// Set when template starter questions are ready and the agent is enabled, asking
+    /// main.rs to spawn a one-shot LLM call that refines them into context-aware ones.
+    pub starter_refine_pending: bool,
+    /// True once an LLM refinement has been requested, so it only fires once per session.
+    pub starter_refined: bool,
+    /// Channel delivering LLM-refined starter questions from the background thread.
+    pub starter_rx: Option<mpsc::Receiver<Vec<StarterQuestion>>>,
+    /// Cancel flag for the refinement thread (flipped when the deadline passes).
+    pub starter_cancel: Option<Arc<AtomicBool>>,
+    /// Deadline after which a slow refinement is abandoned and templates are kept.
+    pub starter_deadline: Option<std::time::Instant>,
 
     // Background startup tasks (cdxgen, atom, rusi) and initialisation phase.
     pub bg_progress: Arc<Mutex<Vec<BgTaskInfo>>>,
@@ -313,8 +324,6 @@ pub struct App {
     pub deferred_atom_path: Option<String>,
     /// Engine command path for deferred init.
     pub deferred_engine_cmd: Option<String>,
-    /// Source root for deferred init.
-    pub deferred_source_root: Option<String>,
     /// Reports directory for deferred init.
     pub deferred_reports_dir: Option<String>,
 }
@@ -370,6 +379,11 @@ impl App {
             project_language: None,
             starter_questions: Vec::new(),
             starter_questions_area: None,
+            starter_refine_pending: false,
+            starter_refined: false,
+            starter_rx: None,
+            starter_cancel: None,
+            starter_deadline: None,
             agent_enabled: false,
             agent_active: false,
             agent_rx: None,
@@ -399,7 +413,6 @@ impl App {
             init_phase: InitPhase::Ready,
             deferred_atom_path: None,
             deferred_engine_cmd: None,
-            deferred_source_root: None,
             deferred_reports_dir: None,
         }
     }
@@ -971,13 +984,13 @@ impl App {
                         self.expanded_lines.insert(key);
                     }
 
-        // Starter questions in the empty Output panel (each pill is 3 lines tall).
+        // Starter questions in the empty Output panel (one line per question).
         if self.output.is_none() && self.flows.is_none()
             && !self.agent_active && self.agent_transcript.is_empty()
             && let Some(area) = self.starter_questions_area
             && contains(&area, col, row)
         {
-            let idx = (row.saturating_sub(area.y)) as usize / 3;
+            let idx = row.saturating_sub(area.y) as usize;
             if idx < self.starter_questions.len() {
                 self.output_state.select(idx, self.starter_questions.len());
                 self.run_starter_question(idx);
@@ -1269,7 +1282,7 @@ impl App {
             });
             // Mention interesting summary figures.
             for row in &self.summary.rows {
-                if row.count > 0 && row.label == "classes" || row.label == "methods" || row.label == "files" {
+                if row.count > 0 && matches!(row.label.as_str(), "classes" | "methods" | "files") {
                     questions.push(StarterQuestion {
                         label: format!("List {label} ({count})", label = row.label.to_lowercase(), count = row.count),
                         command: format!("Show me the {count} {label} in this project.", label = row.label.to_lowercase(), count = row.count),
@@ -1310,6 +1323,52 @@ impl App {
             });
         }
 
+        self.starter_questions = questions;
+
+        // Ask main.rs to refine these into context-aware questions via a one-shot LLM
+        // call (best-effort, time-boxed). Templates above show instantly meanwhile.
+        if self.agent_enabled && !self.starter_refined {
+            self.starter_refine_pending = true;
+        }
+    }
+
+    /// Compact, factual context for the starter-question refinement prompt: language,
+    /// summary counts, backend digest, and the BOM component count + a few names.
+    pub fn starter_question_context(&self) -> String {
+        let mut out = String::new();
+        if let Some(ref backend) = self.backend {
+            let lang = self.project_language.as_deref().unwrap_or("unknown");
+            out.push_str(&format!("Backend: {} | Language: {lang}\n", backend.backend_name()));
+            out.push_str(&backend.summary());
+            out.push('\n');
+        } else {
+            let lang = if self.summary.language.is_empty() { "unknown" } else { &self.summary.language };
+            out.push_str(&format!("Language: {lang}\n"));
+            for row in &self.summary.rows {
+                out.push_str(&format!("{}: {}\n", row.label, row.count));
+            }
+        }
+        if let Some(ref store) = self.bom_store
+            && store.total_components > 0 {
+                out.push_str(&format!(
+                    "\nSBOM: {} components, {} dependencies, {} services\n",
+                    store.total_components, store.total_dependencies, store.total_services,
+                ));
+                let names: Vec<String> = store.components.iter().take(15)
+                    .map(|r| format!("{} {}", r.name_display(), r.version_display()))
+                    .collect();
+                if !names.is_empty() {
+                    out.push_str(&format!("Sample components: {}\n", names.join(", ")));
+                }
+            }
+        out
+    }
+
+    /// Replace the displayed starter questions with LLM-refined ones, but only while the
+    /// empty-state is still showing (no agent run started, no output displacing it).
+    pub fn apply_refined_starter_questions(&mut self, questions: Vec<StarterQuestion>) {
+        if questions.is_empty() { return; }
+        if self.agent_active || !self.agent_transcript.is_empty() { return; }
         self.starter_questions = questions;
     }
 

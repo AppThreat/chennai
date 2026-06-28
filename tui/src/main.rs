@@ -245,6 +245,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
 
+        // The agent's BOM tool reconstructs the SBOM store from `source_root`. Fall back to
+        // the project directory when `--source` wasn't passed (matching the non-atom paths),
+        // otherwise `bom_query` reports "no source root configured" even when an SBOM exists.
+        let agent_source_root = source_root.clone()
+            .or_else(|| Some(source_dir.to_string_lossy().to_string()));
+
         let agent_ctx = if config.enabled {
             let bom_summary = if bom_store.loaded { bom_store.summary() } else { String::new() };
             let bom_components = if bom_store.loaded && !bom_store.components.is_empty() {
@@ -267,7 +273,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         provider,
                         engine: Some(engine_arc.clone()),
                         backend: None,
-                        source_root: source_root.clone(),
+                        source_root: agent_source_root.clone(),
                         system_prompt,
                         max_tokens: 8192,
                         no_thinking: config.no_thinking,
@@ -460,8 +466,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         app.init_phase = InitPhase::Starting;
         app.deferred_atom_path = Some(atom_path.to_string_lossy().to_string());
         app.deferred_engine_cmd = Some(engine_cmd.to_string_lossy().to_string());
-        app.deferred_source_root = source_root.clone();
         app.deferred_reports_dir = Some(reports_dir.to_string_lossy().to_string());
+
+        // See the fast-path note: fall back to the project directory so the agent's
+        // BOM tool can locate the SBOM when `--source` wasn't passed.
+        let agent_source_root = source_root.clone()
+            .or_else(|| Some(source_dir.to_string_lossy().to_string()));
 
         let agent_ctx = if config.enabled {
             match agent::create_provider(&config) {
@@ -471,7 +481,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         provider,
                         engine: None,
                         backend: None,
-                        source_root: source_root.clone(),
+                        source_root: agent_source_root.clone(),
                         system_prompt: String::new(),
                         max_tokens: 8192,
                         no_thinking: config.no_thinking,
@@ -500,7 +510,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let backend = CrosstermBackend::new(stdout);
         let mut terminal = ratatui::Terminal::new(backend)?;
 
-        let result = run_app(&mut terminal, &mut app, &theme, agent_ctx, config, source_root, reports_dir, custom_system_prompt);
+        let result = run_app(&mut terminal, &mut app, &theme, agent_ctx, config, agent_source_root, reports_dir, custom_system_prompt);
 
         disable_raw_mode()?;
         execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
@@ -725,7 +735,6 @@ fn run_non_atom_mode(
     app.atom_path = source_dir.to_string_lossy().to_string();
     app.bg_progress = bg_progress;
     app.init_phase = InitPhase::Starting;
-    app.deferred_source_root = source_root.clone();
     app.deferred_reports_dir = Some(reports_dir.to_string_lossy().to_string());
 
     // Set backend context if already loaded (from existing file before bg task).
@@ -1170,6 +1179,14 @@ fn run_app<B: ratatui::backend::Backend>(
     reports_dir: PathBuf,
     custom_system_prompt: Option<String>,
 ) -> io::Result<()> {
+    // Share the cancel flag of the initial agent context with the app so the UI's
+    // `c`/Esc cancel flips the same AtomicBool the first worker thread polls. Without
+    // this, the first run's thread uses the ctx's Arc while `cancel_agent` flips the
+    // separate Arc created in `enable_agent`, so cancelling silently has no effect.
+    // (Subsequent runs re-sync via the ctx recreation path below.)
+    if let Some(ref ctx) = agent_ctx {
+        app.agent_cancel = Some(ctx.cancel.clone());
+    }
     loop {
         terminal.draw(|frame| ui::render(frame, app, theme))?;
 
@@ -1180,6 +1197,51 @@ fn run_app<B: ratatui::backend::Backend>(
             try_complete_startup(app, &source_root, &reports_dir);
             if app.init_phase == InitPhase::Ready {
                 eprintln!("Startup complete: {}", app.status);
+            }
+        }
+
+        // Refine starter questions via a one-shot, time-boxed LLM call. Templates are
+        // already shown; this swaps in context-aware ones if the model answers in time.
+        if app.starter_refine_pending && config.enabled {
+            app.starter_refine_pending = false;
+            app.starter_refined = true;
+            if let Ok(provider) = agent::create_provider(&config) {
+                let context = app.starter_question_context();
+                let cancel = Arc::new(AtomicBool::new(false));
+                let (tx, rx) = std::sync::mpsc::channel::<Vec<model::StarterQuestion>>();
+                app.starter_rx = Some(rx);
+                app.starter_cancel = Some(cancel.clone());
+                app.starter_deadline = Some(std::time::Instant::now() + std::time::Duration::from_secs(12));
+                thread::spawn(move || {
+                    let pairs = agent::refine_starter_questions(provider.as_ref(), &context, &cancel);
+                    let questions = pairs.into_iter()
+                        .map(|(label, command)| model::StarterQuestion { label, command })
+                        .collect();
+                    tx.send(questions).ok();
+                });
+            }
+        }
+        if app.starter_rx.is_some() {
+            match app.starter_rx.as_ref().unwrap().try_recv() {
+                Ok(questions) => {
+                    app.apply_refined_starter_questions(questions);
+                    app.starter_rx = None;
+                    app.starter_cancel = None;
+                    app.starter_deadline = None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    app.starter_rx = None;
+                    app.starter_cancel = None;
+                    app.starter_deadline = None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    if app.starter_deadline.is_some_and(|d| std::time::Instant::now() >= d) {
+                        if let Some(c) = app.starter_cancel.as_ref() { c.store(true, std::sync::atomic::Ordering::SeqCst); }
+                        app.starter_rx = None;
+                        app.starter_cancel = None;
+                        app.starter_deadline = None;
+                    }
+                }
             }
         }
 

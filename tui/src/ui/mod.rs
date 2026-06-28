@@ -427,9 +427,10 @@ fn render_output_table(frame: &mut Frame, app: &mut App, theme: &Theme, area: Re
             };
             let qs = &app.starter_questions;
 
+            // Compact single-line list: a heading block, then one left-aligned row per
+            // question with a `❯` marker on the selected item.
             let heading_h = 3u16;
-            let pill_h = 3u16;
-            let q_inner_h = heading_h + pill_h * qs.len() as u16;
+            let q_inner_h = heading_h + qs.len() as u16;
             let q_area_height = (q_inner_h + 2).min(inner.height);
 
             let chunks = Layout::default()
@@ -447,8 +448,6 @@ fn render_output_table(frame: &mut Frame, app: &mut App, theme: &Theme, area: Re
             let q_inner = outer_block.inner(q_area);
             frame.render_widget(outer_block, q_area);
 
-
-            let pill_bg = Color::Rgb(0x2b, 0x3a, 0x42);
             let heading_area = Rect {
                 x: q_inner.x,
                 y: q_inner.y,
@@ -456,44 +455,34 @@ fn render_output_table(frame: &mut Frame, app: &mut App, theme: &Theme, area: Re
                 height: heading_h,
             };
             frame.render_widget(
-                Paragraph::new(heading_lines).alignment(Alignment::Center),
+                Paragraph::new(heading_lines).alignment(Alignment::Left),
                 heading_area,
             );
 
-            let pill_top = q_inner.y + heading_h;
+            let list_top = q_inner.y + heading_h;
             for (i, q) in qs.iter().enumerate() {
                 let is_sel = i == selected;
-                let border_color = if is_sel { theme.accent } else { theme.muted };
                 let text_color = if is_sel { theme.accent } else { theme.fg };
-
-                let pill_area = Rect {
+                let marker = if is_sel { "❯ " } else { "  " };
+                let style = Style::default().fg(text_color);
+                let line = Line::from(vec![
+                    Span::styled(marker, style.add_modifier(Modifier::BOLD)),
+                    Span::styled(q.label.as_str(), style),
+                ]);
+                let row_area = Rect {
                     x: q_inner.x,
-                    y: pill_top + (i as u16) * pill_h,
+                    y: list_top + i as u16,
                     width: q_inner.width,
-                    height: pill_h,
+                    height: 1,
                 };
-                let pill_block = Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(border_color))
-                    .style(Style::default().bg(pill_bg));
-                let pill_inner = pill_block.inner(pill_area);
-                frame.render_widget(pill_block, pill_area);
-
-                frame.render_widget(
-                    Paragraph::new(Line::from(Span::styled(
-                        q.label.as_str(),
-                        Style::default().fg(text_color),
-                    )))
-                    .alignment(Alignment::Center),
-                    pill_inner,
-                );
+                frame.render_widget(Paragraph::new(line).alignment(Alignment::Left), row_area);
             }
 
             app.starter_questions_area = Some(Rect {
                 x: q_inner.x,
-                y: pill_top,
+                y: list_top,
                 width: q_inner.width,
-                height: qs.len() as u16 * pill_h,
+                height: qs.len() as u16,
             });
         } else {
             let hint = Paragraph::new(vec![
