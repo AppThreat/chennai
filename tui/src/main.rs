@@ -1335,7 +1335,7 @@ fn handle_key(app: &mut App, key: KeyEvent) {
             KeyCode::PageUp | KeyCode::Char('b') => { app.agent_page_up(); return; }
             KeyCode::PageDown | KeyCode::Char(' ') => { app.agent_page_down(); return; }
             KeyCode::Home | KeyCode::Char('g') => { app.agent_scroll = 0; app.agent_auto_scroll = false; return; }
-            KeyCode::End | KeyCode::Char('G') => { app.agent_scroll = app.agent_transcript.len().saturating_sub(1); app.agent_auto_scroll = true; return; }
+            KeyCode::End | KeyCode::Char('G') => { app.agent_auto_scroll = true; return; }
             KeyCode::Esc => {
                 if app.agent_active {
                     app.cancel_agent();

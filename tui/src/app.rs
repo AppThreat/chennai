@@ -252,8 +252,13 @@ pub struct App {
     pub agent_cancel: Option<Arc<AtomicBool>>,
     /// Rendered transcript entries for the agent view.
     pub agent_transcript: Vec<AgentEntry>,
-    /// Scroll position in the agent transcript.
+    /// Scroll position in the agent transcript, measured in rendered lines (the
+    /// index of the top visible line).
     pub agent_scroll: usize,
+    /// Total rendered line count and viewport height of the transcript, recorded
+    /// during render so the scroll handlers can clamp without re-rendering.
+    pub agent_total_lines: usize,
+    pub agent_viewport: usize,
     /// Whether to auto-scroll to the bottom as new content arrives.
     pub agent_auto_scroll: bool,
     /// Accumulated text for the current assistant turn (streamed via TextDelta).
@@ -371,6 +376,8 @@ impl App {
             agent_cancel: None,
             agent_transcript: Vec::new(),
             agent_scroll: 0,
+            agent_total_lines: 0,
+            agent_viewport: 0,
             agent_auto_scroll: true,
             agent_current_text: String::new(),
             agent_current_thinking: String::new(),
@@ -537,6 +544,7 @@ impl App {
                 self.agent_total_out = 0;
                 self.agent_last_tool = None;
                 self.agent_scroll = 0;
+                self.agent_auto_scroll = true;
                 self.agent_report_saved = false;
                 self.output = None;
                 self.flows = None;
@@ -575,6 +583,7 @@ impl App {
             self.agent_total_out = 0;
             self.agent_last_tool = None;
             self.agent_scroll = 0;
+            self.agent_auto_scroll = true;
             self.agent_report_saved = false;
             self.output = None;
             self.flows = None;
@@ -1085,7 +1094,8 @@ impl App {
         // Agent transcript area (takes priority when showing).
         if let Some(area) = self.agent_transcript_area
             && contains(&area, col, row) {
-                if down { self.agent_scroll_down(); } else { self.agent_scroll_up(); }
+                // Wheel/touchpad events move several lines per notch for responsiveness.
+                self.agent_scroll_lines(if down { 3 } else { -3 });
                 return;
             }
         // Node-detail child table.
@@ -1341,6 +1351,7 @@ impl App {
         self.agent_total_out = 0;
         self.agent_last_tool = None;
         self.agent_scroll = 0;
+        self.agent_auto_scroll = true;
         self.agent_current_text = String::new();
         self.agent_current_thinking = String::new();
         self.agent_pending_tool = None;
@@ -1521,10 +1532,9 @@ impl App {
                 }
             }
         }
-        // Auto-scroll to bottom if the user hasn't scrolled away.
-        if self.agent_auto_scroll {
-            self.agent_scroll = self.agent_transcript.len().saturating_sub(1);
-        }
+        // When auto-scroll is on, the renderer pins the view to the bottom; the
+        // exact line offset depends on the rendered line count so it is computed
+        // there rather than here.
     }
 
     /// Commit the current TextDelta accumulation as a transcript entry.
@@ -1686,35 +1696,37 @@ impl App {
         }
     }
 
-    /// Scroll the agent transcript up or down.
+    /// Largest valid top-line offset for the transcript viewport.
+    fn agent_max_scroll(&self) -> usize {
+        self.agent_total_lines.saturating_sub(self.agent_viewport)
+    }
+
+    /// Scroll the agent transcript up or down by `n` rendered lines.
+    pub fn agent_scroll_lines(&mut self, delta: isize) {
+        let max = self.agent_max_scroll();
+        let new = (self.agent_scroll as isize + delta).clamp(0, max as isize) as usize;
+        self.agent_scroll = new;
+        // Re-engage auto-scroll only once the user reaches the very bottom.
+        self.agent_auto_scroll = new >= max;
+    }
+
+    /// Scroll the agent transcript up or down by one line.
     pub fn agent_scroll_up(&mut self) {
-        self.agent_auto_scroll = false;
-        if self.agent_scroll > 0 {
-            self.agent_scroll -= 1;
-        }
+        self.agent_scroll_lines(-1);
     }
 
     pub fn agent_scroll_down(&mut self) {
-        let max = self.agent_transcript.len().saturating_sub(1);
-        if self.agent_scroll < max {
-            self.agent_scroll += 1;
-        }
-        if self.agent_scroll >= max {
-            self.agent_auto_scroll = true;
-        }
+        self.agent_scroll_lines(1);
     }
 
     pub fn agent_page_up(&mut self) {
-        self.agent_auto_scroll = false;
-        self.agent_scroll = self.agent_scroll.saturating_sub(5);
+        let page = self.agent_viewport.saturating_sub(1).max(1) as isize;
+        self.agent_scroll_lines(-page);
     }
 
     pub fn agent_page_down(&mut self) {
-        let max = self.agent_transcript.len().saturating_sub(1);
-        self.agent_scroll = (self.agent_scroll + 5).min(max);
-        if self.agent_scroll >= max {
-            self.agent_auto_scroll = true;
-        }
+        let page = self.agent_viewport.saturating_sub(1).max(1) as isize;
+        self.agent_scroll_lines(page);
     }
 
     /// Build a condensed console-history string from recent REPL entries and the current

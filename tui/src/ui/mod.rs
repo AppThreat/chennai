@@ -1029,10 +1029,8 @@ fn render_agent_transcript(frame: &mut Frame, app: &mut App, theme: &Theme, area
     if inner.height == 0 || inner.width == 0 { return; }
 
     let viewport = inner.height as usize;
+    app.agent_viewport = viewport;
     let total = app.agent_transcript.len();
-    if total > 0 && app.agent_scroll >= total {
-        app.agent_scroll = total.saturating_sub(1);
-    }
 
     if total == 0 {
         let hint = if app.agent_active {
@@ -1047,35 +1045,31 @@ fn render_agent_transcript(frame: &mut Frame, app: &mut App, theme: &Theme, area
         return;
     }
 
-    // Build visible lines from the scroll position upward to fill the viewport.
-    // First, determine the scroll position in "entry units" by counting lines backward.
-    let target_entry = app.agent_scroll.min(total.saturating_sub(1));
-
-    // Pre-compute line counts for each entry to enable efficient scrolling.
+    // Render every transcript entry to a flat list of lines, then take a
+    // line-level window. `agent_scroll` is the index of the top visible line,
+    // which gives smooth, uniform scrolling regardless of entry sizes.
     let line_counts: Vec<usize> = app.agent_transcript.iter().map(entry_line_count).collect();
-    let total_lines: usize = line_counts.iter().sum();
-
-    // Convert entry-level scroll to line-level scroll.
-    let mut line_scroll = 0usize;
-    for (i, &lc) in line_counts.iter().enumerate() {
-        if i == target_entry { break; }
-        line_scroll += lc;
-    }
-    // Center the target entry in the viewport.
-    line_scroll = line_scroll.saturating_sub(viewport / 3);
-
-    // Build the full line list, then slice.
     let all_lines: Vec<Line> = build_agent_lines(app, theme, &line_counts, inner.width as usize);
+    let total_lines = all_lines.len();
+    let max_scroll = total_lines.saturating_sub(viewport);
 
-    let visible: Vec<Line> = if total_lines > viewport && line_scroll + viewport < total_lines {
-        all_lines[line_scroll..line_scroll + viewport].to_vec()
-    } else if total_lines > viewport {
-        all_lines[total_lines.saturating_sub(viewport)..].to_vec()
+    // Pin to the bottom while auto-scroll is engaged; otherwise clamp the user's
+    // position to the current content extent.
+    let line_scroll = if app.agent_auto_scroll {
+        max_scroll
     } else {
-        all_lines
+        app.agent_scroll.min(max_scroll)
     };
 
+    let end = (line_scroll + viewport).min(total_lines);
+    let visible: Vec<Line> = all_lines[line_scroll..end].to_vec();
     frame.render_widget(Paragraph::new(visible), inner);
+    drop(all_lines);
+
+    // Record the extent so the scroll handlers can clamp on the next event.
+    app.agent_total_lines = total_lines;
+    app.agent_scroll = line_scroll;
+
     render_scrollbar(frame, area, theme, total_lines, line_scroll, viewport);
 }
 
