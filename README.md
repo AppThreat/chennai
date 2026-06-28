@@ -55,6 +55,42 @@ After installation the `chennai` command is available globally.
 chennai <path-to-project-or-atom-file> [options]
 ```
 
+### Container image
+
+A multi-arch (amd64/arm64) image is published to GitHub Container Registry. It bundles everything chennai needs across all modes -- the atom toolchains (Java, Scala, Node, PHP, Ruby), the Android SDK, the chennai engine and TUI, the standalone non-atom backends (`rusi`, `golem`, `dosai`), and `blint` (with LLVM) for binary / APK / IPA analysis. This is the simplest way to get every language and binary backend without installing toolchains locally.
+
+```bash
+docker pull ghcr.io/appthreat/chennai:latest
+
+# Analyse the current directory (atom, Rust, Go, .NET, or a binary/APK/IPA).
+docker run --rm -it \
+  -e ANTHROPIC_API_KEY \
+  -v "$(pwd)":/app:rw -w /app \
+  ghcr.io/appthreat/chennai:latest /app
+```
+
+Notes:
+
+- Pass your LLM credentials through with `-e ANTHROPIC_API_KEY` (or `-e OPENAI_API_KEY` / `-e OPENAI_BASE_URL` for OpenAI-compatible providers).
+- Mount the project read-write (`-v "$(pwd)":/app:rw`) so generated reports (`rusi-report.json`, `golem-report.json`, dosai/blint outputs, the SBOM) are written back to the host.
+- For Android APK / iOS IPA analysis, mount the artifact and point chennai at the file: `-v "$(pwd)/app.apk":/app/app.apk ... /app/app.apk`.
+- The image tags follow the convention `:latest`, `:vX.Y.Z` (release tags), and per-arch `:<tag>-amd64` / `:<tag>-arm64` variants.
+
+### Standalone backend binaries
+
+If you are not using the container image, install the non-atom backend binaries with the bundled script. It detects your OS/arch, downloads `rusi` + `golem` (from cdxgen-plugins-bin) and `dosai` (full build), and installs `blint` via uv/pip:
+
+```bash
+# Installs into $HOME/.local/bin (or /usr/local/bin with --system)
+bash scripts/setup.sh
+
+# Skip blint, or force re-download:
+bash scripts/setup.sh --no-blint
+bash scripts/setup.sh --force
+```
+
+Because the binaries land on `PATH`, chennai resolves them automatically (the `RUSI_CMD` / `GOLEM_CMD` / `DOSAI_CMD` / `BLINT_CMD` env vars override the lookup). `blint` disassembly additionally needs LLVM, and APK/IPA depth needs the Android SDK -- the container image bundles both.
+
 ## Subcommands
 
 ### `setup`

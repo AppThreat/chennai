@@ -7,6 +7,15 @@ on:
       - 'v*'
   pull_request:
   workflow_dispatch:
+    inputs:
+      container_only:
+        description: 'Build only the container image from an already-published release (skips native builds and npm publish)'
+        type: boolean
+        default: false
+      chennai_version:
+        description: 'chennai release tag to bundle into the image (default: latest)'
+        required: false
+        default: 'latest'
 
 permissions:
   contents: read
@@ -24,7 +33,7 @@ jobs:
   # Linux amd64 (glibc): engine native-image + TUI (Rust)
   # ──────────────────────────────────────────────────────────────
   build-linux-amd64:
-    if: github.repository_owner == 'appthreat'
+    if: github.repository_owner == 'appthreat' && github.event.inputs.container_only != 'true'
     runs-on: ubuntu-22.04
     permissions:
       contents: write
@@ -111,7 +120,7 @@ jobs:
   # Linux arm64 (glibc): engine native-image + TUI (Rust)
   # ──────────────────────────────────────────────────────────────
   build-linux-arm64:
-    if: github.repository_owner == 'appthreat'
+    if: github.repository_owner == 'appthreat' && github.event.inputs.container_only != 'true'
     runs-on: ubuntu-22.04-arm
     permissions:
       contents: write
@@ -198,7 +207,7 @@ jobs:
   # Linux amd64 (musl): engine native-image (musl) + TUI (Rust)
   # ──────────────────────────────────────────────────────────────
   build-linux-musl-amd64:
-    if: github.repository_owner == 'appthreat'
+    if: github.repository_owner == 'appthreat' && github.event.inputs.container_only != 'true'
     runs-on: ubuntu-22.04
     permissions:
       contents: write
@@ -273,7 +282,7 @@ jobs:
   # Darwin arm64 (macOS Apple Silicon): engine native-image + TUI
   # ──────────────────────────────────────────────────────────────
   build-darwin-arm64:
-    if: github.repository_owner == 'appthreat'
+    if: github.repository_owner == 'appthreat' && github.event.inputs.container_only != 'true'
     runs-on: macos-15
     permissions:
       contents: write
@@ -356,7 +365,7 @@ jobs:
   # Windows amd64: engine native-image + TUI (Rust MSVC)
   # ──────────────────────────────────────────────────────────────
   build-windows-amd64:
-    if: github.repository_owner == 'appthreat'
+    if: github.repository_owner == 'appthreat' && github.event.inputs.container_only != 'true'
     runs-on: windows-latest
     permissions:
       contents: write
@@ -645,6 +654,183 @@ jobs:
           git add Formula/chennai.rb
           git commit -m "chennai ${{ github.ref_name }}"
           git push
+
+  # ──────────────────────────────────────────────────────────────
+  # Container image: build & push to GHCR (per-arch), then manifest.
+  # Waits for npm-publish so the published release tarballs
+  # (chennai-linux-<arch>.tar.gz) are available to pull into the image.
+  # ──────────────────────────────────────────────────────────────
+  container:
+    name: Container image (${{ matrix.image.arch }})
+    # Runs on tag releases (after npm-publish) or via manual workflow_dispatch
+    # (where npm-publish is skipped and the image is built from a published release).
+    if: >-
+      always() && github.repository_owner == 'appthreat' &&
+      (needs['npm-publish'].result == 'success' || needs['npm-publish'].result == 'skipped') &&
+      (startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch')
+    needs: npm-publish
+    strategy:
+      fail-fast: true
+      matrix:
+        image:
+          - id: amd64
+            arch: amd64
+          - id: arm64
+            arch: arm64
+            runner-suffix: -arm
+    runs-on: ubuntu-24.04${{ matrix.image.runner-suffix }}
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5  # v4.1.0
+      - name: Log in to the Container registry
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee  # v4.2.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Resolve chennai version to bundle
+        id: ver
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            v="${{ github.event.inputs.chennai_version }}"
+            [ -n "$v" ] || v="latest"
+          else
+            v="${{ github.ref_name }}"
+          fi
+          echo "v=$v" >> "$GITHUB_OUTPUT"
+      - name: Extract metadata (tags, labels) for Docker
+        id: meta
+        uses: docker/metadata-action@80c7e94dd9b9319bd5eb7a0e0fe9291e23a2a2e9  # v6.1.0
+        with:
+          images: |
+            ghcr.io/appthreat/chennai
+          flavor: latest=false,suffix=-${{ matrix.image.arch }}
+          tags: |
+            type=ref,event=tag
+            type=raw,value=${{ steps.ver.outputs.v }},enable=${{ github.event_name == 'workflow_dispatch' && steps.ver.outputs.v != 'latest' }}
+      - name: Build and push Docker images
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf  # v7.2.0
+        id: build
+        with:
+          file: ci/Dockerfile
+          context: .
+          platforms: linux/${{ matrix.image.arch }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          provenance: false
+          sbom: false
+          build-args: |
+            CHENNAI_VERSION=${{ steps.ver.outputs.v }}
+          cache-from: type=gha,scope=chennai-${{ matrix.image.arch }}
+          cache-to: type=gha,mode=max,scope=chennai-${{ matrix.image.arch }}
+      - name: Write image metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p image-metadata
+          jq -n \
+            --arg key "${MATRIX_KEY}" \
+            --arg image_uri "ghcr.io/appthreat/chennai@${DIGEST}" \
+            '{($key): {"image-uri": $image_uri}}' > "image-metadata/${MATRIX_KEY}.json"
+        env:
+          MATRIX_KEY: ${{ matrix.image.id }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: image-metadata-${{ matrix.image.id }}
+          path: image-metadata/${{ matrix.image.id }}.json
+          if-no-files-found: error
+          retention-days: 1
+
+  container-manifest:
+    name: Container multi-arch manifest
+    if: >-
+      always() && github.repository_owner == 'appthreat' &&
+      needs.container.result == 'success'
+    runs-on: ubuntu-24.04
+    needs: container
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5  # v4.1.0
+      - uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee  # v4.2.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Resolve chennai version
+        id: ver
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            v="${{ github.event.inputs.chennai_version }}"
+            [ -n "$v" ] || v="latest"
+          else
+            v="${{ github.ref_name }}"
+          fi
+          echo "v=$v" >> "$GITHUB_OUTPUT"
+      - uses: docker/metadata-action@80c7e94dd9b9319bd5eb7a0e0fe9291e23a2a2e9  # v6.1.0
+        id: metadata
+        with:
+          images: ghcr.io/appthreat/chennai
+          tags: |
+            type=ref,event=tag
+            type=raw,value=${{ steps.ver.outputs.v }},enable=${{ github.event_name == 'workflow_dispatch' && steps.ver.outputs.v != 'latest' }}
+            type=raw,value=latest
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          pattern: image-metadata-*
+          path: image-metadata
+          merge-multiple: true
+      - name: Create and push multi-arch manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          sources=()
+          for key in amd64 arm64; do
+            metadata_file="$(find image-metadata -name "${key}.json" -type f -print -quit)"
+            if [ -z "${metadata_file}" ] || [ ! -s "${metadata_file}" ]; then
+              echo "Unable to find image metadata artifact file for ${key}" >&2
+              exit 1
+            fi
+            source="$(jq -r --arg key "${key}" '.[$key]."image-uri" // empty' "${metadata_file}")"
+            [ -n "${source}" ] || { echo "No image-uri for ${key}" >&2; exit 1; }
+            sources+=("${source}")
+          done
+
+          annotation_args=()
+          while IFS= read -r label; do
+            [ -n "${label}" ] || continue
+            annotation_args+=(--annotation "index:${label}")
+          done <<< "${LABELS}"
+
+          while IFS= read -r tag; do
+            [ -n "${tag}" ] || continue
+            echo "Creating multi-arch manifest: ${tag}"
+            docker buildx imagetools create \
+              "${annotation_args[@]}" \
+              --tag "${tag}" \
+              "${sources[@]}"
+            docker buildx imagetools inspect "${tag}"
+          done <<< "${TAGS}"
+        env:
+          LABELS: ${{ steps.metadata.outputs.labels }}
+          TAGS: ${{ steps.metadata.outputs.tags }}
 
   # ──────────────────────────────────────────────────────────────
   # Post-publish smoke tests across platforms

@@ -1,0 +1,9 @@
+.git
+.github
+.idea
+**/target
+**/*.atom
+**/node_modules
+*.md
+!README.md
+image-metadata
