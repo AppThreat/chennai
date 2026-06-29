@@ -33,3 +33,4 @@ wrapper/nodejs/downloaded-binaries/
 # misc
 *.log
 .idea/
+.chen/

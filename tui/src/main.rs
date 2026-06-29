@@ -190,7 +190,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let summary: Summary = eng.request("summary", json!({}))?;
 
         if let Some(question) = args.ask {
-            return run_headless_agent(config, eng, source_root, summary, question);
+            // Fall back to the atom's parent directory when --source is not provided,
+            // so the memory store and other source-root-dependent features work.
+            let atom_dir = existing_atom.parent().unwrap_or(Path::new(".")).to_string_lossy().to_string();
+            let agent_source_root = source_root.clone()
+                .or(Some(atom_dir));
+            return run_headless_agent(config, eng, agent_source_root, summary, question);
         }
 
         let engine_arc = Arc::new(Mutex::new(eng));
