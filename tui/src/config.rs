@@ -146,6 +146,8 @@ fn default_model() -> String {
 mod tests {
     use super::*;
 
+    static ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn provider_kind_parsing() {
         assert_eq!("anthropic".parse::<ProviderKind>().unwrap(), ProviderKind::Anthropic);
@@ -163,18 +165,21 @@ mod tests {
 
     #[test]
     fn default_effort_is_high() {
+        let _guard = ENV_MUTEX.lock().unwrap();
         let cfg = Config::load(None, None, None);
         assert_eq!(cfg.effort, "high");
     }
 
     #[test]
     fn cli_effort_overrides_default() {
+        let _guard = ENV_MUTEX.lock().unwrap();
         let cfg = Config::load_with_base_url(None, None, None, None, false, Some("xhigh"));
         assert_eq!(cfg.effort, "xhigh");
     }
 
     #[test]
     fn load_with_cli_overrides() {
+        let _guard = ENV_MUTEX.lock().unwrap();
         // Without env var, config loading gracefully produces disabled config.
         let prev_anthropic = std::env::var("ANTHROPIC_API_KEY").ok();
         let prev_openai = std::env::var("OPENAI_API_KEY").ok();
@@ -195,6 +200,7 @@ mod tests {
 
     #[test]
     fn env_vars_set_provider_model_base_url_and_cli_overrides_env() {
+        let _guard = ENV_MUTEX.lock().unwrap();
         let prev = [
             ("CHENNAI_PROVIDER", std::env::var("CHENNAI_PROVIDER").ok()),
             ("CHENNAI_MODEL", std::env::var("CHENNAI_MODEL").ok()),
@@ -232,11 +238,21 @@ mod tests {
 
     #[test]
     fn key_from_env_checks_correct_var() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        let prev = std::env::var("ANTHROPIC_API_KEY").ok();
+        unsafe { std::env::remove_var("ANTHROPIC_API_KEY"); }
+
         assert!(Config::key_from_env(&ProviderKind::Anthropic).is_none());
         // Set and test
         unsafe { std::env::set_var("ANTHROPIC_API_KEY", "sk-test-xxx"); }
         let key = Config::key_from_env(&ProviderKind::Anthropic);
         assert_eq!(key.as_deref(), Some("sk-test-xxx"));
-        unsafe { std::env::remove_var("ANTHROPIC_API_KEY"); }
+
+        unsafe {
+            match prev {
+                Some(val) => std::env::set_var("ANTHROPIC_API_KEY", val),
+                None => std::env::remove_var("ANTHROPIC_API_KEY"),
+            }
+        }
     }
 }
