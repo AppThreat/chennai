@@ -135,10 +135,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     eprintln!(
-        r#"              _  _  _  _  __
+        r#"
+                         _  _  _  _  __
  _ |_  _ __ __  _  o    |_ / \/ \/ \  /|_|
-(_ | |(/_| || |(_| |    |_)\_/\_/\_/ /   | "#
-    );
+(_ | |(/_| || |(_| |    |_)\_/\_/\_/ /   |
+        "#);
 
     // Load custom system prompt if provided.
     let custom_system_prompt = match &args.system_prompt {
@@ -1496,10 +1497,30 @@ fn run_app<B: ratatui::backend::Backend>(
             }
         }
 
-        // Deferred flow query.
-        if let Some(pending) = app.take_pending() {
-            app.run_pending(pending);
-            continue;
+        // Background flow query result (from dataflows/reachables/cryptos).
+        if let Some(ref rx) = app.flow_result_rx {
+            match rx.try_recv() {
+                Ok(outcome) => {
+                    let entry_idx = app.pending.as_ref().map(|p| p.entry_idx);
+                    let (ok, status) = app.apply_flow_outcome(outcome);
+                    if let Some(idx) = entry_idx
+                        && let Some(e) = app.repl.entries.get_mut(idx) {
+                            e.status = status.clone();
+                            e.ok = ok;
+                    }
+                    app.status = status;
+                    if ok { app.focus = Panel::Output; }
+                    app.flow_result_rx = None;
+                    app.flow_cancel = None;
+                    app.pending = None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    app.flow_result_rx = None;
+                    app.flow_cancel = None;
+                    app.pending = None;
+                }
+            }
         }
 
         if !event::poll(std::time::Duration::from_millis(50))? {
@@ -1560,7 +1581,10 @@ fn handle_key(app: &mut App, key: KeyEvent) {
             KeyCode::Home | KeyCode::Char('g') => { app.agent_scroll = 0; app.agent_auto_scroll = false; return; }
             KeyCode::End | KeyCode::Char('G') => { app.agent_auto_scroll = true; return; }
             KeyCode::Esc => {
-                if app.agent_active {
+                if app.flow_cancel.is_some() {
+                    app.cancel_flow();
+                    app.status = "cancelled".into();
+                } else if app.agent_active {
                     app.cancel_agent();
                     app.status = "agent cancelled".into();
                 } else {
@@ -1620,9 +1644,16 @@ fn handle_key(app: &mut App, key: KeyEvent) {
 
     let page = 10usize;
     match code {
+        KeyCode::Char('c') | KeyCode::Char('C') if app.flow_cancel.is_some() => {
+            app.cancel_flow();
+            app.status = "cancelled".into();
+        }
         KeyCode::Char('q') | KeyCode::Char('Q') => app.should_quit = true,
         KeyCode::Esc => {
-            if app.agent_active {
+            if app.flow_cancel.is_some() {
+                app.cancel_flow();
+                app.status = "cancelled".into();
+            } else if app.agent_active {
                 app.cancel_agent();
                 app.status = "agent cancelled".into();
             } else {

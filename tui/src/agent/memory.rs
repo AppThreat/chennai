@@ -950,7 +950,7 @@ mod tests {
     }
 
     #[test]
-    fn text_tool_facts_get_low_confidence() {
+    fn text_tool_facts_are_rejected() {
         let input = serde_json::json!({
             "action": "save",
             "name": "text-fact",
@@ -964,11 +964,8 @@ mod tests {
         let store = FactStore::open(Some(dir.path().to_str().unwrap())).unwrap();
 
         let result = action_save(&store, &input);
-        assert!(!result.1, "save should succeed: {}", result.0);
-
-        let loaded = store.load("text-fact").unwrap();
-        assert_eq!(loaded.confidence.as_deref(), Some("low"));
-        assert_eq!(loaded.grounded_by.as_deref(), Some("ripgrep"));
+        assert!(result.1, "save should be rejected: {}", result.0);
+        assert!(result.0.contains("rejected"), "error should mention rejection");
     }
 
     #[test]

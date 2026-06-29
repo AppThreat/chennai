@@ -16,6 +16,7 @@ use ratatui::layout::Rect;
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::sync::{mpsc, Arc, Mutex};
+use std::thread;
 use std::time::Instant;
 
 /// Status of a background startup task displayed in the status bar.
@@ -64,10 +65,15 @@ pub enum AgentEntry {
     Done,
 }
 
-/// A flow query whose (potentially slow) engine call is deferred to the next event-loop iteration,
-/// so the REPL can first paint the command + a "running…" status.
+/// Outcome of a flow query run on a background thread.
+pub enum FlowOutcome {
+    Result(crate::model::FlowSet),
+    Error(String),
+}
+
+/// Tracks a flow query running on a background thread so the REPL entry can be updated
+/// when the result arrives or the operation is cancelled.
 pub struct PendingFlow {
-    pub args: serde_json::Value,
     /// Index of the REPL scrollback entry to update once the result arrives.
     pub entry_idx: usize,
 }
@@ -211,6 +217,11 @@ pub struct App {
     pub hide_mitigated: bool,
     /// A deferred flow query awaiting execution (gives the UI a chance to paint "running…").
     pub pending: Option<PendingFlow>,
+    /// Cancel flag for a long-running flow command (dataflows/reachables/cryptos) running
+    /// on a background thread. Flipped by the `c` key or `Esc`.
+    pub flow_cancel: Option<Arc<AtomicBool>>,
+    /// Channel that delivers the outcome from the background flow thread.
+    pub flow_result_rx: Option<mpsc::Receiver<FlowOutcome>>,
     /// `(file, line)` groups expanded in the detail pane (consecutive same-line steps collapse by
     /// default; clicking a group header expands it).
     pub expanded_lines: HashSet<(String, i64)>,
@@ -363,6 +374,8 @@ impl App {
             show_subflows: false,
             hide_mitigated: false,
             pending: None,
+            flow_cancel: None,
+            flow_result_rx: None,
             expanded_lines: HashSet::new(),
             flow_detail_id: None,
             should_quit: false,
@@ -742,12 +755,37 @@ impl App {
         };
 
         if let Some(args) = flow_args {
-            // Flows can take seconds. Echo the command with a "running…" status now and defer the
-            // engine call to the next loop iteration (see `take_pending`/`run_pending`), so the
-            // user sees immediate feedback before the result count replaces it.
             self.repl.record(&t, "running…".into(), true);
             let entry_idx = self.repl.entries.len() - 1;
-            self.pending = Some(PendingFlow { args, entry_idx });
+            // Fast path (no engine): run synchronously (in-memory backend).
+            if self.engine.is_none() {
+                let (ok, status) = self.dispatch_flows(args);
+                if let Some(e) = self.repl.entries.get_mut(entry_idx) {
+                    e.status = status.clone();
+                    e.ok = ok;
+                }
+                if ok { self.focus = Panel::Output; }
+                self.status = status;
+                return;
+            }
+            // Engine path: spawn a background thread so the UI stays responsive and the
+            // user can cancel with `c` or `Esc`.
+            let cancel = Arc::new(AtomicBool::new(false));
+            let cancel_clone = cancel.clone();
+            let (tx, rx) = std::sync::mpsc::channel::<FlowOutcome>();
+            let engine_arc = self.engine.as_ref().unwrap().clone();
+            thread::spawn(move || {
+                let mut engine = engine_arc.lock().unwrap();
+                let result = engine.request::<crate::model::FlowSet>("flows", args);
+                if cancel_clone.load(AtomicOrdering::Relaxed) { return; }
+                let _ = tx.send(match result {
+                    Ok(fs) => FlowOutcome::Result(fs),
+                    Err(e) => FlowOutcome::Error(format!("{e}")),
+                });
+            });
+            self.pending = Some(PendingFlow { entry_idx });
+            self.flow_cancel = Some(cancel);
+            self.flow_result_rx = Some(rx);
             self.status = format!("running {t}…");
             return;
         }
@@ -769,24 +807,6 @@ impl App {
         };
         self.status = status.clone();
         self.repl.record(&t, status, ok);
-    }
-
-    /// Take any deferred flow query (run by the event loop after a frame has been painted).
-    pub fn take_pending(&mut self) -> Option<PendingFlow> {
-        self.pending.take()
-    }
-
-    /// Execute a deferred flow query and update its REPL scrollback entry with the outcome.
-    pub fn run_pending(&mut self, p: PendingFlow) {
-        let (ok, status) = self.dispatch_flows(p.args);
-        if let Some(e) = self.repl.entries.get_mut(p.entry_idx) {
-            e.status = status.clone();
-            e.ok = ok;
-        }
-        self.status = status;
-        if ok {
-            self.focus = Panel::Output;
-        }
     }
 
     /// Request compiler-driven completions for the current REPL line at the cursor, and open the
@@ -1600,6 +1620,35 @@ impl App {
     pub fn cancel_agent(&mut self) {
         if let Some(ref cancel) = self.agent_cancel {
             cancel.store(true, AtomicOrdering::SeqCst);
+        }
+    }
+
+    /// Apply the result of a background flow query to the app state.
+    pub fn apply_flow_outcome(&mut self, outcome: FlowOutcome) -> (bool, String) {
+        match outcome {
+            FlowOutcome::Result(fs) => {
+                let status = format!("{}: {} flow(s)", fs.title, fs.total);
+                self.flows = Some(fs);
+                self.output = None;
+                self.flow_state = ListState::default();
+                self.flow_detail_scroll = 0;
+                self.recompute_flow_visible();
+                (true, status)
+            }
+            FlowOutcome::Error(e) => (false, e),
+        }
+    }
+
+    /// Cancel a long-running flow command (dataflows/reachables/cryptos).
+    pub fn cancel_flow(&mut self) {
+        if let Some(ref cancel) = self.flow_cancel {
+            cancel.store(true, AtomicOrdering::SeqCst);
+        }
+        self.flow_result_rx = None;
+        self.flow_cancel = None;
+        if let Some(p) = self.pending.take()
+            && let Some(e) = self.repl.entries.get_mut(p.entry_idx) {
+                e.status = "cancelled".into();
         }
     }
 

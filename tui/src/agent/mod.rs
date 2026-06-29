@@ -1029,7 +1029,8 @@ pub fn refine_starter_questions(
 Given a factual digest of an analyzed project (language, code metrics, SBOM components), propose \
 3-4 short, concrete questions a security engineer would find interesting FOR THIS SPECIFIC PROJECT. \
 Prefer specifics (named components, notable counts, likely risk areas) over generic phrasing. \
-Be fast. Respond with ONLY a JSON array of objects {\"label\": button text <=40 chars, \
+Each question must be a full, specific sentence (not a 4-word label). \
+Be fast. Respond with ONLY a JSON array of objects {\"label\": button text <=80 chars, \
 \"command\": the full question sent to the agent}. No prose, no markdown fences.";
 
     let mut transcript = Transcript::new();
