@@ -117,6 +117,15 @@ enum CliCommand {
     },
 }
 
+/// Print to stderr only when debug mode is active.
+macro_rules! debug_eprintln {
+    ($cond:expr, $($arg:tt)*) => {
+        if $cond {
+            eprintln!($($arg)*);
+        }
+    };
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
@@ -125,13 +134,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return run_subcommand(cmd);
     }
 
+    eprintln!(
+        "{}",
+        r#"              _  _  _  _  __
+ _ |_  _ __ __  _  o    |_ / \/ \/ \  /|_|
+(_ | |(/_| || |(_| |    |_)\_/\_/\_/ /   | "#
+    );
+
     // Load custom system prompt if provided.
     let custom_system_prompt = match &args.system_prompt {
         Some(p) => {
-            let content = std::fs::read_to_string(p)
-                .map_err(|e| format!("failed to read system prompt file '{}': {e}", p.display()))?;
-            eprintln!("Using custom system prompt from: {}", p.display());
-            Some(content)
+        let content = std::fs::read_to_string(p)
+            .map_err(|e| format!("failed to read system prompt file '{}': {e}", p.display()))?;
+        debug_eprintln!(args.debug, "Using custom system prompt from: {}", p.display());
+        Some(content)
         }
         None => None,
     };
@@ -179,7 +195,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "engine binary not found; build it with `sbt stage` in engine/, or set CHENNAI_ENGINE",
         )?;
 
-        eprintln!("Spawning engine: {}", command.display());
+        debug_eprintln!(config.debug, "Spawning engine: {}", command.display());
         let mut eng = Engine::spawn(&command)?;
 
         let open_args = match &source_root {
@@ -240,11 +256,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 ) {
                                     Ok(resp) => {
                                         if resp.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
-                                            eprintln!("Atom enriched with SBOM dependency data");
+                                            debug_eprintln!(config.debug, "Atom enriched with SBOM dependency data");
                                         }
                                     }
                                     Err(e) => {
-                                        eprintln!("Warning: failed to enrich atom with SBOM data: {e}");
+                                        debug_eprintln!(config.debug, "Warning: failed to enrich atom with SBOM data: {e}");
                                     }
                                 }
                                 bom_store = store;
@@ -256,7 +272,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 if !generated {
                     bom_tip = "No SBOM found. Generate one with: cdxgen -o sbom-<lang>-<lifecycle>.cdx.json <source_dir> (npm install -g @cyclonedx/cdxgen)".into();
-                    eprintln!("Tip: {bom_tip}");
+                    debug_eprintln!(config.debug, "Tip: {bom_tip}");
                 }
             }
         }
@@ -270,7 +286,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // If this atom (e.g. an APK/JAR) also has a blint report nearby, expose blint_* tools too.
         let atom_dir = existing_atom.parent().unwrap_or(Path::new(".")).to_path_buf();
         let aux_backend: Option<BackendCtx> =
-            find_aux_blint_backend(&[atom_dir.as_path(), reports_dir.as_path()]).map(|c| Box::new(c) as BackendCtx);
+            find_aux_blint_backend(&[atom_dir.as_path(), reports_dir.as_path()], config.debug).map(|c| Box::new(c) as BackendCtx);
 
         let agent_ctx = if config.enabled {
             let bom_summary = if bom_store.loaded { bom_store.summary() } else { String::new() };
@@ -301,7 +317,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             )
                         }
                     };
-                    eprintln!("AI agent enabled: {} ({})", config.provider, config.model);
+                    debug_eprintln!(config.debug, "AI agent enabled: {} ({})", config.provider, config.model);
                     Some(AgentCtx {
                         provider,
                         engine: Some(engine_arc.clone()),
@@ -317,7 +333,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     })
                 }
                 Err(e) => {
-                    eprintln!("Warning: failed to create LLM provider: {e}. Agent disabled.");
+                    debug_eprintln!(config.debug, "Warning: failed to create LLM provider: {e}. Agent disabled.");
                     None
                 }
             }
@@ -337,7 +353,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             app.bom_store = Some(bom_store);
             app.bom_generated = false;
             app.status = format!("BOM loaded ({} components) — type 'bom' to view", app.bom_store.as_ref().map(|s| s.total_components).unwrap_or(0));
-            eprintln!("{}", app.status);
+            debug_eprintln!(config.debug, "{}", app.status);
         } else if !bom_tip.is_empty() {
             app.status = bom_tip;
         }
@@ -513,7 +529,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let agent_ctx = if config.enabled {
             match agent::create_provider(&config) {
                 Ok(provider) => {
-                    eprintln!("AI agent enabled: {} ({})", config.provider, config.model);
+                    debug_eprintln!(config.debug, "AI agent enabled: {} ({})", config.provider, config.model);
                     Some(AgentCtx {
                         provider,
                         engine: None,
@@ -529,7 +545,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     })
                 }
                 Err(e) => {
-                    eprintln!("Warning: failed to create LLM provider: {e}. Agent disabled.");
+                    debug_eprintln!(config.debug, "Warning: failed to create LLM provider: {e}. Agent disabled.");
                     None
                 }
             }
@@ -647,9 +663,9 @@ fn run_non_atom_mode(
             }
         }
         let backend: Option<BackendCtx> = match language.as_deref() {
-            Some("rust") => load_or_generate_rusi(source_dir, &reports_dir, true).ok().map(|ctx| Box::new(ctx) as BackendCtx),
-            Some("go") => load_or_generate_golem(source_dir, &reports_dir, true).ok().map(|ctx| Box::new(ctx) as BackendCtx),
-            Some("dotnet") => load_or_generate_dosai(source_dir, &reports_dir, true).ok().map(|ctx| Box::new(ctx) as BackendCtx),
+            Some("rust") => load_or_generate_rusi(source_dir, &reports_dir, true, config.debug).ok().map(|ctx| Box::new(ctx) as BackendCtx),
+            Some("go") => load_or_generate_golem(source_dir, &reports_dir, true, config.debug).ok().map(|ctx| Box::new(ctx) as BackendCtx),
+            Some("dotnet") => load_or_generate_dosai(source_dir, &reports_dir, true, config.debug).ok().map(|ctx| Box::new(ctx) as BackendCtx),
             Some("binary") => load_blint_backend(source_dir, &reports_dir).map(|ctx| Box::new(ctx) as BackendCtx),
             _ => None,
         };
@@ -786,7 +802,7 @@ fn run_non_atom_mode(
     let agent_ctx = if config.enabled {
         match agent::create_provider(config) {
             Ok(provider) => {
-                eprintln!("AI agent enabled: {} ({})", config.provider, config.model);
+                debug_eprintln!(config.debug, "AI agent enabled: {} ({})", config.provider, config.model);
                 Some(AgentCtx {
                     provider,
                     engine: None,
@@ -802,7 +818,7 @@ fn run_non_atom_mode(
                 })
             }
             Err(e) => {
-                eprintln!("Warning: failed to create LLM provider: {e}. Agent disabled.");
+                debug_eprintln!(config.debug, "Warning: failed to create LLM provider: {e}. Agent disabled.");
                 None
             }
         }
@@ -911,10 +927,10 @@ fn finish_non_atom_startup(
             "BOM loaded ({} components). AI agent is your primary interface.",
             app.bom_store.as_ref().map(|s| s.total_components).unwrap_or(0)
         );
-        eprintln!("{}", app.status);
+        debug_eprintln!(config.debug, "{}", app.status);
     } else {
         app.status = "No SBOM found. Generate with: cdxgen -o sbom.cdx.json <source_dir>".into();
-        eprintln!("Tip: {}", app.status);
+        debug_eprintln!(config.debug, "Tip: {}", app.status);
     }
 
     app.generate_starter_questions();
@@ -922,7 +938,7 @@ fn finish_non_atom_startup(
     let agent_ctx = if config.enabled {
         match agent::create_provider(config) {
             Ok(provider) => {
-                eprintln!("AI agent enabled: {} ({})", config.provider, config.model);
+                debug_eprintln!(config.debug, "AI agent enabled: {} ({})", config.provider, config.model);
                 Some(AgentCtx {
                     provider,
                     engine: None,
@@ -938,7 +954,7 @@ fn finish_non_atom_startup(
                 })
             }
             Err(e) => {
-                eprintln!("Warning: failed to create LLM provider: {e}. Agent disabled.");
+                debug_eprintln!(config.debug, "Warning: failed to create LLM provider: {e}. Agent disabled.");
                 None
             }
         }
@@ -967,7 +983,7 @@ fn finish_non_atom_startup(
 
 /// Try to load an existing rusi report or run rusi to generate one.
 /// When `headless` is true, skip interactive prompts and auto-run rusi.
-fn load_or_generate_rusi(source_dir: &Path, reports_dir: &Path, headless: bool) -> Result<RusiCtx, String> {
+fn load_or_generate_rusi(source_dir: &Path, reports_dir: &Path, headless: bool, debug: bool) -> Result<RusiCtx, String> {
     let make = |report: rusi::loader::LoadedReport, dir: &Path| RusiCtx {
         report,
         source_root: source_dir.to_string_lossy().to_string(),
@@ -978,7 +994,7 @@ fn load_or_generate_rusi(source_dir: &Path, reports_dir: &Path, headless: bool) 
     // If a report already exists (reports dir preferred, then source dir), load it.
     if let Some(dir) = locate_report_dir(rusi::runner::RUSI_REPORT_FILENAME, reports_dir, source_dir) {
         let report_path = rusi::rusi_report_path(&dir);
-        eprintln!("Loading existing rusi report: {}", report_path.display());
+        debug_eprintln!(debug, "Loading existing rusi report: {}", report_path.display());
         let report = rusi::loader::LoadedReport::from_file(&report_path)?;
         return Ok(make(report, &dir));
     }
@@ -995,7 +1011,7 @@ fn load_or_generate_rusi(source_dir: &Path, reports_dir: &Path, headless: bool) 
         eprint!("Running rusi analysis... ");
         let _ = std::io::stderr().flush();
     } else {
-        eprintln!("No rusi report found. Running rusi analysis (headless)...");
+        debug_eprintln!(debug, "No rusi report found. Running rusi analysis (headless)...");
     }
 
     let out_path = rusi::run_rusi(source_dir, reports_dir)?;
@@ -1030,7 +1046,7 @@ fn load_blint_backend(artifact: &Path, reports_dir: &Path) -> Option<BlintCtx> {
 /// each of `dirs` **and their immediate subdirectories** (atom and blint reports may live
 /// side by side or one level deep, e.g. `reports/blint-<app>-reports/`) for a blint
 /// metadata report (`*-metadata.json` carrying blint markers). Returns `None` when none.
-fn find_aux_blint_backend(dirs: &[&Path]) -> Option<BlintCtx> {
+fn find_aux_blint_backend(dirs: &[&Path], debug: bool) -> Option<BlintCtx> {
     // Expand to the input dirs plus their immediate subdirs, de-duplicated, order-preserving.
     let mut search: Vec<PathBuf> = Vec::new();
     let mut seen = std::collections::HashSet::new();
@@ -1042,7 +1058,7 @@ fn find_aux_blint_backend(dirs: &[&Path]) -> Option<BlintCtx> {
         }
     }
     for dir in &search {
-        if let Some(ctx) = scan_dir_for_blint(dir) {
+        if let Some(ctx) = scan_dir_for_blint(dir, debug) {
             return Some(ctx);
         }
     }
@@ -1064,7 +1080,7 @@ fn immediate_subdirs(dir: &Path) -> Vec<PathBuf> {
 /// Scan a single directory for a blint metadata report and load the full report set if one
 /// is found. A `*-metadata.json` qualifies only if it carries blint markers (so an atom or
 /// other tool's metadata file isn't mistaken for blint output).
-fn scan_dir_for_blint(dir: &Path) -> Option<BlintCtx> {
+fn scan_dir_for_blint(dir: &Path, debug: bool) -> Option<BlintCtx> {
     let Ok(entries) = std::fs::read_dir(dir) else { return None };
     let mut metas: Vec<PathBuf> = entries
         .flatten()
@@ -1081,7 +1097,7 @@ fn scan_dir_for_blint(dir: &Path) -> Option<BlintCtx> {
         if !is_blint { continue; }
         let Some(base) = meta.file_name().and_then(|n| n.to_str()).map(|n| n.trim_end_matches("-metadata.json")) else { continue };
         if let Ok(reports) = BlintReports::load(base, dir) {
-            eprintln!("Also loaded blint report ({base}) — blint_* tools enabled alongside atom");
+            debug_eprintln!(debug, "Also loaded blint report ({base}) — blint_* tools enabled alongside atom");
             return Some(BlintCtx { reports, artifact_path: base.to_string() });
         }
     }
@@ -1090,7 +1106,7 @@ fn scan_dir_for_blint(dir: &Path) -> Option<BlintCtx> {
 
 /// Try to load an existing golem report (from `reports_dir` or `source_dir`) or run golem
 /// to generate one into `reports_dir`.
-fn load_or_generate_golem(source_dir: &Path, reports_dir: &Path, headless: bool) -> Result<GolemCtx, String> {
+fn load_or_generate_golem(source_dir: &Path, reports_dir: &Path, headless: bool, debug: bool) -> Result<GolemCtx, String> {
     let make = |report: golem::loader::LoadedReport| GolemCtx {
         report,
         source_root: source_dir.to_string_lossy().to_string(),
@@ -1100,7 +1116,7 @@ fn load_or_generate_golem(source_dir: &Path, reports_dir: &Path, headless: bool)
 
     if let Some(dir) = locate_report_dir(golem::runner::GOLEM_REPORT_FILENAME, reports_dir, source_dir) {
         let report_path = golem::golem_report_path(&dir);
-        eprintln!("Loading existing golem report: {}", report_path.display());
+        debug_eprintln!(debug, "Loading existing golem report: {}", report_path.display());
         return Ok(make(golem::loader::LoadedReport::from_file(&report_path)?));
     }
 
@@ -1116,7 +1132,7 @@ fn load_or_generate_golem(source_dir: &Path, reports_dir: &Path, headless: bool)
         eprint!("Running golem analysis... ");
         let _ = std::io::stderr().flush();
     } else {
-        eprintln!("No golem report found. Running golem analysis (headless)...");
+        debug_eprintln!(debug, "No golem report found. Running golem analysis (headless)...");
     }
 
     let out_path = golem::run_golem(source_dir, reports_dir)?;
@@ -1128,7 +1144,7 @@ fn load_or_generate_golem(source_dir: &Path, reports_dir: &Path, headless: bool)
 
 /// Try to load existing dosai reports (from `reports_dir` or `source_dir`) or run dosai to
 /// generate them into `reports_dir`.
-fn load_or_generate_dosai(source_dir: &Path, reports_dir: &Path, headless: bool) -> Result<DosaiCtx, String> {
+fn load_or_generate_dosai(source_dir: &Path, reports_dir: &Path, headless: bool, debug: bool) -> Result<DosaiCtx, String> {
     let make = |reports: dosai::loader::DosaiReports| DosaiCtx {
         dataflows: reports.dataflows,
         methods: reports.methods,
@@ -1137,7 +1153,7 @@ fn load_or_generate_dosai(source_dir: &Path, reports_dir: &Path, headless: bool)
     };
 
     if let Some(dir) = locate_report_dir(dosai::runner::DOSAI_DATAFLOWS_FILENAME, reports_dir, source_dir) {
-        eprintln!("Loading existing dosai reports from: {}", dir.display());
+        debug_eprintln!(debug, "Loading existing dosai reports from: {}", dir.display());
         return Ok(make(dosai::loader::DosaiReports::load(&dir)?));
     }
 
@@ -1153,7 +1169,7 @@ fn load_or_generate_dosai(source_dir: &Path, reports_dir: &Path, headless: bool)
         eprint!("Running dosai analysis... ");
         let _ = std::io::stderr().flush();
     } else {
-        eprintln!("No dosai reports found. Running dosai analysis (headless)...");
+        debug_eprintln!(debug, "No dosai reports found. Running dosai analysis (headless)...");
     }
 
     let outputs = dosai::run_dosai(source_dir, reports_dir)?;
@@ -1259,7 +1275,7 @@ fn run_headless_agent(
         cancel: Arc::new(AtomicBool::new(false)),
         debug_logger,
     };
-    eprintln!("Asking: {question}");
+    debug_eprintln!(config.debug, "Asking: {question}");
     let result = agent::run_headless(&ctx, &question)?;
     println!("\n{}", result);
     Ok(())
@@ -1292,7 +1308,7 @@ fn run_headless_agent_non_atom(
         cancel: Arc::new(AtomicBool::new(false)),
         debug_logger,
     };
-    eprintln!("Asking: {question}");
+    debug_eprintln!(config.debug, "Asking: {question}");
     let result = agent::run_headless(&ctx, &question)?;
     println!("\n{}", result);
     Ok(())
@@ -1326,7 +1342,7 @@ fn run_app<B: ratatui::backend::Backend>(
         if app.init_phase == InitPhase::Starting {
             try_complete_startup(app, &source_root, &reports_dir);
             if app.init_phase == InitPhase::Ready {
-                eprintln!("Startup complete: {}", app.status);
+                debug_eprintln!(config.debug, "Startup complete: {}", app.status);
             }
         }
 
@@ -2129,21 +2145,21 @@ fn build_dump_prompt_non_atom(
     }).unwrap_or_default();
     match language.as_deref() {
         Some("rust") => {
-            let rusi_ctx = load_or_generate_rusi(source_dir, &reports_dir, true)
+            let rusi_ctx = load_or_generate_rusi(source_dir, &reports_dir, true, false)
                 .map_err(|e| format!("rusi: {e}"))?;
             let summary_text = rusi_ctx.summary();
             let prompt = format!("{}{memory_section}", crate::rusi::build_rusi_system_prompt(&summary_text, None, None, None));
             Ok(prompt)
         }
         Some("go") => {
-            let golem_ctx = load_or_generate_golem(source_dir, &reports_dir, true)
+            let golem_ctx = load_or_generate_golem(source_dir, &reports_dir, true, false)
                 .map_err(|e| format!("golem: {e}"))?;
             let summary_text = golem_ctx.summary();
             let prompt = format!("{}{memory_section}", crate::golem::build_golem_system_prompt(&summary_text, None, None, None));
             Ok(prompt)
         }
         Some("dotnet") => {
-            let dosai_ctx = load_or_generate_dosai(source_dir, &reports_dir, true)
+            let dosai_ctx = load_or_generate_dosai(source_dir, &reports_dir, true, false)
                 .map_err(|e| format!("dosai: {e}"))?;
             let summary_text = dosai_ctx.summary();
             let prompt = format!("{}{memory_section}", crate::dosai::build_dosai_system_prompt(&summary_text, None, None, None));
