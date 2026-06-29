@@ -1,6 +1,6 @@
 # chennai
 
-chennai (chen & ai) is a hybrid AI agent and terminal user interface for exploring source code, dependencies, and binaries across many languages — grounded in real static-analysis data rather than an LLM's guesswork. It unifies AppThreat [atom](https://github.com/AppThreat/atom) (Java, Scala, JavaScript, Python, PHP, Ruby, C/C++) with dedicated non-atom backends for Rust ([rusi](https://github.com/cdxgen/cdxgen-plugins-bin/tree/main/thirdparty/rusi)), Go ([golem](https://github.com/cdxgen/cdxgen-plugins-bin)), .NET ([dosai](https://github.com/owasp-dep-scan/dosai)), and compiled binaries / Android APK / iOS IPA ([blint](https://github.com/owasp-dep-scan/blint)) — all behind one keyboard-driven interface for static analysis, data-flow tracing, and AI-assisted code and security review. It is built on top of the [chen](https://github.com/AppThreat/chen) library (Code Hierarchy Exploratory Network).
+chennai (chen N ai) is a hybrid AI agent and terminal user interface for exploring source code, dependencies, and binaries across many languages backed by real static-analysis. It integrates AppThreat [atom](https://github.com/AppThreat/atom) (Java, Scala, JavaScript, Python, PHP, Ruby, C/C++) with dedicated non-atom backends for Rust ([rusi](https://github.com/cdxgen/cdxgen-plugins-bin/tree/main/thirdparty/rusi)), Go ([golem](https://github.com/cdxgen/cdxgen-plugins-bin)), .NET ([dosai](https://github.com/owasp-dep-scan/dosai)), and compiled binaries / Android APK / iOS IPA ([blint](https://github.com/owasp-dep-scan/blint)), all behind one keyboard-driven interface for static analysis, data-flow tracing, and AI-assisted code and security review. It is built on top of the [chen](https://github.com/AppThreat/chen) library (Code Hierarchy Exploratory Network).
 
 Unlike a traditional SAST engine or a generic LLM chatbot, chennai gives you direct access to the underlying analysis data so you can ask arbitrary questions about a program's structure and data flows without leaving the terminal. It runs entirely on your machine with no server backend and no data leaving your environment.
 
@@ -10,7 +10,7 @@ chennai includes a built-in AI agent that uses an atom, language-specific static
 
 | Backend   | Targets                                                      | Data surfaced                                                                                                      |
 | --------- | ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------ |
-| **atom**  | Java, Scala, JavaScript/TypeScript, Python, PHP, Ruby, C/C++ | Code Property Graph: methods, calls, namespaces, tags, literals, data flows                                        |
+| **atom**  | Java, Scala, JavaScript/TypeScript, Python, PHP, Ruby, C/C++ | methods, calls, namespaces, tags, literals, data flows, graph algorithms                                           |
 | **rusi**  | Rust source                                                  | Declarations, imports, usages, call graph, data-flow slices, crypto, HTTP endpoints                                |
 | **golem** | Go source                                                    | Packages, declarations, usages, call graph, taint summaries, crypto, HTTP endpoints                                |
 | **dosai** | .NET (C#/VB/F#, assemblies)                                  | Methods, call graph, data-flow nodes/slices, weakness candidates, dangerous-API reachability, API endpoints        |
@@ -46,8 +46,6 @@ The right backend is selected automatically from the target: atom languages spaw
 - For binary / APK / IPA analysis: `blint` on PATH (`uv tool install blint` or `pip install blint[extended]`), plus LLVM for disassembly and the Android SDK for full APK depth. Override with `BLINT_CMD`.
 - Java 23 or newer if running the engine via the JAR fallback distribution (atom mode only).
 - At least 4GB of available memory for the TUI and engine together. Larger codebases may need more. The non-atom backends (rusi, golem, dosai, blint) do not require the Scala engine.
-
-All standalone backends are resolved from their `*_CMD` environment variable first, then from PATH; if a backend is missing, chennai prints a clear install hint and falls back to a shell-only agent rather than crashing. The container image below bundles every backend.
 
 ## Installation
 
@@ -151,12 +149,15 @@ chennai dump-system-prompt
 
 chennai auto-detects these tools in the following order:
 
-| Tool   | Env var      | Search path                                      |
-| ------ | ------------ | ------------------------------------------------ |
-| cdxgen | `CDXGEN_CMD` | PATH, node_modules/.bin/cdxgen, npm global       |
-| atom   | `ATOM_CMD`   | ATOM_CMD, PATH                                   |
-| rusi   | `RUSI_CMD`   | RUSI_CMD, PATH (bundled with cdxgen-plugins-bin) |
-| npm    |              | PATH                                             |
+| Tool   | Env var      | Search path                                       |
+| ------ | ------------ | ------------------------------------------------- |
+| cdxgen | `CDXGEN_CMD` | PATH, node_modules/.bin/cdxgen, npm global        |
+| atom   | `ATOM_CMD`   | ATOM_CMD, PATH                                    |
+| rusi   | `RUSI_CMD`   | RUSI_CMD, PATH (bundled with cdxgen-plugins-bin)  |
+| golem  | `GOLEM_CMD`  | GOLEM_CMD, PATH (bundled with cdxgen-plugins-bin) |
+| dosai  | `DOSAI_CMD`  | DOSAI_CMD, PATH (bundled with cdxgen-plugins-bin) |
+| blint  | `BLINT_CMD`  | BLINT_CMD, PATH (uv venv path is preferred)       |
+| npm    |              | PATH                                              |
 
 ### Analysis auto-generation
 
