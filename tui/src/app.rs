@@ -56,6 +56,8 @@ pub fn tool_label(name: &str) -> &str {
 /// A single entry in the agent transcript, built from streamed [`AgentEvent`]s for rendering.
 #[derive(Debug, Clone)]
 pub enum AgentEntry {
+    /// The user's submitted query, shown at the top of the transcript.
+    UserQuery(String),
     Thinking(String),
     Text(String),
     ToolCall { _id: String, name: String, input: serde_json::Value, result: Option<String>, is_error: bool },
@@ -550,7 +552,7 @@ impl App {
                     self.status = "agent commands listed".into();
                     return;
                 }
-                self.repl.record(&t, "agent thinking...".into(), true);
+                // The query is shown in the agent transcript, not the REPL scrollback.
                 self.status = format!("agent: /{cmd}");
                 self.agent_query_text = t.clone();
                 // Use a curated template (prompt body + tool allowlist + effort)
@@ -580,6 +582,7 @@ impl App {
                 self.agent_active = true;
                 self.agent_rx = None;
                 self.agent_transcript.clear();
+                self.agent_transcript.push(AgentEntry::UserQuery(t.clone()));
                 self.agent_total_in = 0;
                 self.agent_total_out = 0;
                 self.agent_last_tool = None;
@@ -716,12 +719,13 @@ impl App {
         // Free-text routing: when the agent is enabled and input doesn't look like a DSL command
         // or a flow expression, route to the agent.
         if self.agent_enabled && !self.agent_active && !looks_like_dsl_or_command(&t) {
-            self.repl.record(&t, "agent thinking...".into(), true);
+            // The query is shown in the agent transcript, not the REPL scrollback.
             self.status = "agent thinking...".into();
             self.agent_query_text = t.clone();
             self.agent_active = true;
             self.agent_rx = None;
             self.agent_transcript.clear();
+            self.agent_transcript.push(AgentEntry::UserQuery(t.clone()));
             self.agent_total_in = 0;
             self.agent_total_out = 0;
             self.agent_last_tool = None;
@@ -1904,6 +1908,7 @@ impl App {
             // Agent transcript report.
             for entry in &self.agent_transcript {
                 match entry {
+                    AgentEntry::UserQuery(t) => content.push_str(&format!("## ❯ {}\n\n", t)),
                     AgentEntry::Text(t) => content.push_str(&format!("{}\n\n", t)),
                     AgentEntry::Thinking(t) => {
                         let preview: String = t.chars().take(200).collect();

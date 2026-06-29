@@ -15,7 +15,7 @@ use ratatui::widgets::{
 };
 use ratatui::Frame;
 
-const REPL_PROMPT: &str = "chennai> ";
+const REPL_PROMPT: &str = "✦ ";
 
 pub fn render(frame: &mut Frame, app: &mut App, theme: &Theme) {
     app.panel_rects.clear();
@@ -26,7 +26,7 @@ pub fn render(frame: &mut Frame, app: &mut App, theme: &Theme) {
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Min(6),    // output (full remaining space)
-                Constraint::Length(7), // repl (agent panel) at the bottom
+                Constraint::Length(4), // repl (agent panel) at the bottom
                 Constraint::Length(1), // status
             ])
             .split(frame.area());
@@ -57,7 +57,7 @@ pub fn render(frame: &mut Frame, app: &mut App, theme: &Theme) {
         .constraints([
             summary_constraint,    // summary (collapsible)
             Constraint::Min(6),    // output
-            Constraint::Length(7), // repl at the bottom
+            Constraint::Length(4), // repl at the bottom
             Constraint::Length(1), // status
         ])
         .split(frame.area());
@@ -187,7 +187,7 @@ fn render_summary_collapsed(frame: &mut Frame, app: &mut App, theme: &Theme, are
 fn render_repl(frame: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
     let focused = app.focus == Panel::Repl;
     let title = if app.agent_enabled {
-        " Ask agent (Enter to ask, ↑/↓ history) "
+        " Ask chennai (Enter to ask, ↑/↓ history) "
     } else {
         " REPL (Enter to run, ↑/↓ history) "
     };
@@ -221,8 +221,64 @@ fn render_repl(frame: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
         return;
     }
 
-    let input_y = inner.y + inner.height - 1;
-    let hist_h = (inner.height - 1) as usize;
+    let prompt_len = REPL_PROMPT.chars().count();
+    let text = app.repl.text();
+    let text_chars: Vec<char> = text.chars().collect();
+
+    // Wrap the input across multiple rows so long lines never get cut off.
+    // The first row reserves space for the prompt; continuation rows use the
+    // full inner width. Breaks prefer whitespace boundaries (word wrap), with a
+    // hard char break as fallback for words wider than the available width.
+    let first_width = (inner.width as usize).saturating_sub(prompt_len).max(1);
+    let cont_width = (inner.width as usize).max(1);
+    let cursor = app.repl.cursor();
+    let n = text_chars.len();
+    let mut spans: Vec<(usize, usize)> = Vec::new();
+    {
+        let mut start = 0usize;
+        let mut width = first_width;
+        while start < n {
+            let mut end = (start + width).min(n);
+            if end < n {
+                // Break after the last whitespace in the row, keeping the space
+                // on the current line and the next word on the following row.
+                if let Some(sp) = (start..end).rev().find(|&k| text_chars[k].is_whitespace()) {
+                    end = sp + 1;
+                }
+            }
+            spans.push((start, end));
+            start = end;
+            width = cont_width;
+        }
+        if spans.is_empty() {
+            spans.push((0, 0));
+        }
+    }
+    let input_rows: Vec<String> =
+        spans.iter().map(|&(s, e)| text_chars[s..e].iter().collect()).collect();
+
+    // Map the cursor index onto a wrapped (row, col). A cursor sitting exactly
+    // at a non-final row boundary belongs to the start of the next row.
+    let (mut caret_row, mut caret_in_col) = {
+        let last = spans.len() - 1;
+        (last, cursor - spans[last].0)
+    };
+    for (idx, &(s, e)) in spans.iter().enumerate() {
+        if cursor < e {
+            caret_row = idx;
+            caret_in_col = cursor - s;
+            break;
+        }
+        if cursor == e && idx + 1 < spans.len() {
+            caret_row = idx + 1;
+            caret_in_col = 0;
+            break;
+        }
+    }
+    let caret_col = if caret_row == 0 { prompt_len + caret_in_col } else { caret_in_col };
+    let input_h = input_rows.len().max(1).min(inner.height as usize);
+    let input_y = inner.y + inner.height - input_h as u16;
+    let hist_h = (inner.height as usize).saturating_sub(input_h);
 
     // Scrollback: show the most recent `hist_h` executed commands.
     let entries = &app.repl.entries;
@@ -246,19 +302,33 @@ fn render_repl(frame: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
         Rect { x: inner.x, y: inner.y, width: inner.width, height: hist_h as u16 },
     );
 
-    // Input line.
-    let text = app.repl.text();
-    let input = Paragraph::new(Line::from(vec![
-        Span::styled(REPL_PROMPT, Style::default().fg(accent_color).add_modifier(Modifier::BOLD)),
-        Span::styled(text, Style::default().fg(Color::Rgb(0xf8, 0xfa, 0xfb))),
-    ]));
-    frame.render_widget(input, Rect { x: inner.x, y: input_y, width: inner.width, height: 1 });
+    // Input lines (wrapped). When wrapping overflows the panel, show the
+    // tail rows containing the caret so typing stays visible.
+    let visible_start = input_rows.len().saturating_sub(input_h);
+    let text_color = Color::Rgb(0xf8, 0xfa, 0xfb);
+    for (i, row) in input_rows[visible_start..].iter().enumerate() {
+        let row_index = visible_start + i;
+        let line = if row_index == 0 {
+            Line::from(vec![
+                Span::styled(REPL_PROMPT, Style::default().fg(accent_color).add_modifier(Modifier::BOLD)),
+                Span::styled(row.clone(), Style::default().fg(text_color)),
+            ])
+        } else {
+            Line::from(Span::styled(row.clone(), Style::default().fg(text_color)))
+        };
+        frame.render_widget(
+            Paragraph::new(line),
+            Rect { x: inner.x, y: input_y + i as u16, width: inner.width, height: 1 },
+        );
+    }
 
-    let caret_x = inner.x + REPL_PROMPT.chars().count() as u16 + app.repl.cursor() as u16;
-    app.repl_caret = Some((caret_x.min(inner.x + inner.width.saturating_sub(1)), input_y));
+    let caret_y = input_y + caret_row.saturating_sub(visible_start) as u16;
+    let caret_x = inner.x + caret_col as u16;
+    app.repl_caret = Some((caret_x.min(inner.x + inner.width.saturating_sub(1)), caret_y));
     if focused && app.repl.completion.is_none()
+        && caret_row >= visible_start
         && caret_x < inner.x + inner.width {
-            frame.set_cursor_position((caret_x, input_y));
+            frame.set_cursor_position((caret_x, caret_y));
         }
 }
 
@@ -1068,6 +1138,23 @@ fn build_agent_lines<'a>(app: &'a App, theme: &Theme, _line_counts: &[usize], wi
     for entry in &app.agent_transcript {
         let start = lines.len();
         match entry {
+            AgentEntry::UserQuery(text) => {
+                // The submitted prompt, rendered as a distinct user message at the
+                // top of the transcript with a chevron icon and accent styling.
+                let icon_w = 2usize;
+                for (i, raw) in text.split('\n').enumerate() {
+                    for (j, wrapped) in wrap_line(raw, width.saturating_sub(icon_w)).into_iter().enumerate() {
+                        let prefix = if i == 0 && j == 0 { "❯ " } else { "  " };
+                        lines.push(Line::from(vec![
+                            Span::styled(prefix, Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)),
+                            Span::styled(
+                                wrapped,
+                                Style::default().fg(theme.fg).add_modifier(Modifier::BOLD),
+                            ),
+                        ]));
+                    }
+                }
+            }
             AgentEntry::Text(text) => {
                 let mut in_code = false;
                 let mut table_buf: Vec<&str> = Vec::new();
@@ -1438,6 +1525,7 @@ fn inline_spans<'a>(text: &str, base: Style, theme: &Theme) -> Vec<Span<'a>> {
 /// Number of rendered lines a transcript entry occupies.
 fn entry_line_count(entry: &AgentEntry) -> usize {
     match entry {
+        AgentEntry::UserQuery(t) => t.split('\n').count().max(1),
         AgentEntry::Text(t) => t.split('\n').count().max(1),
         AgentEntry::Thinking(_) => 1,
         AgentEntry::ToolCall { result, .. } => {
@@ -1531,7 +1619,7 @@ mod tests {
         assert!(text.contains("Summary"));
         assert!(text.contains("REPL"));
         assert!(text.contains("Output"));
-        assert!(text.contains("chennai>"));
+        assert!(text.contains(REPL_PROMPT.trim()));
         assert!(text.contains("Files"));
         assert!(text.contains("349"));
     }
