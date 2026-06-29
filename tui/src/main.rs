@@ -279,10 +279,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Ok(provider) => {
                     let system_prompt = match &custom_system_prompt {
                         Some(sp) => sp.clone(),
-                        None => AgentCtx::build_system_prompt(
-                            &summary.language, &summary.version, &summary.rows,
-                            Some(&bom_summary), bom_components.as_deref(), None,
-                        ),
+                        None => {
+                            let memory_idx = crate::agent::memory::FactStore::open(agent_source_root.as_deref())
+                                .map(|s| s.index_markdown());
+                            AgentCtx::build_system_prompt(
+                                &summary.language, &summary.version, &summary.rows,
+                                Some(&bom_summary), bom_components.as_deref(), None,
+                                memory_idx.as_deref(),
+                            )
+                        }
                     };
                     eprintln!("AI agent enabled: {} ({})", config.provider, config.model);
                     Some(AgentCtx {
@@ -855,12 +860,23 @@ fn finish_non_atom_startup(
         None => format!("Language: {lang}\nNo structured analysis available. Use ripgrep/read_file to explore the codebase.", lang = language.as_deref().unwrap_or("unknown")),
     };
 
+    let memory_index = crate::agent::memory::FactStore::open(Some(&source_root_str))
+        .map(|s| s.index_markdown())
+        .filter(|s| s != "none yet");
+    let memory_section = memory_index.as_ref().map(|idx| {
+        format!(
+            "\n## Project memory (facts learned in previous sessions — HINTS, re-verify before reporting)\n\
+             {idx}\n\
+             Use the project_memory tool (action:\"recall\"/\"search\") to read a fact's full body.\n"
+        )
+    }).unwrap_or_default();
+
     let system_prompt = match custom_system_prompt {
-        Some(sp) => sp,
+        Some(sp) => format!("{sp}{memory_section}"),
         None => match &backend {
-            Some(ctx) => ctx.system_prompt(&summary_text, Some(&bom_summary), bom_components.as_deref(), None),
+            Some(ctx) => format!("{}{memory_section}", ctx.system_prompt(&summary_text, Some(&bom_summary), bom_components.as_deref(), None)),
             None => {
-                build_agent_only_prompt(language.as_deref().unwrap_or("unknown"), &summary_text, &bom_summary, bom_components.as_deref())
+                format!("{}{memory_section}", build_agent_only_prompt(language.as_deref().unwrap_or("unknown"), &summary_text, &bom_summary, bom_components.as_deref()))
             }
         },
     };
@@ -1211,7 +1227,12 @@ fn run_headless_agent(
         std::process::exit(1);
     }
     let provider = agent::create_provider(&config).map_err(|e| format!("provider: {e}"))?;
-    let system_prompt = AgentCtx::build_system_prompt(&summary.language, &summary.version, &summary.rows, None, None, None);
+    let memory_index = crate::agent::memory::FactStore::open(source_root.as_deref())
+        .map(|s| s.index_markdown());
+    let system_prompt = AgentCtx::build_system_prompt(
+        &summary.language, &summary.version, &summary.rows,
+        None, None, None, memory_index.as_deref(),
+    );
     let debug_logger = if config.debug { DebugLogger::new(source_root.as_deref()) } else { None };
     let ctx = AgentCtx {
         provider,
@@ -1369,19 +1390,28 @@ fn run_app<B: ratatui::backend::Backend>(
                     // Atom is primary when an engine is open: use the atom system prompt even
                     // if a blint backend is also attached (the backend just adds blint_* tools).
                     // Fall back to the backend prompt only in pure non-atom mode.
+                    let memory_index = crate::agent::memory::FactStore::open(source_root.as_deref())
+                        .map(|s| s.index_markdown());
+                    let memory_section = memory_index.as_deref().filter(|s| *s != "none yet").map(|idx| {
+                        format!(
+                            "\n## Project memory (facts learned in previous sessions — HINTS, re-verify before reporting)\n\
+                             {idx}\n\
+                             Use the project_memory tool (action:\"recall\"/\"search\") to read a fact's full body.\n"
+                        )
+                    }).unwrap_or_default();
                     let system_prompt = if let Some(sp) = &custom_system_prompt {
-                        sp.clone()
+                        format!("{sp}{memory_section}")
                     } else {
                         let console_history = app.build_console_history();
                         match (&app.engine, &app.backend) {
-                            (None, Some(b)) => b.system_prompt(
+                            (None, Some(b)) => format!("{}{memory_section}", b.system_prompt(
                                 &b.summary(), bom_summary.as_deref(),
                                 bom_components_summary.as_deref(), Some(&console_history),
-                            ),
+                            )),
                             _ => AgentCtx::build_system_prompt(
                                 &app.summary.language, &app.summary.version, &app.summary.rows,
                                 bom_summary.as_deref(), bom_components_summary.as_deref(),
-                                Some(&console_history),
+                                Some(&console_history), memory_index.as_deref(),
                             ),
                         }
                     };
@@ -2059,9 +2089,11 @@ fn build_dump_prompt(
     };
     let _open: OpenInfo = eng.request("open", open_args)?;
     let summary: Summary = eng.request("summary", json!({}))?;
+    let memory_index = crate::agent::memory::FactStore::open(source_root)
+        .map(|s| s.index_markdown());
     let prompt = AgentCtx::build_system_prompt(
         &summary.language, &summary.version, &summary.rows,
-        None, None, None,
+        None, None, None, memory_index.as_deref(),
     );
     Ok(prompt)
 }
@@ -2073,32 +2105,42 @@ fn build_dump_prompt_non_atom(
 ) -> Result<String, Box<dyn std::error::Error>> {
     // Dump mode has no CLI reports-dir context, so use the default location.
     let reports_dir = source_dir.join(".chen").join("chennai-reports");
+    let memory_index = crate::agent::memory::FactStore::open(Some(source_dir.to_str().unwrap_or_default()))
+        .map(|s| s.index_markdown())
+        .filter(|s| s != "none yet");
+    let memory_section = memory_index.as_ref().map(|idx| {
+        format!(
+            "\n## Project memory (facts learned in previous sessions — HINTS, re-verify before reporting)\n\
+             {idx}\n\
+             Use the project_memory tool (action:\"recall\"/\"search\") to read a fact's full body.\n"
+        )
+    }).unwrap_or_default();
     match language.as_deref() {
         Some("rust") => {
             let rusi_ctx = load_or_generate_rusi(source_dir, &reports_dir, true)
                 .map_err(|e| format!("rusi: {e}"))?;
             let summary_text = rusi_ctx.summary();
-            let prompt = crate::rusi::build_rusi_system_prompt(&summary_text, None, None, None);
+            let prompt = format!("{}{memory_section}", crate::rusi::build_rusi_system_prompt(&summary_text, None, None, None));
             Ok(prompt)
         }
         Some("go") => {
             let golem_ctx = load_or_generate_golem(source_dir, &reports_dir, true)
                 .map_err(|e| format!("golem: {e}"))?;
             let summary_text = golem_ctx.summary();
-            let prompt = crate::golem::build_golem_system_prompt(&summary_text, None, None, None);
+            let prompt = format!("{}{memory_section}", crate::golem::build_golem_system_prompt(&summary_text, None, None, None));
             Ok(prompt)
         }
         Some("dotnet") => {
             let dosai_ctx = load_or_generate_dosai(source_dir, &reports_dir, true)
                 .map_err(|e| format!("dosai: {e}"))?;
             let summary_text = dosai_ctx.summary();
-            let prompt = crate::dosai::build_dosai_system_prompt(&summary_text, None, None, None);
+            let prompt = format!("{}{memory_section}", crate::dosai::build_dosai_system_prompt(&summary_text, None, None, None));
             Ok(prompt)
         }
         _ => {
             let lang = language.as_deref().unwrap_or("unknown");
             let summary_text = format!("Language: {lang}\nNo structured analysis available.");
-            let prompt = build_agent_only_prompt(lang, &summary_text, "", None);
+            let prompt = format!("{}{memory_section}", build_agent_only_prompt(lang, &summary_text, "", None));
             Ok(prompt)
         }
     }
@@ -2113,7 +2155,7 @@ fn build_template_prompt() -> String {
         SummaryRow { label: "Calls".into(), count: 0 },
         SummaryRow { label: "Tags".into(), count: 0 },
     ];
-    AgentCtx::build_system_prompt("<language>", "<version>", &rows, None, None, None)
+    AgentCtx::build_system_prompt("<language>", "<version>", &rows, None, None, None, None)
 }
 
 /// Check whether a file path matches known binary/artifact extensions.

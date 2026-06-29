@@ -43,6 +43,7 @@ pub fn all_tool_definitions() -> Vec<Value> {
         atom_flows_through(),
         atom_detail(),
         atom_algorithms(),
+        project_memory(),
         bom_query(),
         ripgrep_tool(),
         read_file_tool(),
@@ -56,6 +57,7 @@ pub fn all_tool_definitions() -> Vec<Value> {
 /// These exclude atom_* engine tools and include tool-specific tools.
 pub fn non_atom_tool_definitions() -> Vec<Value> {
     vec![
+        project_memory(),
         bom_query(),
         ripgrep_tool(),
         read_file_tool(),
@@ -443,6 +445,71 @@ fn bom_query() -> Value {
                     "description": "Optional component type filter (e.g., 'library', 'framework', 'container', 'application', 'cryptographic-asset')"
                 }
             }
+        }
+    })
+}
+
+/// Tool for persistent per-project memory of durable facts (architecture,
+/// entrypoints, auth boundaries, confirmed/refuted findings, user corrections).
+/// The index of known facts is injected into the system prompt; this tool is
+/// used to read full bodies, search, save new facts, or update existing ones.
+fn project_memory() -> Value {
+    json!({
+        "name": "project_memory",
+        "description": "Persistent per-project memory of durable facts (architecture, entrypoints, \
+auth boundaries, confirmed/refuted findings, user corrections). The index of known facts is \
+ALREADY in your system prompt — call this only to (a) read a full fact body by name \
+('recall'), (b) search bodies for a keyword ('search'), or (c) save a NEW durable fact, or \
+UPDATE an existing one by reusing its name, that you just learned and verified ('save'). Save \
+sparingly and prefer facts grounded in CALLGRAPH or DATAFLOW results (atom_flows / \
+atom_algorithms / rusi_flows / golem_dataflow / blint_dataflow) — proven reachability, \
+taint paths, entrypoints, auth boundaries. Do NOT save facts grounded only in a ripgrep/text \
+match. A recalled fact is a HINT; re-verify it before reporting.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "description": "The operation to perform: 'recall' (read a fact body), 'search' (keyword search), 'save' (create or update), 'delete' (remove)",
+                    "enum": ["recall", "search", "save", "delete"]
+                },
+                "name": {
+                    "type": "string",
+                    "description": "Fact slug (required for recall, save, delete)"
+                },
+                "query": {
+                    "type": "string",
+                    "description": "Keyword search string (required for search)"
+                },
+                "description": {
+                    "type": "string",
+                    "description": "One-line summary of the fact (required for save)"
+                },
+                "type": {
+                    "type": "string",
+                    "description": "Fact category: project (structural), finding (confirmed/refuted), reference (external context), feedback (user corrections)",
+                    "enum": ["project", "finding", "reference", "feedback"]
+                },
+                "grounded_by": {
+                    "type": "string",
+                    "description": "The tool that produced this fact, e.g. atom_flows, golem_dataflow, atom_algorithms, rusi_flows"
+                },
+                "confidence": {
+                    "type": "string",
+                    "description": "Confidence level: high, medium, low",
+                    "enum": ["high", "medium", "low"]
+                },
+                "source_refs": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "File:line anchors this fact is grounded in (save)"
+                },
+                "body": {
+                    "type": "string",
+                    "description": "The fact text / detailed description (required for save)"
+                }
+            },
+            "required": ["action"]
         }
     })
 }

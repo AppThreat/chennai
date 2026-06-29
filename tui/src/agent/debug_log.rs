@@ -45,6 +45,7 @@ impl DebugLogger {
     pub fn is_tracked(name: &str) -> bool {
         name.starts_with("atom_")
             || name == "bom_query"
+            || name == "project_memory"
             || name.starts_with("rusi_")
             || name.starts_with("golem_")
             || name.starts_with("dosai_")

@@ -210,6 +210,23 @@ cdxgen will be auto-detected in PATH. You can also set the `CDXGEN_CMD` environm
 
 The BOM data is also injected into AI agent prompts for security and code reviews, improving the LLM's understanding of third-party dependencies, their licenses, and known vulnerabilities.
 
+### Project facts memory
+
+chennai maintains a **per-project persistent memory** of durable facts (architecture,
+entrypoints, auth boundaries, confirmed/refuted findings, user corrections) under
+`<source_root>/.chen/facts-memory/`.
+
+- Each fact is a markdown file with YAML frontmatter, stored **locally only** and
+  **git-ignored** — facts are never committed or uploaded.
+- The AI agent automatically **saves** grounded facts (preferring callgraph/dataflow
+  results over text matches), loads the index into its system prompt every session,
+  and **recalls** full fact bodies on demand via the `project_memory` tool.
+- Use the `:memory` REPL command to inspect and manage stored facts:
+  `:memory list`, `:memory show <name>`, `:memory forget <name>`,
+  `:memory prune`, `:memory rebuild`.
+- Facts are auto-pruned at session start and after each save (de-duplication,
+  staleness demotion, eviction of low-priority facts when over budget).
+
 ### Options
 
 | Option                 | Default               | Description                                                         |

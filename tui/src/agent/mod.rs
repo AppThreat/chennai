@@ -14,6 +14,7 @@ pub mod provider;
 pub mod render;
 pub mod shell;
 pub mod tools;
+pub mod memory;
 pub mod transcript;
 pub use debug_log::DebugLogger;
 
@@ -191,6 +192,7 @@ impl AgentCtx {
         bom_summary: Option<&str>,
         bom_components: Option<&str>,
         console_history: Option<&str>,
+        memory_index: Option<&str>,
     ) -> String {
         let counts: String = summary_rows.iter()
             .map(|r| format!("{}: {}", r.label, r.count))
@@ -217,6 +219,15 @@ Key components:
             .map(|s| format!("\n## Console output\nBelow are the recent commands the user ran and their results. Use this context to answer questions about what was shown.\n{s}\n"))
             .unwrap_or_default();
 
+        let memory_section = memory_index
+            .filter(|s| !s.is_empty() && *s != "none yet")
+            .map(|s| format!(
+                "\n## Project memory (facts learned in previous sessions — HINTS, re-verify before reporting)\n\
+                 {s}\n\
+                 Use the project_memory tool (action:\"recall\"/\"search\") to read a fact's full body.\n"
+            ))
+            .unwrap_or_default();
+
         let identity_rules = crate::shared::backend::PROJECT_IDENTITY_RULES;
         let red_team = crate::shared::backend::RED_TEAM_MISSION;
         let response_style = crate::shared::backend::RESPONSE_STYLE;
@@ -232,7 +243,7 @@ Language: {language}
 Version: {version}
 
 ## Atom summary (authoritative — do NOT call atom_summary to re-fetch these)
-{counts}{console_section}{bom_section}
+{counts}{console_section}{bom_section}{memory_section}
 ## Available tools
 - atom_traversal_docs — look up DSL traversal roots, step methods, and examples.
 - atom_query — flat tables: files, methods, externalMethods, calls, tags, imports, literals, configFiles…
@@ -316,7 +327,14 @@ read it and self-correct.
    third-party dependencies, their licenses, and known vulnerabilities. Cross-reference
    dependency data with data-flow findings to identify vulnerable packages that are
    reachable from untrusted input.
-8. **Scope data-flow queries — never run `dataflows` blind on large codebases.** The
+8. **Project memory (facts stored under `.chen/facts-memory/`) is a HINT, not evidence.** A
+   recalled fact may be stale if the code has changed since it was saved. When a fact's `commit`
+   field differs from the current `HEAD`, **re-verify every source ref** with live tools before
+   reporting. Confirmed and refuted findings from previous sessions are in memory — check them
+   before re-triaging to avoid duplicate work and contradicting an earlier conclusion. Facts
+   grounded in callgraph/dataflow tools (`atom_flows`, `atom_algorithms`, `golem_dataflow`,
+   `rusi_flows`, etc.) are more trustworthy than text-only facts.
+9. **Scope data-flow queries — never run `dataflows` blind on large codebases.** The
    `dataflows` preset enumerates EVERY source-to-sink path and is unbounded; on a large
    atom (>10000 files; check the file count in the atom summary above) it can run for
    minutes and exhaust memory. Do NOT use it there. Instead query for SPECIFIC reachable
@@ -370,6 +388,7 @@ pub fn dispatch_tool(ctx: &AgentCtx, call_id: &str, name: &str, input: &Value) -
         _ if name.starts_with("dosai_") => backend_dispatch(ctx, call_id, name.strip_prefix("dosai_").unwrap(), input),
         _ if name.starts_with("blint_") => backend_dispatch(ctx, call_id, name.strip_prefix("blint_").unwrap(), input),
         "bom_query" => bom_query_dispatch(ctx, call_id, input),
+        "project_memory" => memory::memory_dispatch(ctx.source_root.as_deref(), call_id, input),
         "ripgrep"   => wrap_result(call_id, shell::ripgrep(&source_root_path(ctx), input)),
         "read_file" => wrap_result(call_id, shell::read_file(&source_root_path(ctx), input)),
         "git_diff"  => wrap_result(call_id, shell::git_diff(&source_root_path(ctx), input)),
@@ -1086,7 +1105,7 @@ mod tests {
     #[test]
     fn system_prompt_includes_summary_counts() {
         let rows = vec![SummaryRow { label: "Files".into(), count: 42 }];
-        let prompt = AgentCtx::build_system_prompt("C", "1.0", &rows, None, None, None);
+        let prompt = AgentCtx::build_system_prompt("C", "1.0", &rows, None, None, None, None);
         assert!(prompt.contains("Language: C"));
         assert!(prompt.contains("Files: 42"));
         assert!(prompt.contains("Grounding rule"));
@@ -1099,11 +1118,42 @@ mod tests {
             "Python", "3.12", &rows,
             Some("components: 15 · dependencies: 42"),
             Some("  - library requests (2.31.0) pkg:pip/requests@2.31.0"),
-            None,
+            None, None,
         );
         assert!(prompt.contains("components: 15"));
         assert!(prompt.contains("Software Bill of Materials"));
         assert!(prompt.contains("pkg:pip/requests@2.31.0"));
+    }
+
+    #[test]
+    fn system_prompt_includes_memory_section_when_provided() {
+        let rows = vec![SummaryRow { label: "Files".into(), count: 42 }];
+        let memory_index = "- [auth-boundary](auth-boundary.md) — auth in requireAuth\n- [sql-injection](sql-injection.md) — SQLi in search";
+        let prompt = AgentCtx::build_system_prompt(
+            "Go", "1.21", &rows, None, None, None, Some(memory_index),
+        );
+        assert!(prompt.contains("Project memory"));
+        assert!(prompt.contains("auth-boundary"));
+        assert!(prompt.contains("sql-injection"));
+        assert!(prompt.contains("project_memory tool"));
+    }
+
+    #[test]
+    fn system_prompt_omits_memory_section_when_none() {
+        let rows = vec![SummaryRow { label: "Files".into(), count: 42 }];
+        let prompt = AgentCtx::build_system_prompt(
+            "Go", "1.21", &rows, None, None, None, None,
+        );
+        // The grounding rule mentions project memory but the section header should not appear.
+        assert!(!prompt.contains("## Project memory (facts learned"));
+    }
+
+    #[test]
+    fn system_prompt_includes_memory_grounding_rule() {
+        let rows = vec![SummaryRow { label: "Files".into(), count: 42 }];
+        let prompt = AgentCtx::build_system_prompt("Rust", "1.75", &rows, None, None, None, None);
+        assert!(prompt.contains("Project memory (facts stored under"));
+        assert!(prompt.contains("re-verify every source ref"));
     }
 
     #[test]

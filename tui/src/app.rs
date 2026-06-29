@@ -593,6 +593,84 @@ impl App {
             return;
         }
 
+        // Memory command: inspect and manage the per-project fact store.
+        if lower == ":memory" || lower == "memory" || lower.starts_with(":memory ") || lower.starts_with("memory ") {
+            let sub = t.split_once(' ').map(|(_, rest)| rest.trim()).unwrap_or("");
+            let store = crate::agent::memory::FactStore::open(Some(&self.atom_path));
+            let (status, ok) = match (sub, store) {
+                ("", _) | ("list", _) => {
+                    match crate::agent::memory::FactStore::open(Some(&self.atom_path)) {
+                        Some(s) => {
+                            let facts = s.list();
+                            if facts.is_empty() {
+                                ("no facts stored".into(), true)
+                            } else {
+                                let lines: Vec<String> = facts.iter()
+                                    .map(|f| format!("{} ({}) — {}", f.name, f.fact_type.as_str(), f.description))
+                                    .collect();
+                                (lines.join("\n"), true)
+                            }
+                        }
+                        None => ("fact store not available".into(), false),
+                    }
+                }
+                ("prune", Some(s)) => {
+                    let report = s.prune(&Default::default());
+                    let parts = vec![
+                        if report.deduped > 0 { Some(format!("{} deduped", report.deduped)) } else { None },
+                        if report.demoted > 0 { Some(format!("{} demoted", report.demoted)) } else { None },
+                        if report.evicted > 0 { Some(format!("{} evicted", report.evicted)) } else { None },
+                    ];
+                    let msg = parts.into_iter().flatten().collect::<Vec<_>>();
+                    if msg.is_empty() {
+                        ("prune: nothing to do".into(), true)
+                    } else {
+                        (format!("prune: {}", msg.join(", ")), true)
+                    }
+                }
+                ("prune", None) => ("fact store not available".into(), false),
+                ("rebuild", Some(s)) => {
+                    s.rebuild_index();
+                    ("index rebuilt".into(), true)
+                }
+                ("rebuild", None) => ("fact store not available".into(), false),
+                (sub, Some(s)) if sub.starts_with("show ") || sub.starts_with("forget ") => {
+                    let parts: Vec<&str> = sub.splitn(2, ' ').collect();
+                    let action = parts[0];
+                    let name = parts.get(1).unwrap_or(&"");
+                    if name.is_empty() {
+                        (format!(":memory {action} <name> — name is required"), false)
+                    } else if action == "show" {
+                        match s.load(name) {
+                            Some(f) => {
+                                let body = format!("---\nname: {n}\ntype: {t}\nconfidence: {c}\
+                                    \ngrounded_by: {gb}\nsource_refs: [{refs}]\
+                                    \ncreated: {created}\nupdated: {updated}\ncommit: {commit}\n---\n\n{body}",
+                                    n=f.name, t=f.fact_type.as_str(), c=f.confidence.as_deref().unwrap_or(""),
+                                    gb=f.grounded_by.as_deref().unwrap_or(""),
+                                    refs=f.source_refs.join(", "), created=f.created, updated=f.updated,
+                                    commit=f.commit.as_deref().unwrap_or(""), body=f.body);
+                                (body, true)
+                            }
+                            None => (format!("fact '{name}' not found"), false)
+                        }
+                    } else {
+                        match s.delete(name) {
+                            Ok(()) => (format!("fact '{name}' deleted"), true),
+                            Err(e) => (format!("failed to delete '{name}': {e}"), false),
+                        }
+                    }
+                }
+                (sub, _) if sub.starts_with("show ") || sub.starts_with("forget ") => {
+                    ("fact store not available".into(), false)
+                }
+                (sub, _) => (format!("unknown :memory subcommand '{sub}' — try list, show <name>, forget <name>, prune, rebuild"), false),
+            };
+            self.repl.record(&t, status.clone(), ok);
+            self.status = status;
+            return;
+        }
+
         // Free-text routing: when the agent is enabled and input doesn't look like a DSL command
         // or a flow expression, route to the agent.
         if self.agent_enabled && !self.agent_active && !looks_like_dsl_or_command(&t) {
@@ -1861,6 +1939,10 @@ fn looks_like_dsl_or_command(t: &str) -> bool {
     let lower = t.to_ascii_lowercase();
     // BOM command.
     if lower == "bom" || lower.starts_with("bom ") || lower == ":bom" || lower.starts_with(":bom ") {
+        return true;
+    }
+    // Memory command.
+    if lower == ":memory" || lower == "memory" || lower.starts_with(":memory ") || lower.starts_with("memory ") {
         return true;
     }
     // DSL prefix.
