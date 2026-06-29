@@ -124,7 +124,7 @@ fn row_style(selected: bool, focused: bool, theme: &Theme) -> Style {
 fn render_summary(frame: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
     let focused = app.focus == Panel::Summary;
     let block = panel_block(
-        format!(" Atom Summary — {} {} ({}) ", app.summary.language, app.summary.version, app.atom_path),
+        format!(" Atom Summary ({}) ", app.atom_path),
         focused,
         theme,
     );
@@ -178,10 +178,6 @@ fn render_summary_collapsed(frame: &mut Frame, app: &mut App, theme: &Theme, are
         .join(" · ");
     let line = Line::from(vec![
         Span::styled("▸ Atom Summary ", Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)),
-        Span::styled(
-            format!("— {} {} ", app.summary.language, app.summary.version),
-            Style::default().fg(theme.header),
-        ),
         Span::styled(counts, Style::default().fg(theme.fg)),
         Span::styled("  (Tab/click to expand)", Style::default().fg(theme.muted)),
     ]);
@@ -1086,10 +1082,12 @@ fn build_agent_lines<'a>(app: &'a App, theme: &Theme, _line_counts: &[usize], wi
                         };
                         lines.push(Line::from(Span::styled(label, Style::default().fg(theme.muted))));
                     } else if in_code {
-                        lines.push(Line::from(vec![
-                            Span::styled("│ ", Style::default().fg(theme.muted)),
-                            Span::styled(line.to_string(), Style::default().fg(theme.code)),
-                        ]));
+                        for wrapped in wrap_line(line, width.saturating_sub(2)) {
+                            lines.push(Line::from(vec![
+                                Span::styled("│ ", Style::default().fg(theme.muted)),
+                                Span::styled(wrapped, Style::default().fg(theme.code)),
+                            ]));
+                        }
                     } else if is_table_line(line) {
                         table_buf.push(line);
                     } else {
