@@ -2,19 +2,12 @@
 //! auth boundaries, confirmed/refuted findings, user corrections).
 //!
 //! Facts are stored as individual markdown files with YAML frontmatter under
-//! `<source_root>/.chen/facts-memory/`. An index (`MEMORY.md`) is injected into the
-//! LLM's system prompt so the model knows what facts exist; full bodies are loaded
-//! on demand via the `project_memory` tool.
-//!
-//! ## On-disk layout
-//! ```text
-//! <source_root>/.chen/facts-memory/
-//!   MEMORY.md          # one-line-per-fact index (injected into system prompt)
-//!   <slug>.md          # one fact per file
-//! ```
+//! `<source_root>/.chen/facts-memory/`. The index is computed live from the
+//! on-disk `.md` files and injected into the LLM's system prompt; full bodies
+//! are loaded on demand via the `project_memory` tool.
 
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 // ---------------------------------------------------------------------------
@@ -72,8 +65,6 @@ pub struct FactMeta {
     pub name: String,
     pub description: String,
     pub fact_type: FactType,
-    #[allow(dead_code)]
-    pub confidence: Option<String>,
     pub updated: String,
 }
 
@@ -95,7 +86,6 @@ impl Default for PruneBudget {
 
 /// Summary of what the pruner did.
 pub struct PruneReport {
-    pub deduped: usize,
     pub demoted: usize,
     pub evicted: usize,
 }
@@ -103,8 +93,35 @@ pub struct PruneReport {
 impl PruneReport {
     #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
-        self.deduped == 0 && self.demoted == 0 && self.evicted == 0
+        self.demoted == 0 && self.evicted == 0
     }
+}
+
+// ---------------------------------------------------------------------------
+// Serde struct for safe YAML frontmatter serialization
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize, Deserialize)]
+struct FactFrontmatter {
+    name: String,
+    description: String,
+    metadata: FactMetadata,
+    created: String,
+    updated: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    commit: Option<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct FactMetadata {
+    #[serde(rename = "type")]
+    fact_type: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    grounded_by: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    confidence: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    source_refs: Vec<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -123,9 +140,6 @@ impl FactStore {
     /// Returns `None` when no source root is provided or when the directory
     /// cannot be created. On first open the `.chen/.gitignore` is seeded so
     /// `facts-memory/` is never committed.
-    ///
-    /// Automatically runs a lightweight prune pass at session start to keep the
-    /// store bounded without user intervention.
     pub fn open(source_root: Option<&str>) -> Option<Self> {
         let base_path = source_root?;
         let base = Path::new(base_path);
@@ -137,8 +151,9 @@ impl FactStore {
         let commit = Self::read_git_head_short(base);
 
         let store = FactStore { dir, commit };
-        // Automatic open-time prune (best-effort, metadata-only pass).
-        store.prune(&PruneBudget::default());
+        // Open-time pass: evict to budget only (non-destructive, no staleness
+        // demotion — that is reserved for the explicit `:memory prune` command).
+        store.evict_to_budget(&PruneBudget::default());
         Some(store)
     }
 
@@ -199,36 +214,21 @@ impl FactStore {
         if result.len() > 60 { result[..60].to_string() } else { result }
     }
 
-    /// Validate that `slug` is safe: no path separators, no `..`.
-    fn validate_slug(slug: &str) -> Result<(), String> {
-        if slug.is_empty() {
+    /// Validate that `name` (raw or slug) contains no path separators or `..`.
+    fn validate_name(name: &str) -> Result<(), String> {
+        if name.is_empty() {
             return Err("fact name cannot be empty".into());
         }
-        if slug.contains('/') || slug.contains('\\') || slug.contains("..") {
-            return Err(format!("invalid fact name '{slug}': path separators and '..' are not allowed"));
-        }
-        if !slug.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
-            return Err(format!("invalid fact name '{slug}': only lowercase alphanumeric and '-' allowed"));
+        if name.contains('/') || name.contains('\\') || name.contains("..") {
+            return Err(format!("invalid fact name '{name}': path separators and '..' are not allowed"));
         }
         Ok(())
     }
 
-    /// Canonicalised path for a fact file, verified to stay within the store dir.
-    fn fact_path(&self, slug: &str) -> Result<PathBuf, String> {
-        let root_canon = self.dir.canonicalize()
-            .map_err(|e| format!("cannot resolve store directory: {e}"))?;
-        let joined = root_canon.join(format!("{slug}.md"));
-        let canon = joined.canonicalize().unwrap_or(joined);
-        if canon.starts_with(&root_canon) {
-            Ok(canon)
-        } else {
-            Err(format!("path '{slug}.md' escapes the store directory"))
-        }
-    }
-
-    /// The path to the index file (non-canonicalised for creation).
-    fn index_path(&self) -> PathBuf {
-        self.dir.join("MEMORY.md")
+    /// Path to a fact file. Name is validated before use, so path-traversal
+    /// safety is guaranteed by `validate_name`.
+    fn fact_path_unchecked(&self, slug: &str) -> PathBuf {
+        self.dir.join(format!("{slug}.md"))
     }
 
     /// List all fact files, parsing only frontmatter (fast, no body reads).
@@ -248,9 +248,9 @@ impl FactStore {
     }
 
     /// Load a full fact (frontmatter + body) by name.
-    pub fn load(&self, slug: &str) -> Option<Fact> {
-        let slug = Self::slugify(slug);
-        let path = self.fact_path(&slug).ok()?;
+    pub fn load(&self, name: &str) -> Option<Fact> {
+        let slug = Self::slugify(name);
+        let path = self.fact_path_unchecked(&slug);
         if !path.exists() { return None; }
         Self::parse_fact_file(&path)
     }
@@ -259,16 +259,17 @@ impl FactStore {
     /// When `name` already exists, the original `created` is preserved and
     /// `source_refs` are merged (deduplicated).
     pub fn save(&self, fact: &Fact) -> Result<(), String> {
+        Self::validate_name(&fact.name)?;
         let slug = Self::slugify(&fact.name);
-        Self::validate_slug(&slug)?;
-        let path = self.fact_path(&slug)?;
+        // Validate the slug too (secondary gate after slugify strips dangerous chars).
+        Self::validate_name(&slug)?;
+        let path = self.fact_path_unchecked(&slug);
 
         let (created, merged_refs) = if path.exists() {
             if let Some(existing) = Self::parse_fact_file(&path) {
-                let mut refs: HashSet<String> = existing.source_refs.into_iter().collect();
+                let mut refs: std::collections::BTreeSet<String> = existing.source_refs.into_iter().collect();
                 refs.extend(fact.source_refs.clone());
-                let mut v: Vec<String> = refs.into_iter().collect();
-                v.sort();
+                let v: Vec<String> = refs.into_iter().collect();
                 (existing.created, v)
             } else {
                 (fact.created.clone(), fact.source_refs.clone())
@@ -284,28 +285,24 @@ impl FactStore {
             &merged_refs, &created, &now, self.commit.as_deref(), &fact.body,
         );
         std::fs::write(&path, content).map_err(|e| format!("failed to write fact: {e}"))?;
-
-        self.upsert_index(&slug, &fact.description)?;
-
-        // Best-effort prune after save.
-        self.prune(&PruneBudget::default());
-
         Ok(())
     }
 
     /// Delete a fact by name.
-    pub fn delete(&self, slug: &str) -> Result<(), String> {
-        let slug = Self::slugify(slug);
-        if let Ok(path) = self.fact_path(&slug)
-            && path.exists() {
-                std::fs::remove_file(&path)
-                    .map_err(|e| format!("failed to delete fact: {e}"))?;
-            }
-        self.drop_index_line(&slug)?;
+    pub fn delete(&self, name: &str) -> Result<(), String> {
+        Self::validate_name(name)?;
+        let slug = Self::slugify(name);
+        Self::validate_name(&slug)?;
+        let path = self.fact_path_unchecked(&slug);
+        if path.exists() {
+            std::fs::remove_file(&path)
+                .map_err(|e| format!("failed to delete fact: {e}"))?;
+        }
         Ok(())
     }
 
-    /// Search fact bodies for a keyword (substring match on name, description, body).
+    /// Search fact bodies for a keyword. Matches only name, description, and body
+    /// (NOT frontmatter metadata) to keep precision high.
     pub fn search(&self, query: &str) -> Vec<FactMeta> {
         let lower = query.to_ascii_lowercase();
         let mut results = Vec::new();
@@ -314,18 +311,36 @@ impl FactStore {
             let path = entry.path();
             if path.extension().and_then(|e| e.to_str()) != Some("md") { continue; }
             if path.file_stem().and_then(|s| s.to_str()) == Some("MEMORY") { continue; }
-            let content = std::fs::read_to_string(&path).unwrap_or_default();
-            if content.to_ascii_lowercase().contains(&lower)
-                && let Some(meta) = Self::parse_frontmatter_file(&path) {
-                    results.push(meta);
+            let Some(meta) = Self::parse_frontmatter_file(&path) else { continue };
+            // Only search name, description, and body — not frontmatter metadata.
+            if meta.name.to_ascii_lowercase().contains(&lower)
+                || meta.description.to_ascii_lowercase().contains(&lower)
+            {
+                results.push(meta);
+            } else {
+                // Check the body (everything after the closing frontmatter delimiter).
+                let content = std::fs::read_to_string(&path).unwrap_or_default();
+                if let Some(body_start) = content.rfind("\n---") {
+                    let body = &content[body_start + 4..];
+                    if body.to_ascii_lowercase().contains(&lower) {
+                        results.push(meta);
+                    }
                 }
+            }
         }
         results.sort_by(|a, b| a.name.cmp(&b.name));
         results
     }
 
-    /// Generate the MEMORY.md index content (one bullet per fact).
+    /// Generate the index content (one bullet per fact) for injection into the
+    /// system prompt. Computed live from on-disk files — no separate index file
+    /// is maintained.
     pub fn index_markdown(&self) -> String {
+        self.index_markdown_bounded(16 * 1024)
+    }
+
+    /// Like `index_markdown` but with an explicit byte budget.
+    fn index_markdown_bounded(&self, max_bytes: usize) -> String {
         let facts = self.list();
         if facts.is_empty() {
             return "none yet".to_string();
@@ -335,9 +350,9 @@ impl FactStore {
             .collect();
         lines.sort();
         let mut result = lines.join("\n");
-        if result.len() > 16 * 1024 {
+        if result.len() > max_bytes {
             let cutoff = result.char_indices()
-                .take(16 * 1024)
+                .take(max_bytes)
                 .last()
                 .map(|(i, c)| i + c.len_utf8())
                 .unwrap_or(result.len());
@@ -347,60 +362,54 @@ impl FactStore {
         result
     }
 
-    /// Rebuild MEMORY.md from all `.md` files in the store directory.
-    pub fn rebuild_index(&self) {
-        let content = self.index_markdown();
-        let _ = std::fs::write(self.index_path(), content);
-    }
-
-    /// Prune the store against a budget. Runs de-duplication, staleness demotion,
-    /// and eviction. Returns a report of actions taken.
+    /// Prune the store: demote stale facts and evict to budget.
+    ///
+    /// **Staleness demotion**: facts whose `commit` is behind HEAD AND whose
+    /// every `source_ref` file is missing on disk are demoted to low confidence
+    /// and prefixed with a STALE note. Demotion is reserved for the explicit
+    /// `:memory prune` command only — open-time passes skip it.
+    ///
+    /// **Eviction**: when the store exceeds `max_facts`, the lowest-priority
+    /// facts (oldest-`updated` findings and references) are deleted. Project
+    /// and feedback facts are never auto-evicted.
     pub fn prune(&self, budget: &PruneBudget) -> PruneReport {
-        let mut report = PruneReport { deduped: 0, demoted: 0, evicted: 0 };
+        let mut report = PruneReport { demoted: 0, evicted: 0 };
 
-        let facts = self.list();
-        if facts.is_empty() { return report; }
-
-        // 1. De-dupe: if two facts share the same name slug, keep the most recently updated.
-        let mut seen = HashSet::new();
-        for fact in &facts {
-            if !seen.insert(fact.name.clone()) {
-                let _ = self.delete(&fact.name);
-                report.deduped += 1;
-            }
-        }
-
-        // 2. Staleness demotion: if commit is behind HEAD and source_refs are missing, demote.
+        // Staleness demotion.
         if let Some(ref current_commit) = self.commit {
-            let recheck = self.list();
-            for fact in &recheck {
-                if let Some(fact_commit) = self.read_fact_commit(&fact.name)
-                    && fact_commit != *current_commit
-                        && let Some(full) = self.load(&fact.name) {
-                            let any_missing = full.source_refs.iter().any(|r| {
-                                let p = self.dir.parent().and_then(|d| d.parent()).map(|base| base.join(r));
-                                p.is_none_or(|p| !p.exists())
-                            });
-                            if any_missing {
-                                let new_body = format!(
-                                    "> STALE: source refs missing as of {}\n\n{}",
-                                    current_commit, full.body
-                                );
-                                let updated = Fact {
-                                    confidence: Some("low".into()),
-                                    body: new_body,
-                                    updated: chrono::Utc::now().format("%Y-%m-%d").to_string(),
-                                    commit: Some(current_commit.clone()),
-                                    ..full
-                                };
-                                let _ = self.save(&updated);
-                                report.demoted += 1;
-                            }
-                        }
+            for fact in &self.list() {
+                let Some(fact_commit) = self.read_fact_commit(&fact.name) else { continue };
+                if fact_commit == *current_commit { continue; }
+                let Some(full) = self.load(&fact.name) else { continue };
+                // Only demote when EVERY source_ref file is missing (not just any).
+                let all_missing = !full.source_refs.is_empty()
+                    && full.source_refs.iter().all(|r| {
+                        let file_path = strip_line_suffix(r);
+                        let p = self.dir.parent()
+                            .and_then(|d| d.parent())
+                            .map(|base| base.join(&file_path));
+                        p.is_none_or(|p| !p.exists())
+                    });
+                if all_missing {
+                    let new_body = format!(
+                        "> STALE: source refs missing as of {}\n\n{}",
+                        current_commit, full.body
+                    );
+                    let updated = Fact {
+                        confidence: Some("low".into()),
+                        body: new_body,
+                        updated: chrono::Utc::now().format("%Y-%m-%d").to_string(),
+                        commit: Some(current_commit.clone()),
+                        ..full
+                    };
+                    self.write_fact_internal(&updated);
+                    report.demoted += 1;
+                }
             }
         }
 
-        // 3. Evict to budget when over max_facts.
+        // Eviction: if over max_facts, delete lowest-priority facts.
+        // Project and Feedback types are sticky — never auto-evicted.
         let current_facts = self.list();
         if current_facts.len() > budget.max_facts {
             let to_evict = current_facts.len() - budget.max_facts;
@@ -414,10 +423,24 @@ impl FactStore {
             }
         }
 
-        if report.deduped > 0 || report.demoted > 0 || report.evicted > 0 {
-            self.rebuild_index();
-        }
+        report
+    }
 
+    /// Non-destructive eviction-only pass for open-time use.
+    fn evict_to_budget(&self, budget: &PruneBudget) -> PruneReport {
+        let mut report = PruneReport { demoted: 0, evicted: 0 };
+        let current_facts = self.list();
+        if current_facts.len() > budget.max_facts {
+            let to_evict = current_facts.len() - budget.max_facts;
+            let mut evictable: Vec<&FactMeta> = current_facts.iter()
+                .filter(|f| matches!(f.fact_type, FactType::Finding | FactType::Reference))
+                .collect();
+            evictable.sort_by_key(|f| f.updated.clone());
+            for f in evictable.iter().take(to_evict) {
+                let _ = self.delete(&f.name);
+                report.evicted += 1;
+            }
+        }
         report
     }
 
@@ -425,9 +448,24 @@ impl FactStore {
     // Internal helpers
     // -----------------------------------------------------------------------
 
+    /// Write a fact to disk without triggering any side-effects (no prune, no
+    /// index rebuild). Used by prune's demotion to avoid re-entrancy.
+    fn write_fact_internal(&self, fact: &Fact) {
+        let slug = Self::slugify(&fact.name);
+        let path = self.fact_path_unchecked(&slug);
+        let content = Self::format_fact_file(
+            &slug, &fact.description, fact.fact_type,
+            fact.grounded_by.as_deref(), fact.confidence.as_deref(),
+            &fact.source_refs, &fact.created, &fact.updated,
+            fact.commit.as_deref(), &fact.body,
+        );
+        let _ = std::fs::write(&path, content);
+    }
+
     /// Read the `commit` field from a fact file's frontmatter.
-    fn read_fact_commit(&self, slug: &str) -> Option<String> {
-        let path = self.fact_path(slug).ok()?;
+    fn read_fact_commit(&self, name: &str) -> Option<String> {
+        let slug = Self::slugify(name);
+        let path = self.fact_path_unchecked(&slug);
         let content = std::fs::read_to_string(&path).ok()?;
         let yaml_str = Self::extract_frontmatter_yaml(&content)?;
         let yaml: serde_yaml::Value = serde_yaml::from_str(&yaml_str).ok()?;
@@ -447,19 +485,14 @@ impl FactStore {
     fn parse_frontmatter_file(path: &Path) -> Option<FactMeta> {
         let content = std::fs::read_to_string(path).ok()?;
         let yaml_str = Self::extract_frontmatter_yaml(&content)?;
-        let yaml: serde_yaml::Value = serde_yaml::from_str(&yaml_str).ok()?;
-        let mapping = yaml.as_mapping()?;
-
-        let name = mapping.get(serde_yaml::Value::String("name".into()))?.as_str()?.to_string();
-        let description = mapping.get(serde_yaml::Value::String("description".into()))?.as_str()?.to_string();
-        let metadata = mapping.get(serde_yaml::Value::String("metadata".into()))?.as_mapping()?;
-        let type_str = metadata.get(serde_yaml::Value::String("type".into()))?.as_str()?;
-        let fact_type = FactType::from_str(type_str)?;
-        let confidence = metadata.get(serde_yaml::Value::String("confidence".into()))
-            .and_then(|v| v.as_str()).map(|s| s.to_string());
-        let updated = mapping.get(serde_yaml::Value::String("updated".into()))?.as_str()?.to_string();
-
-        Some(FactMeta { name, description, fact_type, confidence, updated })
+        let fm: FactFrontmatter = serde_yaml::from_str(&yaml_str).ok()?;
+        let fact_type = FactType::from_str(&fm.metadata.fact_type)?;
+        Some(FactMeta {
+            name: fm.name,
+            description: fm.description,
+            fact_type,
+            updated: fm.updated,
+        })
     }
 
     /// Parse a full fact file (frontmatter + body).
@@ -472,97 +505,61 @@ impl FactStore {
         let yaml_str = &rest[..closing];
         let body = rest[closing + 4..].trim().to_string();
 
-        let yaml: serde_yaml::Value = serde_yaml::from_str(yaml_str).ok()?;
-        let mapping = yaml.as_mapping()?;
-
-        let name = mapping.get(serde_yaml::Value::String("name".into()))?.as_str()?.to_string();
-        let description = mapping.get(serde_yaml::Value::String("description".into()))?.as_str()?.to_string();
-        let metadata = mapping.get(serde_yaml::Value::String("metadata".into()))?.as_mapping()?;
-        let type_str = metadata.get(serde_yaml::Value::String("type".into()))?.as_str()?;
-        let fact_type = FactType::from_str(type_str)?;
-
-        let grounded_by = metadata.get(serde_yaml::Value::String("grounded_by".into()))
-            .and_then(|v| v.as_str()).map(|s| s.to_string());
-        let confidence = metadata.get(serde_yaml::Value::String("confidence".into()))
-            .and_then(|v| v.as_str()).map(|s| s.to_string());
-        let source_refs = metadata.get(serde_yaml::Value::String("source_refs".into()))
-            .and_then(|v| v.as_sequence())
-            .map(|seq| seq.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
-            .unwrap_or_default();
-        let created = mapping.get(serde_yaml::Value::String("created".into()))?.as_str()?.to_string();
-        let updated = mapping.get(serde_yaml::Value::String("updated".into()))?.as_str()?.to_string();
-        let commit = mapping.get(serde_yaml::Value::String("commit".into()))
-            .and_then(|v| v.as_str()).map(|s| s.to_string());
+        let fm: FactFrontmatter = serde_yaml::from_str(yaml_str).ok()?;
+        let fact_type = FactType::from_str(&fm.metadata.fact_type)?;
 
         Some(Fact {
-            name, description, fact_type, grounded_by, confidence,
-            source_refs, created, updated, commit, body,
+            name: fm.name,
+            description: fm.description,
+            fact_type,
+            grounded_by: fm.metadata.grounded_by,
+            confidence: fm.metadata.confidence,
+            source_refs: fm.metadata.source_refs,
+            created: fm.created,
+            updated: fm.updated,
+            commit: fm.commit,
+            body,
         })
     }
 
-    /// Format a fact file with YAML frontmatter + body.
+    /// Format a fact file with YAML frontmatter (serde-serialized, safe) + body.
     #[allow(clippy::too_many_arguments)]
-    fn format_fact_file(
+    pub(crate) fn format_fact_file(
         slug: &str, description: &str, fact_type: FactType,
         grounded_by: Option<&str>, confidence: Option<&str>,
         source_refs: &[String], created: &str, updated: &str,
         commit: Option<&str>, body: &str,
     ) -> String {
-        let mut lines = Vec::new();
-        lines.push("---".into());
-        lines.push(format!("name: {slug}"));
-        lines.push(format!("description: {description}"));
-        lines.push("metadata:".into());
-        lines.push(format!("  type: {}", fact_type.as_str()));
-        if let Some(g) = grounded_by {
-            lines.push(format!("  grounded_by: {g}"));
-        }
-        if let Some(c) = confidence {
-            lines.push(format!("  confidence: {c}"));
-        }
-        if !source_refs.is_empty() {
-            lines.push("  source_refs:".into());
-            for r in source_refs {
-                lines.push(format!("    - \"{}\"", r.replace('\"', "\\\"")));
-            }
-        }
-        lines.push(format!("created: {created}"));
-        lines.push(format!("updated: {updated}"));
-        if let Some(c) = commit {
-            lines.push(format!("commit: {c}"));
-        }
-        lines.push("---".into());
-        lines.push(String::new());
-        lines.push(body.to_string());
-        lines.join("\n")
+        let fm = FactFrontmatter {
+            name: slug.to_string(),
+            description: description.to_string(),
+            metadata: FactMetadata {
+                fact_type: fact_type.as_str().to_string(),
+                grounded_by: grounded_by.map(|s| s.to_string()),
+                confidence: confidence.map(|s| s.to_string()),
+                source_refs: source_refs.to_vec(),
+            },
+            created: created.to_string(),
+            updated: updated.to_string(),
+            commit: commit.map(|s| s.to_string()),
+        };
+        let yaml = serde_yaml::to_string(&fm).unwrap_or_default();
+        format!("---\n{yaml}---\n\n{body}\n")
     }
+}
 
-    /// Upsert a line in MEMORY.md for a given fact.
-    fn upsert_index(&self, slug: &str, description: &str) -> Result<(), String> {
-        let index_path = self.index_path();
-        let line = format!("- [{slug}]({slug}.md) — {description}");
-        let existing = std::fs::read_to_string(&index_path).unwrap_or_default();
-        let mut lines: Vec<String> = existing.lines().map(|l| l.to_string()).collect();
-        lines.retain(|l| !l.starts_with(&format!("- [{slug}]")));
-        lines.push(line);
-        lines.sort();
-        lines.dedup();
-        let content = lines.join("\n") + "\n";
-        std::fs::write(&index_path, content).map_err(|e| format!("failed to write index: {e}"))?;
-        Ok(())
+/// Strip a `:line` suffix from a source ref path like `src/auth.ts:42`.
+/// On Windows, `C:\...` paths contain colons after the drive letter, so we
+/// only split on the LAST colon.
+fn strip_line_suffix(ref_path: &str) -> String {
+    if let Some((path, _line)) = ref_path.rsplit_once(':') {
+        // Only strip if the part after the colon looks like a line number (digits).
+        let after_colon = &ref_path[path.len() + 1..];
+        if after_colon.chars().all(|c| c.is_ascii_digit()) {
+            return path.to_string();
+        }
     }
-
-    /// Remove the line for a given slug from MEMORY.md.
-    fn drop_index_line(&self, slug: &str) -> Result<(), String> {
-        let index_path = self.index_path();
-        let existing = std::fs::read_to_string(&index_path).unwrap_or_default();
-        let lines: Vec<&str> = existing.lines()
-            .filter(|l| !l.starts_with(&format!("- [{slug}]")))
-            .collect();
-        let content = lines.join("\n") + "\n";
-        std::fs::write(&index_path, content).map_err(|e| format!("failed to update index: {e}"))?;
-        Ok(())
-    }
+    ref_path.to_string()
 }
 
 // ---------------------------------------------------------------------------
@@ -610,17 +607,12 @@ fn action_recall(store: &FactStore, input: &Value) -> (String, bool) {
     }
     match store.load(name) {
         Some(fact) => {
-            let refs = fact.source_refs.join(", ");
-            let content = format!(
-                "---\nname: {name}\ndescription: {desc}\ntype: {t}\
-                 \ngrounded_by: {gb}\nconfidence: {conf}\nsource_refs: [{refs}]\
-                 \ncreated: {created}\nupdated: {updated}\ncommit: {commit}\n---\n\n{body}",
-                name = fact.name, desc = fact.description, t = fact.fact_type.as_str(),
-                gb = fact.grounded_by.as_deref().unwrap_or(""),
-                conf = fact.confidence.as_deref().unwrap_or(""),
-                created = fact.created, updated = fact.updated,
-                commit = fact.commit.as_deref().unwrap_or(""),
-                body = fact.body,
+            // Reuse the same format as the actual file for consistency.
+            let content = FactStore::format_fact_file(
+                &fact.name, &fact.description, fact.fact_type,
+                fact.grounded_by.as_deref(), fact.confidence.as_deref(),
+                &fact.source_refs, &fact.created, &fact.updated,
+                fact.commit.as_deref(), &fact.body,
             );
             (content, false)
         }
@@ -730,7 +722,7 @@ mod tests {
     }
 
     #[test]
-    fn save_creates_file_and_index_entry() {
+    fn save_creates_file() {
         let (store, dir) = setup_store();
         let fact = Fact {
             name: "test-fact".into(),
@@ -745,9 +737,7 @@ mod tests {
             body: "This is a test fact body.".into(),
         };
         store.save(&fact).unwrap();
-
         let path = dir.path().join(".chen").join("facts-memory").join("test-fact.md");
-        drop(&store);
         assert!(path.exists());
     }
 
@@ -805,8 +795,8 @@ mod tests {
             grounded_by: Some("atom_algorithms".into()),
             confidence: Some("high".into()),
             source_refs: vec!["new/file.rs:10".into()],
-            created: "2099-01-01".into(), // should be ignored in favor of original
-            updated: "2099-01-01".into(), // should be updated
+            created: "2099-01-01".into(),
+            updated: "2099-01-01".into(),
             commit: None,
             body: "Updated body".into(),
         };
@@ -821,7 +811,7 @@ mod tests {
     }
 
     #[test]
-    fn delete_removes_file_and_index_entry() {
+    fn delete_removes_file() {
         let dir = tempfile::tempdir().unwrap();
         let store = FactStore::open(Some(dir.path().to_str().unwrap())).unwrap();
 
@@ -848,7 +838,7 @@ mod tests {
     }
 
     #[test]
-    fn search_finds_by_name_and_body() {
+    fn search_matches_name_description_and_body_not_frontmatter() {
         let dir = tempfile::tempdir().unwrap();
         let store = FactStore::open(Some(dir.path().to_str().unwrap())).unwrap();
 
@@ -878,13 +868,28 @@ mod tests {
             body: "All routes pass through authentication middleware.".into(),
         }).unwrap();
 
+        // Search in name.
         let results = store.search("sql");
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].name, "sql-injection");
 
+        // Search in description.
         let results = store.search("middleware");
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].name, "auth-boundary");
+
+        // Search in body.
+        let results = store.search("executeQuery");
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].name, "sql-injection");
+
+        // Search that should NOT match frontmatter metadata.
+        let results = store.search("atom_flows");
+        assert_eq!(results.len(), 0, "frontmatter metadata should not match");
+
+        // Search that should NOT match source_refs.
+        let results = store.search("search.rs");
+        assert_eq!(results.len(), 0, "source_refs should not match");
     }
 
     #[test]
@@ -897,12 +902,12 @@ mod tests {
     }
 
     #[test]
-    fn validate_slug_rejects_path_separators() {
-        assert!(FactStore::validate_slug("../escape").is_err());
-        assert!(FactStore::validate_slug("a/b").is_err());
-        assert!(FactStore::validate_slug("a\\b").is_err());
-        assert!(FactStore::validate_slug("a..b").is_err());
-        assert!(FactStore::validate_slug("valid-slug").is_ok());
+    fn validate_name_rejects_path_separators() {
+        assert!(FactStore::validate_name("../escape").is_err());
+        assert!(FactStore::validate_name("a/b").is_err());
+        assert!(FactStore::validate_name("a\\b").is_err());
+        assert!(FactStore::validate_name("a..b").is_err());
+        assert!(FactStore::validate_name("valid-slug").is_ok());
     }
 
     #[test]
@@ -981,22 +986,19 @@ mod tests {
     }
 
     #[test]
-    fn prune_dedupes_by_name() {
+    fn prune_evicts_to_budget() {
         let dir = tempfile::tempdir().unwrap();
         let store = FactStore::open(Some(dir.path().to_str().unwrap())).unwrap();
 
-        // Write two fact files manually to simulate a state where dedup is needed.
-        let content1 = "---\nname: dup-fact\ndescription: First\nmetadata:\n  type: finding\ncreated: 2026-01-01\nupdated: 2026-01-02\n---\n\nfirst\n";
-        let content2 = "---\nname: dup-fact\ndescription: Second\nmetadata:\n  type: finding\ncreated: 2026-01-01\nupdated: 2026-01-01\n---\n\nsecond\n";
-        std::fs::write(store.dir.join("dup-fact.md"), content1).unwrap();
-        std::fs::write(store.dir.join("dup-fact.md"), content2).unwrap(); // overwrites
-
-        // Save the second using a different slug to have two files.
-        let content_a = "---\nname: dup-fact-a\ndescription: A\nmetadata:\n  type: finding\ncreated: 2026-01-01\nupdated: 2026-01-01\n---\n\na\n";
-        let content_b = "---\nname: dup-fact-b\ndescription: B\nmetadata:\n  type: finding\ncreated: 2026-01-01\nupdated: 2026-01-01\n---\n\nb\n";
-        std::fs::write(store.dir.join("dup-fact-a.md"), content_a).unwrap();
-        std::fs::write(store.dir.join("dup-fact-b.md"), content_b).unwrap();
-
+        for i in 0..3 {
+            store.save(&Fact {
+                name: format!("fact-{i}"), description: format!("Fact {i}"),
+                fact_type: FactType::Finding, grounded_by: Some("text".into()),
+                confidence: Some("low".into()), source_refs: vec![],
+                created: "2026-01-01".into(), updated: "2026-01-01".into(),
+                commit: None, body: format!("{i}"),
+            }).unwrap();
+        }
         assert_eq!(store.list().len(), 3);
 
         let report = store.prune(&PruneBudget { max_facts: 1, max_index_bytes: 16 * 1024 });
@@ -1007,28 +1009,54 @@ mod tests {
     }
 
     #[test]
-    fn rebuild_index_matches_on_disk_files() {
+    fn prune_does_not_evict_project_facts() {
         let dir = tempfile::tempdir().unwrap();
         let store = FactStore::open(Some(dir.path().to_str().unwrap())).unwrap();
 
         store.save(&Fact {
-            name: "fact-a".into(), description: "Fact A".into(),
+            name: "sticky-project".into(), description: "Sticky".into(),
             fact_type: FactType::Project, grounded_by: None, confidence: None,
             source_refs: vec![], created: "2026-01-01".into(), updated: "2026-01-01".into(),
             commit: None, body: "".into(),
         }).unwrap();
-        store.save(&Fact {
-            name: "fact-b".into(), description: "Fact B".into(),
-            fact_type: FactType::Finding, grounded_by: Some("atom_flows".into()),
-            confidence: Some("high".into()), source_refs: vec![],
-            created: "2026-01-01".into(), updated: "2026-01-01".into(),
-            commit: None, body: "".into(),
-        }).unwrap();
 
-        store.rebuild_index();
-        let index = store.index_markdown();
-        assert!(index.contains("fact-a"));
-        assert!(index.contains("fact-b"));
+        let report = store.prune(&PruneBudget { max_facts: 0, max_index_bytes: 16 * 1024 });
+        assert_eq!(report.evicted, 0, "project facts are sticky");
+        assert_eq!(store.list().len(), 1);
+    }
+
+    #[test]
+    fn html_description_does_not_corrupt_frontmatter() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = FactStore::open(Some(dir.path().to_str().unwrap())).unwrap();
+
+        let fact = Fact {
+            name: "colon-desc".into(),
+            description: "Auth: enforced via JWT; type: bearer".into(),
+            fact_type: FactType::Project,
+            grounded_by: Some("atom_flows".into()),
+            confidence: Some("high".into()),
+            source_refs: vec![],
+            created: "2026-01-01".into(),
+            updated: "2026-01-01".into(),
+            commit: None,
+            body: "Body with --- triple dash --- and : colon".into(),
+        };
+        store.save(&fact).unwrap();
+
+        let loaded = store.load("colon-desc").unwrap();
+        assert_eq!(loaded.description, "Auth: enforced via JWT; type: bearer");
+        assert_eq!(loaded.body, "Body with --- triple dash --- and : colon");
+        assert!(loaded.confidence.is_some());
+    }
+
+    #[test]
+    fn strip_line_suffix_removes_trailing_line_number() {
+        assert_eq!(strip_line_suffix("src/auth.ts:42"), "src/auth.ts");
+        assert_eq!(strip_line_suffix("src/auth.ts"), "src/auth.ts");
+        assert_eq!(strip_line_suffix("C:\\Users\\me\\file.rs:10"), "C:\\Users\\me\\file.rs");
+        assert_eq!(strip_line_suffix("file:notanumber"), "file:notanumber");
+        assert_eq!(strip_line_suffix(""), "");
     }
 
     #[test]
@@ -1036,5 +1064,27 @@ mod tests {
         let result = memory_dispatch(None, "id1", &serde_json::json!({"action": "recall", "name": "x"}));
         assert!(result.is_error);
         assert!(result.content.contains("no source root configured"));
+    }
+
+    #[test]
+    fn action_recall_reuses_format() {
+        let input = serde_json::json!({
+            "action": "save",
+            "name": "recall-test",
+            "description": "Test recall format",
+            "type": "project",
+            "grounded_by": "atom_flows",
+            "confidence": "high",
+            "body": "Body content here."
+        });
+        let dir = tempfile::tempdir().unwrap();
+        let store = FactStore::open(Some(dir.path().to_str().unwrap())).unwrap();
+        action_save(&store, &input);
+
+        let result = action_recall(&store, &serde_json::json!({"name": "recall-test"}));
+        assert!(!result.1);
+        assert!(result.0.contains("name: recall-test"));
+        assert!(result.0.contains("description: Test recall format"));
+        assert!(result.0.contains("Body content here."));
     }
 }

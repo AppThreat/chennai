@@ -277,15 +277,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             } else { None };
             match agent::create_provider(&config) {
                 Ok(provider) => {
+                    let memory_index = crate::agent::memory::FactStore::open(agent_source_root.as_deref())
+                        .map(|s| s.index_markdown());
+                    let memory_section = memory_index.as_deref().filter(|s| *s != "none yet").map(|idx| {
+                        format!(
+                            "\n## Project memory (facts learned in previous sessions — HINTS, re-verify before reporting)\n\
+                             {idx}\n\
+                             Use the project_memory tool (action:\"recall\"/\"search\") to read a fact's full body.\n"
+                        )
+                    }).unwrap_or_default();
                     let system_prompt = match &custom_system_prompt {
-                        Some(sp) => sp.clone(),
+                        Some(sp) => format!("{sp}{memory_section}"),
                         None => {
-                            let memory_idx = crate::agent::memory::FactStore::open(agent_source_root.as_deref())
-                                .map(|s| s.index_markdown());
                             AgentCtx::build_system_prompt(
                                 &summary.language, &summary.version, &summary.rows,
                                 Some(&bom_summary), bom_components.as_deref(), None,
-                                memory_idx.as_deref(),
+                                memory_index.as_deref(),
                             )
                         }
                     };
@@ -313,7 +320,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             None
         };
 
-        let mut app = App::new(Some(engine_arc), atom_str, summary);
+        let mut app = App::new(Some(engine_arc), atom_str, summary, agent_source_root.clone());
         // Keep the aux blint backend on the app so the agent-context recreation path
         // (which reads app.backend) preserves blint_* tools across runs.
         app.backend = aux_backend;
@@ -486,7 +493,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         // Create App with deferred init.
-        let mut app = App::new(None, "generating...".into(), Summary::default());
+        let mut app = App::new(None, "generating...".into(), Summary::default(), source_root.clone());
         app.bg_progress = bg_progress;
         app.init_phase = InitPhase::Starting;
         app.deferred_atom_path = Some(atom_path.to_string_lossy().to_string());
@@ -754,7 +761,7 @@ fn run_non_atom_mode(
     }
 
     // Create App with deferred init.
-    let mut app = App::new(None, source_dir.to_string_lossy().to_string(), Summary::default());
+    let mut app = App::new(None, source_dir.to_string_lossy().to_string(), Summary::default(), source_root.clone());
     app.non_atom = true;
     app.project_language = language.clone();
     app.focus = Panel::Repl;
@@ -885,7 +892,7 @@ fn finish_non_atom_startup(
         return run_headless_agent_non_atom(config, backend, source_root_str, system_prompt, question);
     }
 
-    let mut app = App::new(None, source_dir.to_string_lossy().to_string(), Summary::default());
+    let mut app = App::new(None, source_dir.to_string_lossy().to_string(), Summary::default(), source_root.clone());
     app.non_atom = true;
     app.project_language = language.clone();
     app.focus = Panel::Repl;

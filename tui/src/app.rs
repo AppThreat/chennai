@@ -336,11 +336,14 @@ pub struct App {
     pub deferred_engine_cmd: Option<String>,
     /// Reports directory for deferred init.
     pub deferred_reports_dir: Option<String>,
+    /// Project source root directory (used by the `:memory` command and other
+    /// paths that need the real project root, not the atom file path).
+    pub source_root: Option<String>,
 }
 
 impl App {
     #[allow(dead_code)]
-    pub fn new(engine: Option<Arc<Mutex<Engine>>>, atom_path: String, summary: Summary) -> Self {
+    pub fn new(engine: Option<Arc<Mutex<Engine>>>, atom_path: String, summary: Summary, source_root: Option<String>) -> Self {
         App {
             engine,
             atom_path,
@@ -424,6 +427,7 @@ impl App {
             deferred_atom_path: None,
             deferred_engine_cmd: None,
             deferred_reports_dir: None,
+            source_root,
         }
     }
 
@@ -594,12 +598,12 @@ impl App {
         }
 
         // Memory command: inspect and manage the per-project fact store.
-        if lower == ":memory" || lower == "memory" || lower.starts_with(":memory ") || lower.starts_with("memory ") {
+        if lower.starts_with(":memory") {
             let sub = t.split_once(' ').map(|(_, rest)| rest.trim()).unwrap_or("");
-            let store = crate::agent::memory::FactStore::open(Some(&self.atom_path));
+            let store = crate::agent::memory::FactStore::open(self.source_root.as_deref());
             let (status, ok) = match (sub, store) {
                 ("", _) | ("list", _) => {
-                    match crate::agent::memory::FactStore::open(Some(&self.atom_path)) {
+                    match crate::agent::memory::FactStore::open(self.source_root.as_deref()) {
                         Some(s) => {
                             let facts = s.list();
                             if facts.is_empty() {
@@ -617,7 +621,6 @@ impl App {
                 ("prune", Some(s)) => {
                     let report = s.prune(&Default::default());
                     let parts = vec![
-                        if report.deduped > 0 { Some(format!("{} deduped", report.deduped)) } else { None },
                         if report.demoted > 0 { Some(format!("{} demoted", report.demoted)) } else { None },
                         if report.evicted > 0 { Some(format!("{} evicted", report.evicted)) } else { None },
                     ];
@@ -629,11 +632,6 @@ impl App {
                     }
                 }
                 ("prune", None) => ("fact store not available".into(), false),
-                ("rebuild", Some(s)) => {
-                    s.rebuild_index();
-                    ("index rebuilt".into(), true)
-                }
-                ("rebuild", None) => ("fact store not available".into(), false),
                 (sub, Some(s)) if sub.starts_with("show ") || sub.starts_with("forget ") => {
                     let parts: Vec<&str> = sub.splitn(2, ' ').collect();
                     let action = parts[0];
@@ -643,14 +641,13 @@ impl App {
                     } else if action == "show" {
                         match s.load(name) {
                             Some(f) => {
-                                let body = format!("---\nname: {n}\ntype: {t}\nconfidence: {c}\
-                                    \ngrounded_by: {gb}\nsource_refs: [{refs}]\
-                                    \ncreated: {created}\nupdated: {updated}\ncommit: {commit}\n---\n\n{body}",
-                                    n=f.name, t=f.fact_type.as_str(), c=f.confidence.as_deref().unwrap_or(""),
-                                    gb=f.grounded_by.as_deref().unwrap_or(""),
-                                    refs=f.source_refs.join(", "), created=f.created, updated=f.updated,
-                                    commit=f.commit.as_deref().unwrap_or(""), body=f.body);
-                                (body, true)
+                                let content = crate::agent::memory::FactStore::format_fact_file(
+                                    &f.name, &f.description, f.fact_type,
+                                    f.grounded_by.as_deref(), f.confidence.as_deref(),
+                                    &f.source_refs, &f.created, &f.updated,
+                                    f.commit.as_deref(), &f.body,
+                                );
+                                (content, true)
                             }
                             None => (format!("fact '{name}' not found"), false)
                         }
@@ -664,7 +661,7 @@ impl App {
                 (sub, _) if sub.starts_with("show ") || sub.starts_with("forget ") => {
                     ("fact store not available".into(), false)
                 }
-                (sub, _) => (format!("unknown :memory subcommand '{sub}' — try list, show <name>, forget <name>, prune, rebuild"), false),
+                (sub, _) => (format!("unknown :memory subcommand '{sub}' — try list, show <name>, forget <name>, prune"), false),
             };
             self.repl.record(&t, status.clone(), ok);
             self.status = status;
@@ -1941,8 +1938,8 @@ fn looks_like_dsl_or_command(t: &str) -> bool {
     if lower == "bom" || lower.starts_with("bom ") || lower == ":bom" || lower.starts_with(":bom ") {
         return true;
     }
-    // Memory command.
-    if lower == ":memory" || lower == "memory" || lower.starts_with(":memory ") || lower.starts_with("memory ") {
+    // Memory command (requires : prefix to avoid shadowing natural language).
+    if lower == ":memory" || lower.starts_with(":memory ") {
         return true;
     }
     // DSL prefix.
@@ -2008,12 +2005,13 @@ mod tests {
             None,
             "x.atom".into(),
             Summary { language: "C".into(), version: "1".into(), rows },
+            None,
         )
     }
 
     #[allow(dead_code)] // shared fixture for future App-level tests
     fn test_app() -> App {
-        App::new(None, "x.atom".into(), Summary::default())
+        App::new(None, "x.atom".into(), Summary::default(), None)
     }
 
     #[test]

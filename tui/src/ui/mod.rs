@@ -1528,7 +1528,7 @@ mod tests {
                 SummaryRow { label: "Methods".into(), count: 349 },
             ],
         };
-        let mut app = App::new(None, "js-app.atom".into(), summary);
+        let mut app = App::new(None, "js-app.atom".into(), summary, None);
         let text = rendered_text(&mut app);
         assert!(text.contains("Summary"));
         assert!(text.contains("REPL"));
@@ -1540,7 +1540,7 @@ mod tests {
 
     #[test]
     fn renders_output_table_with_line_count_column() {
-        let mut app = App::new(None, "x.atom".into(), Summary::default());
+        let mut app = App::new(None, "x.atom".into(), Summary::default(), None);
         app.output = Some(ResultTable {
             title: "Methods".into(),
             columns: vec!["Name".into(), "File".into(), "Line Count".into()],
@@ -1569,7 +1569,7 @@ mod tests {
                 Cell { v: lc.into(), k: "num".into() },
             ]
         };
-        let mut app = App::new(None, "x.atom".into(), Summary::default());
+        let mut app = App::new(None, "x.atom".into(), Summary::default(), None);
         app.output = Some(ResultTable {
             title: "Methods".into(),
             columns: vec!["Name".into(), "Line Count".into()],
@@ -1637,7 +1637,7 @@ mod tests {
 
     fn flow_app() -> App {
         use crate::model::{Flow, FlowSet, FlowStep};
-        let mut app = App::new(None, "x.atom".into(), Summary::default());
+        let mut app = App::new(None, "x.atom".into(), Summary::default(), None);
         let step = |kind: &str, sym: &str| FlowStep {
             kind: kind.into(),
             code: format!("{sym}_code"),
@@ -1724,7 +1724,7 @@ mod tests {
             ],
             ..Default::default()
         };
-        let mut app = App::new(None, "x.atom".into(), Summary::default());
+        let mut app = App::new(None, "x.atom".into(), Summary::default(), None);
         app.flows = Some(FlowSet { title: "F".into(), total: 1, shown: 1, offset: 0, flows: vec![flow] });
         app.flow_visible = vec![0];
         app.focus = Panel::Output;
@@ -1760,7 +1760,7 @@ mod tests {
             version: "1".into(),
             rows: vec![SummaryRow { label: "Files".into(), count: 1484 }],
         };
-        let mut app = App::new(None, "x.atom".into(), summary);
+        let mut app = App::new(None, "x.atom".into(), summary, None);
         app.output = Some(ResultTable {
             title: "Methods".into(),
             columns: vec!["Name".into()],
@@ -1785,7 +1785,7 @@ mod tests {
 
     #[test]
     fn renders_repl_scrollback() {
-        let mut app = App::new(None, "x.atom".into(), Summary::default());
+        let mut app = App::new(None, "x.atom".into(), Summary::default(), None);
         app.repl.record("atom.file", "Files: 8 of 8 row(s)".into(), true);
         let text = rendered_text(&mut app);
         assert!(text.contains("atom.file"));
