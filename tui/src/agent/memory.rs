@@ -653,14 +653,22 @@ fn action_save(store: &FactStore, input: &Value) -> (String, bool) {
 
     let fact_type = FactType::from_str(type_str).unwrap_or(FactType::Project);
 
-    let is_text_tool = grounded_by.is_none_or(|g| {
-        matches!(g, "ripgrep" | "read_file" | "text")
-    });
-    let (final_confidence, final_grounded_by) = if is_text_tool {
-        (Some("low".into()), grounded_by.map(|g| g.to_string()).or(Some("text".into())))
-    } else {
-        (confidence.map(|c| c.to_string()), grounded_by.map(|g| g.to_string()))
-    };
+    // Reject facts not grounded in a custom analysis tool. The only tools that
+    // produce structural evidence worth remembering are atom_*, blint_*, rusi_*,
+    // golem_*, dosai_*, and bom_*. Generic tools (ripgrep, read_file, git, text)
+    // or missing grounded_by are rejected outright.
+    match grounded_by {
+        Some(g) if !(g.starts_with("atom_") || g.starts_with("blint_") || g.starts_with("rusi_")
+            || g.starts_with("golem_") || g.starts_with("dosai_") || g == "bom_query") => {
+            return (format!("Fact '{}' rejected: facts grounded in '{g}' are not stored. Use a custom analysis tool (atom_*, blint_*, rusi_*, golem_*, dosai_*, bom_*) instead.", name), true);
+        }
+        None => {
+            return (format!("Fact '{}' rejected: 'grounded_by' is required. Specify which custom analysis tool produced the evidence (atom_*, blint_*, rusi_*, golem_*, dosai_*, bom_*).", name), true);
+        }
+        _ => {}
+    }
+    let final_confidence = confidence.map(|c| c.to_string());
+    let final_grounded_by = grounded_by.map(|g| g.to_string());
 
     let now = chrono::Utc::now().format("%Y-%m-%d").to_string();
     let fact = Fact {

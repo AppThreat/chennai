@@ -658,10 +658,42 @@ impl App {
                         }
                     }
                 }
+                (sub, Some(s)) if sub == "save" || sub.starts_with("save ") => {
+                    let rest = if sub.starts_with("save ") { sub.strip_prefix("save ").unwrap_or("").trim() } else { "" };
+                    let (name, explicit_body) = rest.split_once(" -- ")
+                        .map(|(n, b)| (n.trim(), Some(b.trim().to_string())))
+                        .unwrap_or((rest, None));
+                    let name = if name.is_empty() {
+                        chrono::Utc::now().format("memory-%Y-%m-%d-%H%M%S").to_string()
+                    } else {
+                        name.to_string()
+                    };
+                    let body = explicit_body.unwrap_or_else(|| self.build_memory_body());
+                    let description = body.chars().take(80).collect();
+                    let fact = crate::agent::memory::Fact {
+                        name: name.clone(),
+                        description,
+                        fact_type: crate::agent::memory::FactType::Project,
+                        grounded_by: Some("user".into()),
+                        confidence: Some("high".into()),
+                        source_refs: vec![],
+                        created: chrono::Utc::now().format("%Y-%m-%d").to_string(),
+                        updated: chrono::Utc::now().format("%Y-%m-%d").to_string(),
+                        commit: None,
+                        body,
+                    };
+                    match s.save(&fact) {
+                        Ok(()) => (format!("fact '{}' saved", name), true),
+                        Err(e) => (format!("failed to save: {e}"), false),
+                    }
+                }
                 (sub, _) if sub.starts_with("show ") || sub.starts_with("forget ") => {
                     ("fact store not available".into(), false)
                 }
-                (sub, _) => (format!("unknown :memory subcommand '{sub}' — try list, show <name>, forget <name>, prune"), false),
+                (sub, _) if sub == "save" || sub.starts_with("save ") => {
+                    ("fact store not available".into(), false)
+                }
+                (sub, _) => (format!("unknown :memory subcommand '{sub}' — try list, show <name>, forget <name>, prune, save [<name>]"), false),
             };
             self.repl.record(&t, status.clone(), ok);
             self.status = status;
@@ -1744,6 +1776,61 @@ impl App {
                 // Do not hijack the output panel with a raw table.
             }
         }
+    }
+
+    /// Build a body for `:memory save` from the last command and its output.
+    fn build_memory_body(&self) -> String {
+        let mut body = String::new();
+
+        // Last executed command.
+        if let Some(entry) = self.repl.entries.last() {
+            body.push_str("## Command\n\n```\n");
+            body.push_str(&entry.input);
+            body.push_str("\n```\n\n");
+        }
+
+        // Agent transcript output.
+        if !self.agent_transcript.is_empty() {
+            body.push_str("## Agent Response\n\n");
+            for entry in &self.agent_transcript {
+                match entry {
+                    AgentEntry::Text(t) => { body.push_str(t); body.push_str("\n\n"); }
+                    AgentEntry::ToolCall { name, result, .. } => {
+                        body.push_str(&format!("**`{}`**", name));
+                        if let Some(r) = result {
+                            body.push_str(&format!(":\n```\n{}\n```\n\n", r));
+                        }
+                    }
+                    AgentEntry::Error(msg) => { body.push_str(&format!("**Error:** {}\n\n", msg)); }
+                    _ => {}
+                }
+            }
+        // Result table output.
+        } else if let Some(table) = &self.output {
+            body.push_str(&format!("## {}\n\n", table.title));
+            if !table.columns.is_empty() {
+                body.push_str(&format!("| {} |\n", table.columns.join(" | ")));
+                body.push_str(&format!("|{}|\n", table.columns.iter().map(|_| "---".to_string()).collect::<Vec<_>>().join("|")));
+                for row in &table.rows {
+                    body.push_str(&format!("| {} |\n", row.iter().map(|c| c.v.clone()).collect::<Vec<_>>().join(" | ")));
+                }
+                body.push('\n');
+            }
+            body.push_str(&format!("_Total: {} row(s)_\n", table.total));
+        // Flow set output.
+        } else if let Some(flows) = &self.flows {
+            body.push_str(&format!("## {}\n\n", flows.title));
+            body.push_str(&format!("_Total: {} flow(s)_\n\n", flows.total));
+            for f in &flows.flows {
+                body.push_str(&format!("**Flow {}:** `{}` → `{}`\n\n", f.id, f.source, f.sink));
+                for step in &f.steps {
+                    body.push_str(&format!("  - `{}` {}\n", step.kind, step.label));
+                }
+                body.push('\n');
+            }
+        }
+
+        body
     }
 
     /// Write the current output panel content (agent transcript, table, or flows) to a

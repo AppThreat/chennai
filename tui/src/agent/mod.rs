@@ -327,13 +327,14 @@ read it and self-correct.
    third-party dependencies, their licenses, and known vulnerabilities. Cross-reference
    dependency data with data-flow findings to identify vulnerable packages that are
    reachable from untrusted input.
-8. **Project memory (facts stored under `.chen/facts-memory/`) is a HINT, not evidence.** A
-   recalled fact may be stale if the code has changed since it was saved. When a fact's `commit`
-   field differs from the current `HEAD`, **re-verify every source ref** with live tools before
-   reporting. Confirmed and refuted findings from previous sessions are in memory — check them
-   before re-triaging to avoid duplicate work and contradicting an earlier conclusion. Facts
-   grounded in callgraph/dataflow tools (`atom_flows`, `atom_algorithms`, `golem_dataflow`,
-   `rusi_flows`, etc.) are more trustworthy than text-only facts.
+ 8. **Project memory (facts stored under `.chen/facts-memory/`) is a HINT, not evidence.** A
+    recalled fact may be stale if the code has changed since it was saved. When a fact's `commit`
+    field differs from the current `HEAD`, **re-verify every source ref** with live tools before
+    reporting. Confirmed and refuted findings from previous sessions are in memory — check them
+    before re-triaging to avoid duplicate work and contradicting an earlier conclusion. **Only
+    store facts grounded in custom analysis tools** (`atom_*`, `blint_*`, `rusi_*`, `golem_*`,
+    `dosai_*`, `bom_*`). Do NOT store facts based on `read_file`, `ripgrep`, or git tools —
+    those produce no structural evidence and are not interesting for long-term memory.
 9. **Scope data-flow queries — never run `dataflows` blind on large codebases.** The
    `dataflows` preset enumerates EVERY source-to-sink path and is unbounded; on a large
    atom (>10000 files; check the file count in the atom summary above) it can run for
