@@ -41,6 +41,9 @@ pub fn all_tool_definitions() -> Vec<Value> {
         atom_dsl_eval(),
         atom_flows(),
         atom_flows_through(),
+        atom_callsites(),
+        atom_callgraph(),
+        atom_controlflow(),
         atom_detail(),
         atom_algorithms(),
         project_memory(),
@@ -266,6 +269,89 @@ fn atom_flows_through() -> Value {
                     "description": "Max flows to return in this page (default 50)."
                 }
             }
+        }
+    })
+}
+
+fn atom_callsites() -> Value {
+    json!({
+        "name": "atom_callsites",
+        "description": "Find the CALL SITES of a function/method — every place it is actually INVOKED, not where it is declared. THIS IS THE TOOL TO REACH FOR when you catch yourself wanting 'where is X called'. A plain atom_query/atom_dsl_eval on `atom.method.name(...)` returns the DEFINITION (one node); this returns the call nodes (potentially many, across files) so you can see real usage, count callers, and pick a sink to trace. Works for both app-defined and external/library functions (e.g. os.system, eval, executeQuery) because it matches on the call's callee name and needs no call-graph resolver. Each row is a call site: code, file, line, and resolved methodFullName.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Regex matched against the callee's SHORT name (anchored — wrap partials in .*). Examples: 'system', '(?i).*exec.*', 'executeQuery|query'. This is the common case."
+                },
+                "fullName": {
+                    "type": "string",
+                    "description": "Alternative to 'name': regex matched against the call's methodFullName (the fully-qualified target). Use when the short name is ambiguous, e.g. 'java.sql.Statement.execute.*' or '.*os\\.system.*'. If both are given, 'name' wins."
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Max call sites to return (default 50).",
+                    "default": 50
+                }
+            }
+        }
+    })
+}
+
+fn atom_callgraph() -> Value {
+    json!({
+        "name": "atom_callgraph",
+        "description": "Navigate the CALL GRAPH around a method: its callers (who calls it) or callees (what it calls). Use this for 'what is the blast radius of X', 'who can invoke X', or 'what does X depend on / call into'. The anchor is a method matched by name; results are Method nodes (name, fullName, file, line). The call-graph edges are resolved with NoResolve (fast, no points-to analysis) — this is automatic, you do not write any DSL. For the raw call SITES of a method (Call nodes, not Methods) use atom_callsites instead; for outgoing call sites within the method body use direction 'calls'.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Regex matched against the anchor method's name (anchored — wrap partials in .*). Example: 'main', '(?i).*handler.*', 'authenticate'."
+                },
+                "direction": {
+                    "type": "string",
+                    "description": "Which edges to follow:\n- 'callers' — methods that CALL the anchor method (incoming). Answers 'who calls X / can reach X'.\n- 'callees' — methods CALLED BY the anchor method (outgoing). Answers 'what does X call'.\n- 'calls' — the outgoing call SITES inside the anchor method's body (Call nodes). Answers 'what calls does X make, with arguments'.",
+                    "enum": ["callers", "callees", "calls"]
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Max results to return (default 50).",
+                    "default": 50
+                }
+            },
+            "required": ["name", "direction"]
+        }
+    })
+}
+
+fn atom_controlflow() -> Value {
+    json!({
+        "name": "atom_controlflow",
+        "description": "Inspect intra-procedural CONTROL-FLOW and DOMINANCE relationships around a statement/call. Use this to answer 'is this sink GUARDED by a check', 'what does this condition control', or 'does an auth/validation check always run before this call' — questions about ordering and guarding that data-flow alone does not answer. The anchor is a call matched by its source code (or callee name); results are the related CFG nodes (code, file, line). All relations are computed on the CFG/dominator trees and need no resolver (automatic).",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "code": {
+                    "type": "string",
+                    "description": "Regex matched against the anchor call's source CODE (anchored — wrap partials in .*). Example: '.*strcmp.*', '.*executeQuery.*'. Prefer this for control-flow questions since conditions are usually identified by their code."
+                },
+                "name": {
+                    "type": "string",
+                    "description": "Alternative to 'code': regex matched against the anchor call's callee name. If both are given, 'code' wins."
+                },
+                "relation": {
+                    "type": "string",
+                    "description": "Which relation to compute from the anchor:\n- 'controls' — nodes whose execution the anchor decides (the anchor is a guard/condition).\n- 'controlledBy' — guard/condition nodes the anchor is control-dependent on (what must be true to reach the anchor; check for missing auth/validation here).\n- 'dominates' / 'dominatedBy' — nodes the anchor must precede / that must precede the anchor on every path.\n- 'postDominates' / 'postDominatedBy' — nodes the anchor must follow / that must follow the anchor on every path.",
+                    "enum": ["controls", "controlledBy", "dominates", "dominatedBy", "postDominates", "postDominatedBy"]
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Max related nodes to return (default 50).",
+                    "default": 50
+                }
+            },
+            "required": ["relation"]
         }
     })
 }
@@ -572,6 +658,10 @@ mod tests {
         // Atom tools present.
         assert!(names.contains(&"atom_flows"));
         assert!(names.contains(&"atom_dsl_eval"));
+        // Call-graph / control-flow convenience tools present.
+        assert!(names.contains(&"atom_callsites"));
+        assert!(names.contains(&"atom_callgraph"));
+        assert!(names.contains(&"atom_controlflow"));
         // Backend-specific tools present.
         assert!(names.contains(&"blint_callgraph"));
         assert!(names.contains(&"blint_disassembly"));

@@ -67,7 +67,12 @@ atom.annotation.toJson
 ### call traversal
 
 - argument - All argument nodes
-- callee - All callee methods
+- callee - The called method(s). Needs a call resolver: `atom.call.name("exec").callee(using NoResolve).l`
+- inCall - The surrounding call site of an argument/expression: `atom.call.name("<operator>.indirectIndexAccess").inCall.code.l`
+
+Tip: to find every CALL SITE of a function by name (the usage, not the declaration), match on the
+call directly — `atom.call.name("system")` or `atom.call.methodFullName(".*os\\.system.*")` — which
+needs no resolver. The `atom_callsites` tool wraps exactly this.
 
 ## configFile steps
 
@@ -120,7 +125,19 @@ atom.annotation.toJson
 
 - parameter - All MethodParameterIn nodes of the given method.
 - literal - All literal nodes in the method.
-- caller - All callers of this method
+- call - Outgoing call sites inside the method body (no resolver): `atom.method.name("main").call.l`
+
+#### Call-graph steps (require a resolver)
+
+These walk the call graph and need an implicit `ICallResolver` — pass `(using NoResolve)` for fast,
+unresolved navigation:
+
+- caller - Methods that CALL this method (incoming): `atom.method.name("exit").caller(using NoResolve).code.l`
+- callee - Methods CALLED BY this method (outgoing): `atom.method.name("main").callee(using NoResolve).name.l`
+- callIn - The incoming call SITES (Call nodes) of this method: `atom.method.name("exit").callIn(using NoResolve).code.l`
+
+The `atom_callgraph` tool wraps caller/callee/calls and injects the resolver for you, so you rarely
+need to write these by hand.
 
 ## ret steps
 
@@ -150,6 +167,20 @@ atom.annotation.toJson
 ## cfgNode steps
 
 - code(pattern)
+
+### Control-flow & dominance steps
+
+These operate on the control-flow and dominator trees of a method (no resolver needed). Anchor them
+on a call matched by code, e.g. `atom.call.code(".*argc.*strcmp.*")`:
+
+- controls - All nodes whose execution this node decides (this node is a guard/condition): `atom.call.code(".*argc.*strcmp.*").controls.code.l`
+- controlledBy - All guard/condition nodes this node is control-dependent on (what must hold to reach it — check for missing auth/validation): `atom.call.codeExact("exit(42)").controlledBy.code.l`
+- dominates - All nodes this node dominates (must run after it on every path): `atom.call.code(".*argc.*strcmp.*").dominates.code.l`
+- dominatedBy - All nodes that dominate this node (must run before it on every path): `atom.call.codeExact("exit(42)").dominatedBy.code.l`
+- postDominates - All nodes this node post-dominates: `atom.call.code(".*argc.*strcmp.*").postDominates.code.l`
+- postDominatedBy - All nodes that post-dominate this node: `atom.call.codeExact("exit(42)").postDominatedBy.code.l`
+
+The `atom_controlflow` tool wraps all six relations.
 
 ## declaration steps
 

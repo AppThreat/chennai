@@ -24,7 +24,7 @@ use crate::shared::backend::Backend;
 use provider::{
     AgentEvent, ChannelSink, ContentBlock, EventSink, LlmProvider, ProviderError, TurnRequest,
 };
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::sync::mpsc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -249,6 +249,9 @@ Version: {version}
 - atom_query — flat tables: files, methods, externalMethods, calls, tags, imports, literals, configFiles…
 - atom_dsl_eval — arbitrary chen DSL (the power tool). Auto-`.toJson`, paged.
 - atom_flows / atom_flows_through — data-flow (source→sink) paths; presets dataflows/reachables/cryptos are bounded by `take` and paginated via `offset`/`limit`, highest-value flows first.
+- atom_callsites — where a function is CALLED (call sites), not where it is declared. Use instead of querying `atom.method...` when you want usage.
+- atom_callgraph — callers / callees / outgoing calls of a method (call-graph navigation; resolver handled for you).
+- atom_controlflow — control-dependence & dominance around a statement (is a sink guarded? what must run first?).
 - atom_detail — properties, children, call tree, and real source for a node.
 - atom_algorithms — pagerank, scc, dominators, toposort, shortest-path, reachable-by.
 - git_diff / git_log / git_show — read-only git history.
@@ -289,6 +292,22 @@ must match the WHOLE string (it is anchored), so wrap partial matches in `.*`:
 Because matching is anchored, a bare `exec` will NOT match `executeQuery`; use `.*exec.*`.
 If an expression errors, the engine returns the parser error verbatim as the tool result —
 read it and self-correct.
+
+## Prefer the dedicated traversal tools over hand-written DSL
+For three very common questions, do NOT hand-write a traversal — call the purpose-built tool. It
+takes a plain regex (no Scala double-escaping needed), handles the call-graph resolver for you, and
+bounds + dedups the result automatically. Reserve atom_dsl_eval for traversals these don't cover.
+- "Where is function X called?" → atom_callsites {{name: "X"}}. This is CALL SITES (usage), not the
+  declaration. A query like `atom.method.name("X")` returns the DEFINITION (one node) — a frequent
+  mistake; use atom_callsites when you want where it is invoked. Use `fullName` to disambiguate by
+  fully-qualified target (e.g. fullName: ".*os\\.system.*").
+- "Who calls X / what does X call (blast radius, dependencies)?" → atom_callgraph
+  {{name: "X", direction: "callers" | "callees" | "calls"}}. (`callers`/`callees` are Methods;
+  `calls` are the outgoing call sites inside X, with arguments.)
+- "Is this sink guarded? what must run before it? what does this condition control?" →
+  atom_controlflow {{code: ".*sink.*", relation: "controlledBy" | "controls" | "dominates" |
+  "dominatedBy" | "postDominates" | "postDominatedBy"}}. Use `controlledBy` to check whether an
+  auth/validation check dominates a dangerous call.
 
 {identity_rules}
 
@@ -386,6 +405,15 @@ pub fn dispatch_tool(ctx: &AgentCtx, call_id: &str, name: &str, input: &Value) -
         "atom_dsl_eval" => engine_request(ctx, call_id, "eval", input),
         "atom_flows" => engine_request(ctx, call_id, "flows", input),
         "atom_flows_through" => engine_request(ctx, call_id, "flows", input),
+        // Convenience tools that compile to a chen DSL expression evaluated via `eval`. They save
+        // the model from hand-writing call-graph / control-flow traversals (and remembering the
+        // `using NoResolve` resolver) — the single place agents most often got the DSL wrong.
+        "atom_callsites" | "atom_callgraph" | "atom_controlflow" => {
+            match build_traversal_expr(name, input) {
+                Ok(expr) => engine_request(ctx, call_id, "eval", &json!({ "expr": expr })),
+                Err(msg) => ToolExecResult { call_id: call_id.into(), content: msg, is_error: true },
+            }
+        }
         "atom_detail" => engine_request(ctx, call_id, "detail", input),
         "atom_algorithms" => engine_request(ctx, call_id, "algo", input),
         // Backend-specific tool dispatch: tools named <backend>_<command>
@@ -607,6 +635,79 @@ fn wrap_result(call_id: &str, result: Result<String, String>) -> ToolExecResult 
 /// Maximum bytes of tool result content sent back to the LLM per tool call.
 /// Larger results are truncated to prevent 413 errors and runaway token usage.
 const MAX_TOOL_RESULT_BYTES: usize = 48 * 1024; // 48 KiB
+
+/// Escape a user-supplied regex/pattern so it is a valid Scala string literal body. The model
+/// passes patterns the way it would type them in a regex (e.g. `\.` for a literal dot); we
+/// double the backslashes and escape quotes so the generated DSL compiles, sparing the model the
+/// double-escaping rule that trips it up in raw atom_dsl_eval.
+fn dsl_str(pattern: &str) -> String {
+    let escaped = pattern.replace('\\', "\\\\").replace('"', "\\\"");
+    format!("\"{escaped}\"")
+}
+
+/// Read the `limit` argument (rows to return), clamped to a sane range with a default of 50.
+fn traversal_limit(input: &Value) -> i64 {
+    input.get("limit").and_then(Value::as_i64).unwrap_or(50).clamp(1, 1000)
+}
+
+/// Build the chen DSL expression for the `atom_callsites` / `atom_callgraph` / `atom_controlflow`
+/// convenience tools. Returns an error string (shown to the model) when required arguments are
+/// missing, so it can correct the call rather than receive an opaque REPL parse error.
+///
+/// The generated expressions deliberately end in `.dedup.take(n)` (no `.toJson`; the engine
+/// appends it) so results are bounded and free of duplicates.
+fn build_traversal_expr(tool: &str, input: &Value) -> Result<String, String> {
+    let limit = traversal_limit(input);
+    let name = input.get("name").and_then(Value::as_str).filter(|s| !s.is_empty());
+    match tool {
+        "atom_callsites" => {
+            // Call sites by callee short name (default) or by methodFullName.
+            let expr = if let Some(n) = name {
+                format!("atom.call.name({})", dsl_str(n))
+            } else if let Some(fne) = input.get("fullName").and_then(Value::as_str).filter(|s| !s.is_empty()) {
+                format!("atom.call.methodFullName({})", dsl_str(fne))
+            } else {
+                return Err("atom_callsites requires 'name' (callee short name regex) or 'fullName' (methodFullName regex)".into());
+            };
+            Ok(format!("{expr}.dedup.take({limit})"))
+        }
+        "atom_callgraph" => {
+            let n = name.ok_or("atom_callgraph requires 'name' (the anchor method name regex)")?;
+            let direction = input.get("direction").and_then(Value::as_str).unwrap_or("");
+            // `caller`/`callee` need an explicit ICallResolver; `call` (outgoing call sites) does not.
+            let step = match direction {
+                "callers" => "caller(using NoResolve)",
+                "callees" => "callee(using NoResolve)",
+                "calls" => "call",
+                other => return Err(format!(
+                    "atom_callgraph 'direction' must be callers|callees|calls, got '{other}'"
+                )),
+            };
+            Ok(format!("atom.method.name({}).{step}.dedup.take({limit})", dsl_str(n)))
+        }
+        "atom_controlflow" => {
+            let relation = input.get("relation").and_then(Value::as_str).unwrap_or("");
+            if !matches!(
+                relation,
+                "controls" | "controlledBy" | "dominates" | "dominatedBy" | "postDominates" | "postDominatedBy"
+            ) {
+                return Err(format!(
+                    "atom_controlflow 'relation' must be controls|controlledBy|dominates|dominatedBy|postDominates|postDominatedBy, got '{relation}'"
+                ));
+            }
+            // Anchor the relation on a call matched by code (preferred) or by callee name.
+            let anchor = if let Some(code) = input.get("code").and_then(Value::as_str).filter(|s| !s.is_empty()) {
+                format!("atom.call.code({})", dsl_str(code))
+            } else if let Some(n) = name {
+                format!("atom.call.name({})", dsl_str(n))
+            } else {
+                return Err("atom_controlflow requires 'code' (anchor call code regex) or 'name' (anchor callee name regex)".into());
+            };
+            Ok(format!("{anchor}.{relation}.dedup.take({limit})"))
+        }
+        other => Err(format!("unknown traversal tool: {other}")),
+    }
+}
 
 fn engine_request(ctx: &AgentCtx, call_id: &str, cmd: &str, input: &Value) -> ToolExecResult {
     let Some(ref engine_mutex) = ctx.engine else {
@@ -1093,6 +1194,77 @@ fn parse_starter_questions(text: &str) -> Vec<(String, String)> {
 mod tests {
     use super::*;
     use crate::model::SummaryRow;
+
+    #[test]
+    fn dsl_str_escapes_backslashes_and_quotes() {
+        assert_eq!(dsl_str("os\\.system"), "\"os\\\\.system\"");
+        assert_eq!(dsl_str("say \"hi\""), "\"say \\\"hi\\\"\"");
+        assert_eq!(dsl_str("(?i).*exec.*"), "\"(?i).*exec.*\"");
+    }
+
+    #[test]
+    fn build_callsites_by_name_and_fullname() {
+        let by_name = build_traversal_expr("atom_callsites", &json!({"name": "system"})).unwrap();
+        assert_eq!(by_name, "atom.call.name(\"system\").dedup.take(50)");
+        // fullName path, with backslash escaping and a custom limit.
+        let by_fn = build_traversal_expr(
+            "atom_callsites",
+            &json!({"fullName": ".*os\\.system.*", "limit": 10}),
+        )
+        .unwrap();
+        assert_eq!(by_fn, "atom.call.methodFullName(\".*os\\\\.system.*\").dedup.take(10)");
+        // name wins when both are present.
+        let both = build_traversal_expr(
+            "atom_callsites",
+            &json!({"name": "exec", "fullName": "x"}),
+        )
+        .unwrap();
+        assert!(both.starts_with("atom.call.name(\"exec\")"));
+        // Missing both is an error.
+        assert!(build_traversal_expr("atom_callsites", &json!({})).is_err());
+    }
+
+    #[test]
+    fn build_callgraph_injects_resolver_only_where_needed() {
+        let callers = build_traversal_expr("atom_callgraph", &json!({"name": "main", "direction": "callers"})).unwrap();
+        assert_eq!(callers, "atom.method.name(\"main\").caller(using NoResolve).dedup.take(50)");
+        let callees = build_traversal_expr("atom_callgraph", &json!({"name": "main", "direction": "callees"})).unwrap();
+        assert!(callees.contains("callee(using NoResolve)"));
+        // `calls` (outgoing call sites) needs no resolver.
+        let calls = build_traversal_expr("atom_callgraph", &json!({"name": "main", "direction": "calls"})).unwrap();
+        assert_eq!(calls, "atom.method.name(\"main\").call.dedup.take(50)");
+        assert!(!calls.contains("NoResolve"));
+        // Bad direction / missing name are errors.
+        assert!(build_traversal_expr("atom_callgraph", &json!({"name": "m", "direction": "bogus"})).is_err());
+        assert!(build_traversal_expr("atom_callgraph", &json!({"direction": "callers"})).is_err());
+    }
+
+    #[test]
+    fn build_controlflow_anchors_and_validates_relation() {
+        let by_code = build_traversal_expr(
+            "atom_controlflow",
+            &json!({"code": ".*strcmp.*", "relation": "controls"}),
+        )
+        .unwrap();
+        assert_eq!(by_code, "atom.call.code(\".*strcmp.*\").controls.dedup.take(50)");
+        // name anchor when code absent.
+        let by_name = build_traversal_expr(
+            "atom_controlflow",
+            &json!({"name": "exit", "relation": "controlledBy"}),
+        )
+        .unwrap();
+        assert_eq!(by_name, "atom.call.name(\"exit\").controlledBy.dedup.take(50)");
+        // Invalid relation and missing anchor are errors.
+        assert!(build_traversal_expr("atom_controlflow", &json!({"code": "x", "relation": "nope"})).is_err());
+        assert!(build_traversal_expr("atom_controlflow", &json!({"relation": "controls"})).is_err());
+    }
+
+    #[test]
+    fn traversal_limit_clamps() {
+        assert_eq!(traversal_limit(&json!({})), 50);
+        assert_eq!(traversal_limit(&json!({"limit": 0})), 1);
+        assert_eq!(traversal_limit(&json!({"limit": 99999})), 1000);
+    }
 
     #[test]
     fn parse_starter_questions_extracts_pairs_amid_prose() {
