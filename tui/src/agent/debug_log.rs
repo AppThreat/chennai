@@ -1,9 +1,11 @@
 use serde_json::Value;
 
 /// Logs custom tool calls to timestamped JSON files under
-/// `<source_root>/.chen/chennai-debug-logs/`. Only tools matching the
-/// tracked prefixes (`atom_`, `bom_`, `rusi_`, `golem_`, `dosai_`, `blint_`)
-/// are recorded — shell/git tools are excluded.
+/// `<source_root>/.chen/chennai-debug-logs/`. The structured-analysis tools
+/// (`atom_`, `bom_`, `rusi_`, `golem_`, `dosai_`, `blint_`, `project_memory`)
+/// are recorded, as are the fallback `ripgrep` / `read_file` / `git_*` tools —
+/// capturing the latter is what lets us audit whether the model is reaching for
+/// text search instead of the structured tools when debugging tool selection.
 #[derive(Clone)]
 pub struct DebugLogger {
     log_dir: std::path::PathBuf,
@@ -50,5 +52,10 @@ impl DebugLogger {
             || name.starts_with("golem_")
             || name.starts_with("dosai_")
             || name.starts_with("blint_")
+            // Fallback text/file/git tools: tracked so a debug session shows the FULL tool mix
+            // (structured-analysis vs. text-search), which is essential for auditing tool selection.
+            || name == "ripgrep"
+            || name == "read_file"
+            || name.starts_with("git_")
     }
 }

@@ -126,6 +126,32 @@ macro_rules! debug_eprintln {
     };
 }
 
+/// Fetch a compact overview of the tag vocabulary in the open atom for the agent system prompt:
+/// a space-separated `name(count)` list, most frequent first. Returns `None` when the atom has no
+/// tags or the query fails, so the prompt simply omits the section.
+fn fetch_atom_tags(eng: &mut Engine) -> Option<String> {
+    let data: serde_json::Value = eng
+        .request("query", json!({ "kind": "tagNames", "limit": 1000 }))
+        .ok()?;
+    let rows = data.get("rows")?.as_array()?;
+    let cell_v = |row: &serde_json::Value, i: usize| -> String {
+        row.as_array()
+            .and_then(|cells| cells.get(i))
+            .and_then(|c| c.get("v"))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+            .to_string()
+    };
+    let parts: Vec<String> = rows
+        .iter()
+        .filter_map(|row| {
+            let name = cell_v(row, 0);
+            (!name.is_empty()).then(|| format!("{name}({})", cell_v(row, 1)))
+        })
+        .collect();
+    (!parts.is_empty()).then(|| parts.join("  "))
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
@@ -204,6 +230,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
         let _open: OpenInfo = eng.request("open", open_args)?;
         let summary: Summary = eng.request("summary", json!({}))?;
+        let atom_tags = fetch_atom_tags(&mut eng);
 
         if let Some(question) = args.ask {
             // Fall back to the atom's parent directory when --source is not provided,
@@ -313,7 +340,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             AgentCtx::build_system_prompt(
                                 &summary.language, &summary.version, &summary.rows,
                                 Some(&bom_summary), bom_components.as_deref(), None,
-                                memory_index.as_deref(),
+                                memory_index.as_deref(), atom_tags.as_deref(),
                             )
                         }
                     };
@@ -1245,7 +1272,7 @@ You are an authorized red-team review of the user's own code. Analyze it adversa
 
 fn run_headless_agent(
     config: Config,
-    engine: Engine,
+    mut engine: Engine,
     source_root: Option<String>,
     summary: Summary,
     question: String,
@@ -1257,9 +1284,10 @@ fn run_headless_agent(
     let provider = agent::create_provider(&config).map_err(|e| format!("provider: {e}"))?;
     let memory_index = crate::agent::memory::FactStore::open(source_root.as_deref())
         .map(|s| s.index_markdown());
+    let atom_tags = fetch_atom_tags(&mut engine);
     let system_prompt = AgentCtx::build_system_prompt(
         &summary.language, &summary.version, &summary.rows,
-        None, None, None, memory_index.as_deref(),
+        None, None, None, memory_index.as_deref(), atom_tags.as_deref(),
     );
     let debug_logger = if config.debug { DebugLogger::new(source_root.as_deref()) } else { None };
     let ctx = AgentCtx {
@@ -1427,6 +1455,10 @@ fn run_app<B: ratatui::backend::Backend>(
                              Use the project_memory tool (action:\"recall\"/\"search\") to read a fact's full body.\n"
                         )
                     }).unwrap_or_default();
+                    let atom_tags = app.engine.as_ref().and_then(|e| {
+                        let mut guard = e.lock().unwrap();
+                        fetch_atom_tags(&mut guard)
+                    });
                     let system_prompt = if let Some(sp) = &custom_system_prompt {
                         format!("{sp}{memory_section}")
                     } else {
@@ -1439,7 +1471,7 @@ fn run_app<B: ratatui::backend::Backend>(
                             _ => AgentCtx::build_system_prompt(
                                 &app.summary.language, &app.summary.version, &app.summary.rows,
                                 bom_summary.as_deref(), bom_components_summary.as_deref(),
-                                Some(&console_history), memory_index.as_deref(),
+                                Some(&console_history), memory_index.as_deref(), atom_tags.as_deref(),
                             ),
                         }
                     };
@@ -2147,11 +2179,12 @@ fn build_dump_prompt(
     };
     let _open: OpenInfo = eng.request("open", open_args)?;
     let summary: Summary = eng.request("summary", json!({}))?;
+    let atom_tags = fetch_atom_tags(&mut eng);
     let memory_index = crate::agent::memory::FactStore::open(source_root)
         .map(|s| s.index_markdown());
     let prompt = AgentCtx::build_system_prompt(
         &summary.language, &summary.version, &summary.rows,
-        None, None, None, memory_index.as_deref(),
+        None, None, None, memory_index.as_deref(), atom_tags.as_deref(),
     );
     Ok(prompt)
 }
@@ -2213,7 +2246,7 @@ fn build_template_prompt() -> String {
         SummaryRow { label: "Calls".into(), count: 0 },
         SummaryRow { label: "Tags".into(), count: 0 },
     ];
-    AgentCtx::build_system_prompt("<language>", "<version>", &rows, None, None, None, None)
+    AgentCtx::build_system_prompt("<language>", "<version>", &rows, None, None, None, None, None)
 }
 
 /// Check whether a file path matches known binary/artifact extensions.

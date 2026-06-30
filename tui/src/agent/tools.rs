@@ -44,6 +44,7 @@ pub fn all_tool_definitions() -> Vec<Value> {
         atom_callsites(),
         atom_callgraph(),
         atom_controlflow(),
+        atom_reaches(),
         atom_detail(),
         atom_algorithms(),
         project_memory(),
@@ -356,6 +357,35 @@ fn atom_controlflow() -> Value {
     })
 }
 
+fn atom_reaches() -> Value {
+    json!({
+        "name": "atom_reaches",
+        "description": "PROVE whether untrusted input can reach a specific dangerous SINK — the end-to-end taint path, not a guess. Use this the moment you have a candidate sink (e.g. from atom_callsites: a subprocess/exec/yaml.load/open/requests.get call) and need to confirm it is actually exploitable. It builds and runs `(sink).reachableByFlows(source)` for you, so you do NOT hand-assemble caller chains with atom_callgraph + read_file (that proves nothing about taint). Returns the data-flow path(s) source→sink, or an empty result. An EMPTY result is a real answer: the sink is NOT reachable from the given untrusted sources — report it as not-exploitable / LOW confidence rather than reconstructing a speculative chain. Prefer this (or atom_flows_through) over manually tracing reachability.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Regex matched against the SINK call's short name (anchored). Example: '(?i).*(system|popen|exec)', 'load|loads', 'open'."
+                },
+                "code": {
+                    "type": "string",
+                    "description": "Alternative to 'name': regex matched against the sink call's source CODE. Use when the sink is best identified by its code. If both given, 'name' wins."
+                },
+                "sourceTags": {
+                    "type": "string",
+                    "description": "'|'- or ','-delimited untrusted-source tags to start from (default 'framework-input|framework-route|cli-source'). Use atom_query kind:tags to see which exist; widen or change these if the default yields nothing."
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Max flow paths to return (default 20).",
+                    "default": 20
+                }
+            }
+        }
+    })
+}
+
 fn atom_detail() -> Value {
     json!({
         "name": "atom_detail",
@@ -662,6 +692,7 @@ mod tests {
         assert!(names.contains(&"atom_callsites"));
         assert!(names.contains(&"atom_callgraph"));
         assert!(names.contains(&"atom_controlflow"));
+        assert!(names.contains(&"atom_reaches"));
         // Backend-specific tools present.
         assert!(names.contains(&"blint_callgraph"));
         assert!(names.contains(&"blint_disassembly"));

@@ -45,6 +45,12 @@ class QueryHandlerTests extends AnyWordSpec with Matchers:
       json.hcursor.downField("rows").values.map(_.size) shouldBe Some(1)
       json.hcursor.get[Int]("total").toOption shouldBe Some(2)
 
+    "aggregate distinct tag names with counts" in:
+      val json = QueryHandler.query(cpg, "tagNames", None, 0, 100)
+      json.hcursor.downField("columns").as[List[String]].toOption shouldBe Some(List("Tag", "Count"))
+      // MockCpg has no tags, so the vocabulary is empty but the shape is still valid.
+      json.hcursor.get[Int]("total").toOption shouldBe Some(0)
+
     "reject unknown kinds" in:
       an[IllegalArgumentException] should be thrownBy QueryHandler.query(cpg, "bogus", None, 0, 10)
 end QueryHandlerTests

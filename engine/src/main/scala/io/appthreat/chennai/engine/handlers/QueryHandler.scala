@@ -140,6 +140,17 @@ object QueryHandler:
               List(cell(o, Kind.Name))
           )
 
+      case "tagNames" =>
+          // Distinct tag names with how many nodes carry each, most-frequent first. Unlike "tags"
+          // (one row per tagged node) this is a compact vocabulary view — used to surface the
+          // atom's source/sink tag set up front (e.g. in the agent system prompt).
+          val pat = pattern.getOrElse(".*")
+          val counts = cpg.tag.name(pat).name.l.groupBy(identity).view.mapValues(_.size).toList
+              .sortBy { case (name, n) => (-n, name) }
+          page("Tag names", List("Tag", "Count"))(counts.iterator) { case (name, n) =>
+              List(cell(name, Kind.Name), cell(n.toString, Kind.Num))
+          }
+
       case "tags" =>
           val pat = pattern.getOrElse(".*")
           def tagged: Iterator[(io.shiftleft.codepropertygraph.generated.nodes.Tag, StoredNode)] =

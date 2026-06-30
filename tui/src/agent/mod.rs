@@ -185,6 +185,9 @@ pub struct AgentCtx {
 }
 
 impl AgentCtx {
+    // Assembles the prompt from many optional context sections (BOM, console, memory, tags); a
+    // builder struct would add ceremony without clarity for a single call path.
+    #[allow(clippy::too_many_arguments)]
     pub fn build_system_prompt(
         language: &str,
         version: &str,
@@ -193,11 +196,28 @@ impl AgentCtx {
         bom_components: Option<&str>,
         console_history: Option<&str>,
         memory_index: Option<&str>,
+        tags: Option<&str>,
     ) -> String {
         let counts: String = summary_rows.iter()
             .map(|r| format!("{}: {}", r.label, r.count))
             .collect::<Vec<_>>()
             .join("\n");
+
+        // Surface the atom's ACTUAL tag vocabulary up front. The single biggest cause of wasted
+        // turns (and wrong "not exploitable" calls) is the model guessing source/sink tags that
+        // don't exist here — e.g. scoping to `framework-input` on a CLI tool whose untrusted source
+        // is `cli-source`. Listing the real tags lets it pick correct atom_flows/atom_reaches scopes
+        // immediately instead of probing and being nudged.
+        let tags_section = tags
+            .filter(|s| !s.trim().is_empty())
+            .map(|s| format!(
+                "\n## Tags present in THIS atom (the complete vocabulary — source/sink scopes must come from this list)\n\
+                 {s}\n\
+                 Use these names verbatim for atom_flows `sourceTags`/`sinkTags` and atom_reaches `sourceTags`. \
+                 The untrusted-input sources present here define where taint starts — e.g. `cli-source` for a CLI tool, \
+                 `framework-input`/`framework-route` for a web app. Do NOT scope to a tag that is not listed above.\n"
+            ))
+            .unwrap_or_default();
 
         let bom_section = match (bom_summary, bom_components) {
             (Some(summary), Some(components)) => {
@@ -243,7 +263,7 @@ Language: {language}
 Version: {version}
 
 ## Atom summary (authoritative — do NOT call atom_summary to re-fetch these)
-{counts}{console_section}{bom_section}{memory_section}
+{counts}{tags_section}{console_section}{bom_section}{memory_section}
 ## Available tools
 - atom_traversal_docs — look up DSL traversal roots, step methods, and examples.
 - atom_query — flat tables: files, methods, externalMethods, calls, tags, imports, literals, configFiles…
@@ -252,6 +272,7 @@ Version: {version}
 - atom_callsites — where a function is CALLED (call sites), not where it is declared. Use instead of querying `atom.method...` when you want usage.
 - atom_callgraph — callers / callees / outgoing calls of a method (call-graph navigation; resolver handled for you).
 - atom_controlflow — control-dependence & dominance around a statement (is a sink guarded? what must run first?).
+- atom_reaches — PROVE untrusted input reaches a specific sink (builds (sink).reachableByFlows(source)); use instead of hand-tracing caller chains.
 - atom_detail — properties, children, call tree, and real source for a node.
 - atom_algorithms — pagerank, scc, dominators, toposort, shortest-path, reachable-by.
 - git_diff / git_log / git_show — read-only git history.
@@ -308,6 +329,14 @@ bounds + dedups the result automatically. Reserve atom_dsl_eval for traversals t
   atom_controlflow {{code: ".*sink.*", relation: "controlledBy" | "controls" | "dominates" |
   "dominatedBy" | "postDominates" | "postDominatedBy"}}. Use `controlledBy` to check whether an
   auth/validation check dominates a dangerous call.
+- "Can untrusted input actually REACH this sink (is it exploitable)?" → atom_reaches
+  {{name: "<sinkName>"}} (or code: "<sinkCode>"). This PROVES the source→sink taint path. Do NOT
+  substitute a hand-built chain of atom_callgraph(callers) + read_file — caller edges show the call
+  tree, not taint, and prove nothing about exploitability. After atom_callsites finds a candidate
+  dangerous call, your NEXT step to claim exploitability is atom_reaches (or atom_flows_through
+  {{passesThrough: "<sinkMethod>"}}), not source reading. An EMPTY atom_reaches result is a real,
+  reportable answer: the sink is not reachable from those sources — say so (not-exploitable / LOW),
+  do not reconstruct a speculative path. Only read source to CONFIRM a path the tools already found.
 
 {identity_rules}
 
@@ -410,7 +439,47 @@ pub fn dispatch_tool(ctx: &AgentCtx, call_id: &str, name: &str, input: &Value) -
         // `using NoResolve` resolver) — the single place agents most often got the DSL wrong.
         "atom_callsites" | "atom_callgraph" | "atom_controlflow" => {
             match build_traversal_expr(name, input) {
-                Ok(expr) => engine_request(ctx, call_id, "eval", &json!({ "expr": expr })),
+                Ok(expr) => {
+                    let mut res = engine_request(ctx, call_id, "eval", &json!({ "expr": expr }));
+                    // Nudge at the decision point: having just located call sites, the model tends
+                    // to reach for read_file/ripgrep to "check reachability" by reading. Point it at
+                    // the proof tool instead — a result-level hint lands better than a prompt rule.
+                    if name == "atom_callsites" && !res.is_error
+                        && let Some(n) = input.get("name").and_then(Value::as_str) {
+                        res.content.push_str(&format!(
+                            "\n\n_Next step to claim exploitability: PROVE reachability with \
+                             atom_reaches {{name: {n:?}}} (or atom_flows_through). Do not infer \
+                             reachability by reading source — an empty proof means not-exploitable._"
+                        ));
+                    }
+                    res
+                }
+                Err(msg) => ToolExecResult { call_id: call_id.into(), content: msg, is_error: true },
+            }
+        }
+        // Reachability proof: compiles to `(sink).reachableByFlows(source)` and runs through the
+        // `flows` command so the result renders as a data-flow path (not a flat table).
+        "atom_reaches" => {
+            match build_reaches_expr(input) {
+                Ok((expr, limit)) => {
+                    let mut res = engine_request(ctx, call_id, "flows", &json!({ "expr": expr, "limit": limit }));
+                    // An empty proof can mean "not reachable" OR "wrong source tags". The model
+                    // tends to over-narrow sourceTags (e.g. only framework-input on a CLI app, where
+                    // the untrusted source is cli-source). Before it concludes not-exploitable, point
+                    // it at widening the source scope — but only when the caller actually narrowed it.
+                    let narrowed = input.get("sourceTags").and_then(Value::as_str)
+                        .map(|t| !t.contains("cli-source") || !t.contains("framework-input"))
+                        .unwrap_or(false);
+                    if !res.is_error && narrowed && res.content.contains("0 flow(s) shown") {
+                        res.content.push_str(
+                            "\n\n_0 paths from these sources does NOT prove safety if the source tags \
+                             are too narrow. Re-run atom_reaches WITHOUT sourceTags (uses the full \
+                             untrusted set) — for a CLI tool the source is `cli-source`, not \
+                             `framework-input`. Check atom_query kind:tags for which exist here._"
+                        );
+                    }
+                    res
+                }
                 Err(msg) => ToolExecResult { call_id: call_id.into(), content: msg, is_error: true },
             }
         }
@@ -709,6 +778,37 @@ fn build_traversal_expr(tool: &str, input: &Value) -> Result<String, String> {
     }
 }
 
+/// Untrusted-source tags `atom_reaches` starts from when the caller doesn't override them.
+const DEFAULT_UNTRUSTED_TAGS: &str = "framework-input|framework-route|cli-source";
+
+/// Build the `(sink).reachableByFlows(source...)` expression for `atom_reaches`, returning it
+/// alongside the requested flow limit. The sink is a call (by name or code); the sources are the
+/// parameter/identifier/call nodes carrying any of the untrusted-source tags — mirroring the
+/// engine's own reachables collectors so a one-arg tool call proves a real taint path.
+fn build_reaches_expr(input: &Value) -> Result<(String, i64), String> {
+    let limit = input.get("limit").and_then(Value::as_i64).unwrap_or(20).clamp(1, 200);
+    let sink = if let Some(n) = input.get("name").and_then(Value::as_str).filter(|s| !s.is_empty()) {
+        format!("atom.call.name({})", dsl_str(n))
+    } else if let Some(code) = input.get("code").and_then(Value::as_str).filter(|s| !s.is_empty()) {
+        format!("atom.call.code({})", dsl_str(code))
+    } else {
+        return Err("atom_reaches requires 'name' (sink call name regex) or 'code' (sink call code regex)".into());
+    };
+    // Normalise a comma-delimited tag list to the regex-alternation the DSL expects.
+    let tags_raw = input
+        .get("sourceTags")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .unwrap_or(DEFAULT_UNTRUSTED_TAGS);
+    let tag_regex = tags_raw.replace(',', "|");
+    let tag = dsl_str(&tag_regex);
+    // Cover the three node kinds untrusted input can enter through, as the engine's reachables do.
+    let source = format!(
+        "atom.tag.name({tag}).parameter, atom.tag.name({tag}).identifier, atom.tag.name({tag}).call"
+    );
+    Ok((format!("{sink}.reachableByFlows({source})"), limit))
+}
+
 fn engine_request(ctx: &AgentCtx, call_id: &str, cmd: &str, input: &Value) -> ToolExecResult {
     let Some(ref engine_mutex) = ctx.engine else {
         return ToolExecResult { call_id: call_id.into(), content: "engine not available".into(), is_error: true };
@@ -759,7 +859,8 @@ String args are REGEX, anchored with neither ^ nor $ (substring match). Use `Exa
 Common steps:\n\
   atom.method.name(\"regex\")            method defs by name (also .fullName, .filename, .signature)\n\
   atom.method.internal / .external      app-defined vs library methods (NOT .isExternal as a step)\n\
-  atom.method.name(\"x\").caller / .callee / .call / .parameter / .literal\n\
+  atom.method.name(\"x\").caller / .callee / .callIn  REQUIRE a resolver: append `(using NoResolve)` (e.g. `.caller(using NoResolve)`) — or just call atom_callgraph, which adds it for you\n\
+  atom.method.name(\"x\").call / .parameter / .literal  (these need NO resolver)\n\
   atom.call.code(\"regex\")              call sites by source text (prefer over .name for real patterns)\n\
   atom.call.name(\"regex\") / .methodFullName(\"regex\") / .argument\n\
   atom.literal.code(\"regex\") / atom.identifier.typeFullName(\"regex\")\n\
@@ -1260,6 +1361,36 @@ mod tests {
     }
 
     #[test]
+    fn build_reaches_uses_default_untrusted_tags_and_covers_node_kinds() {
+        let (expr, limit) = build_reaches_expr(&json!({"name": "(?i).*system"})).unwrap();
+        assert_eq!(limit, 20);
+        assert!(expr.starts_with("atom.call.name(\"(?i).*system\").reachableByFlows("));
+        // Default untrusted tags, as a regex alternation, across parameter/identifier/call.
+        assert!(expr.contains("atom.tag.name(\"framework-input|framework-route|cli-source\").parameter"));
+        assert!(expr.contains(".identifier"));
+        assert!(expr.contains(".call"));
+    }
+
+    #[test]
+    fn build_reaches_honours_code_and_custom_tags_and_limit() {
+        let (expr, limit) = build_reaches_expr(&json!({
+            "code": ".*yaml\\.load.*",
+            "sourceTags": "cli-source,framework-input",
+            "limit": 5
+        }))
+        .unwrap();
+        assert_eq!(limit, 5);
+        assert!(expr.starts_with("atom.call.code(\".*yaml\\\\.load.*\")"));
+        // Comma-delimited tags normalised to regex alternation.
+        assert!(expr.contains("atom.tag.name(\"cli-source|framework-input\").parameter"));
+        // name wins over code when both present.
+        let (expr2, _) = build_reaches_expr(&json!({"name": "exec", "code": "x"})).unwrap();
+        assert!(expr2.starts_with("atom.call.name(\"exec\")"));
+        // Neither sink selector → error.
+        assert!(build_reaches_expr(&json!({})).is_err());
+    }
+
+    #[test]
     fn traversal_limit_clamps() {
         assert_eq!(traversal_limit(&json!({})), 50);
         assert_eq!(traversal_limit(&json!({"limit": 0})), 1);
@@ -1284,10 +1415,29 @@ mod tests {
     #[test]
     fn system_prompt_includes_summary_counts() {
         let rows = vec![SummaryRow { label: "Files".into(), count: 42 }];
-        let prompt = AgentCtx::build_system_prompt("C", "1.0", &rows, None, None, None, None);
+        let prompt = AgentCtx::build_system_prompt("C", "1.0", &rows, None, None, None, None, None);
         assert!(prompt.contains("Language: C"));
         assert!(prompt.contains("Files: 42"));
         assert!(prompt.contains("Grounding rule"));
+    }
+
+    #[test]
+    fn system_prompt_includes_tags_section_when_provided() {
+        let rows = vec![SummaryRow { label: "Tags".into(), count: 10 }];
+        let prompt = AgentCtx::build_system_prompt(
+            "Python", "3.12", &rows, None, None, None, None,
+            Some("cli-source(12)  framework-input(3)  sql(5)"),
+        );
+        assert!(prompt.contains("Tags present in THIS atom"));
+        assert!(prompt.contains("cli-source(12)"));
+        assert!(prompt.contains("sourceTags"));
+    }
+
+    #[test]
+    fn system_prompt_omits_tags_section_when_none() {
+        let rows = vec![SummaryRow { label: "Files".into(), count: 1 }];
+        let prompt = AgentCtx::build_system_prompt("C", "1.0", &rows, None, None, None, None, None);
+        assert!(!prompt.contains("Tags present in THIS atom"));
     }
 
     #[test]
@@ -1297,7 +1447,7 @@ mod tests {
             "Python", "3.12", &rows,
             Some("components: 15 · dependencies: 42"),
             Some("  - library requests (2.31.0) pkg:pip/requests@2.31.0"),
-            None, None,
+            None, None, None,
         );
         assert!(prompt.contains("components: 15"));
         assert!(prompt.contains("Software Bill of Materials"));
@@ -1309,7 +1459,7 @@ mod tests {
         let rows = vec![SummaryRow { label: "Files".into(), count: 42 }];
         let memory_index = "- [auth-boundary](auth-boundary.md) — auth in requireAuth\n- [sql-injection](sql-injection.md) — SQLi in search";
         let prompt = AgentCtx::build_system_prompt(
-            "Go", "1.21", &rows, None, None, None, Some(memory_index),
+            "Go", "1.21", &rows, None, None, None, Some(memory_index), None,
         );
         assert!(prompt.contains("Project memory"));
         assert!(prompt.contains("auth-boundary"));
@@ -1321,7 +1471,7 @@ mod tests {
     fn system_prompt_omits_memory_section_when_none() {
         let rows = vec![SummaryRow { label: "Files".into(), count: 42 }];
         let prompt = AgentCtx::build_system_prompt(
-            "Go", "1.21", &rows, None, None, None, None,
+            "Go", "1.21", &rows, None, None, None, None, None,
         );
         // The grounding rule mentions project memory but the section header should not appear.
         assert!(!prompt.contains("## Project memory (facts learned"));
@@ -1330,7 +1480,7 @@ mod tests {
     #[test]
     fn system_prompt_includes_memory_grounding_rule() {
         let rows = vec![SummaryRow { label: "Files".into(), count: 42 }];
-        let prompt = AgentCtx::build_system_prompt("Rust", "1.75", &rows, None, None, None, None);
+        let prompt = AgentCtx::build_system_prompt("Rust", "1.75", &rows, None, None, None, None, None);
         assert!(prompt.contains("Project memory (facts stored under"));
         assert!(prompt.contains("re-verify every source ref"));
     }
