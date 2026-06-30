@@ -753,6 +753,45 @@ impl App {
             return;
         }
 
+        // Custom tool invocation: `:tool_name key=value …` runs one of the agent's tools
+        // directly (no LLM in the loop) and shows the result in the scrollback. This exposes
+        // the same toolset the AI uses — atom_* traversal helpers (atom_reaches, atom_callgraph,
+        // …) and the loaded backend's tools (blint_*, rusi_*, golem_*, dosai_*), plus bom_query
+        // and project_memory. `:bom` and `:memory` are handled above and keep their own behaviour.
+        if let Some(rest) = t.strip_prefix(':') {
+            let (name, arg_str) = rest
+                .split_once(char::is_whitespace)
+                .map(|(n, a)| (n.trim(), a.trim()))
+                .unwrap_or((rest.trim(), ""));
+            if name.is_empty() {
+                self.repl.record(&t, "usage: :<tool_name> key=value …  (type `:` then Ctrl-Space to list tools, or `help`)".into(), false);
+                return;
+            }
+            if !self.is_known_tool(name) {
+                self.repl.record(&t, format!("unknown tool ':{name}' — type `:` then Ctrl-Space to list tools, or `help`"), false);
+                self.status = "unknown tool".into();
+                return;
+            }
+            let input = match parse_tool_args(arg_str) {
+                Ok(v) => v,
+                Err(e) => {
+                    self.repl.record(&t, e, false);
+                    self.status = "bad tool args".into();
+                    return;
+                }
+            };
+            let env = crate::agent::ToolEnv {
+                engine: self.engine.as_ref(),
+                backend: self.backend.as_deref(),
+                source_root: self.source_root.as_deref(),
+                debug_logger: None,
+            };
+            let res = crate::agent::dispatch_tool(&env, "repl", name, &input);
+            self.status = if res.is_error { format!(":{name} failed") } else { format!(":{name}") };
+            self.repl.record(&t, res.content, !res.is_error);
+            return;
+        }
+
         // Free-text routing: when the agent is enabled and input doesn't look like a DSL command
         // or a flow expression, route to the agent.
         if self.agent_enabled && !self.agent_active && !looks_like_dsl_or_command(&t) {
@@ -855,7 +894,7 @@ impl App {
     /// popup if any are returned. The token being completed starts after the last non-identifier
     /// character before the cursor.
     pub fn request_completions(&mut self) {
-        let chars = self.repl.chars();
+        let chars = self.repl.chars().to_vec();
         let cursor = self.repl.cursor().min(chars.len());
         let start = chars[..cursor]
             .iter()
@@ -863,6 +902,14 @@ impl App {
             .map(|i| i + 1)
             .unwrap_or(0);
         let line: String = chars.iter().collect();
+
+        // Local completion for `:tool` commands — no engine round-trip needed.
+        if let Some(items) = self.tool_completions(&chars, cursor) {
+            let n = items.len();
+            self.repl.open_completion(items, start);
+            self.status = if n == 0 { "no completions".into() } else { format!("{n} completion(s)") };
+            return;
+        }
 
         let Some(ref engine) = self.engine else {
             self.status = "engine not available".into();
@@ -884,6 +931,69 @@ impl App {
             }
             Err(e) => self.status = format!("complete failed: {e}"),
         }
+    }
+
+    /// The tool definitions available in the current analysis mode — the same set the
+    /// AI agent would be offered (atom-only, backend-only, or atom+backend). Drives both
+    /// `:tool` dispatch validation and autocomplete.
+    fn active_tool_defs(&self) -> Vec<serde_json::Value> {
+        use crate::agent::tools;
+        match (self.engine.is_some(), self.backend.as_ref()) {
+            (true, Some(b)) => tools::atom_plus_backend_tool_definitions(b),
+            (false, Some(b)) => tools::backend_tool_definitions(b),
+            (true, None) => tools::all_tool_definitions(),
+            (false, None) => tools::non_atom_tool_definitions(),
+        }
+    }
+
+    /// Whether `name` is a tool a human can invoke with `:name` in the current mode.
+    fn is_known_tool(&self, name: &str) -> bool {
+        self.active_tool_defs().iter().any(|d| d["name"].as_str() == Some(name))
+    }
+
+    /// The input-schema property keys for a given tool (for arg-key autocomplete).
+    fn tool_param_keys(&self, name: &str) -> Vec<String> {
+        self.active_tool_defs()
+            .into_iter()
+            .find(|d| d["name"].as_str() == Some(name))
+            .and_then(|d| d["input_schema"]["properties"].as_object().map(|o| o.keys().cloned().collect()))
+            .unwrap_or_default()
+    }
+
+    /// Completions for a `:tool` line: tool names while typing the name, or `key=`
+    /// argument keys once a tool name and a space have been typed. Returns `None` when
+    /// the line is not a `:tool` invocation (so the caller falls back to engine completion).
+    fn tool_completions(&self, chars: &[char], cursor: usize) -> Option<Vec<String>> {
+        let first = chars.iter().position(|c| !c.is_whitespace())?;
+        if chars[first] != ':' {
+            return None;
+        }
+        let after: String = chars[first + 1..cursor.max(first + 1)].iter().collect();
+        // Once a space follows the tool name, complete argument keys for that tool.
+        if let Some(sp) = after.find(char::is_whitespace) {
+            let name = &after[..sp];
+            let partial = after.rsplit(char::is_whitespace).next().unwrap_or("");
+            if partial.contains('=') {
+                return Some(vec![]);
+            }
+            let mut items: Vec<String> = self
+                .tool_param_keys(name)
+                .into_iter()
+                .filter(|k| k.starts_with(partial))
+                .map(|k| format!("{k}="))
+                .collect();
+            items.sort();
+            return Some(items);
+        }
+        // Still typing the tool name: offer matching tool names (bare, no leading colon).
+        let mut names: Vec<String> = self
+            .active_tool_defs()
+            .iter()
+            .filter_map(|d| d["name"].as_str().map(str::to_string))
+            .filter(|n| n.starts_with(&after))
+            .collect();
+        names.sort();
+        Some(names)
     }
 
     /// Convenience entry point for the data-flows preset (bound to `d`): all flows.
@@ -2142,23 +2252,68 @@ pub fn help_text(agent_enabled: bool, backend_name: Option<&str>) -> String {
     s.push_str("  bom [filter]                 Show the CycloneDX SBOM components\n");
     s.push_str("  :memory list                 List per-project facts (also: show <n>, forget <n>, save [<n>], prune)\n");
 
-    if agent_enabled {
-        s.push_str("\nAI agent tools (called by the agent, not typed by you):\n");
-        match backend_name {
-            Some(name) => {
-                s.push_str(&format!(
-                    "  {name}_*                      Backend analysis tools for the loaded {name} project\n"
-                ));
-            }
-            None => {
-                s.push_str("  atom_*                       summary, query, dsl_eval, flows, callsites,\n");
-                s.push_str("                               callgraph, controlflow, reaches, detail, algorithms\n");
-                s.push_str("  rusi_/golem_/dosai_/blint_*  Backend tools, when a backend is loaded\n");
-            }
+    // Run a tool directly. These are the same tools the AI agent calls — humans can
+    // invoke them too via `:tool key=value …` (or `:tool {json}`). Type `:` then
+    // Ctrl-Space to list tools / argument keys.
+    s.push_str("\nRun a tool directly (:tool key=value … — Ctrl-Space to autocomplete):\n");
+    match backend_name {
+        Some(name) => {
+            s.push_str(&format!("  :{name}_…                     Backend tools for the loaded {name} project\n"));
+            s.push_str(&format!("                               e.g. :{name}_summary   :{name}_query pattern=crypto\n"));
+        }
+        None => {
+            s.push_str("  :atom_reaches name=execQuery Prove reachability to a sink (data-flow path)\n");
+            s.push_str("  :atom_callgraph name=main    Call graph around a method\n");
+            s.push_str("  :atom_callsites name=foo     Where a method is called\n");
+            s.push_str("  :atom_controlflow name=foo   Control-flow of a method\n");
+            s.push_str("  :atom_algorithms             Detected algorithms / crypto\n");
+            s.push_str("  :atom_query kind=tags        Run a structured atom query\n");
+            s.push_str("  :blint_… / :rusi_… / :golem_… / :dosai_…   Backend tools, when a backend is loaded\n");
         }
     }
+    s.push_str("  :bom_query query=log4j       Search the SBOM components\n");
 
     s
+}
+
+/// Parse the argument portion of a `:tool` command into the JSON `input` a tool expects.
+///
+/// Two forms are accepted:
+///   - a raw JSON object: `:atom_reaches {"name":"exec","limit":5}`
+///   - `key=value` pairs: `:atom_reaches name=exec limit=5`
+///
+/// For the `key=value` form, values are coerced to bool/integer/float when they parse as
+/// such, otherwise kept as strings. Values containing spaces require the JSON form.
+fn parse_tool_args(s: &str) -> Result<serde_json::Value, String> {
+    let s = s.trim();
+    if s.is_empty() {
+        return Ok(serde_json::json!({}));
+    }
+    if s.starts_with('{') {
+        return serde_json::from_str(s).map_err(|e| format!("invalid JSON args: {e}"));
+    }
+    let mut map = serde_json::Map::new();
+    for tok in s.split_whitespace() {
+        let Some((k, v)) = tok.split_once('=') else {
+            return Err(format!("bad arg '{tok}' — expected key=value, or pass a JSON object"));
+        };
+        map.insert(k.to_string(), coerce_arg(v));
+    }
+    Ok(serde_json::Value::Object(map))
+}
+
+/// Coerce a bare `key=value` value to bool/integer/float when it parses cleanly, else a string.
+fn coerce_arg(v: &str) -> serde_json::Value {
+    if v == "true" || v == "false" {
+        return serde_json::Value::Bool(v == "true");
+    }
+    if let Ok(i) = v.parse::<i64>() {
+        return serde_json::Value::from(i);
+    }
+    if let Ok(f) = v.parse::<f64>() {
+        return serde_json::Value::from(f);
+    }
+    serde_json::Value::String(v.to_string())
 }
 
 /// Parse a flow-preset command line into engine `flows` arguments.
@@ -2294,6 +2449,50 @@ fn contains(r: &Rect, col: u16, row: u16) -> bool {
 mod tests {
     use super::*;
     use crate::model::{Summary, SummaryRow};
+
+    #[test]
+    fn parse_tool_args_key_value_coerces_types() {
+        let v = parse_tool_args("name=execQuery limit=5 deep=true").unwrap();
+        assert_eq!(v["name"], serde_json::json!("execQuery"));
+        assert_eq!(v["limit"], serde_json::json!(5));
+        assert_eq!(v["deep"], serde_json::json!(true));
+    }
+
+    #[test]
+    fn parse_tool_args_accepts_json_object() {
+        let v = parse_tool_args(r#"{"name":"x","limit":3}"#).unwrap();
+        assert_eq!(v["limit"], serde_json::json!(3));
+    }
+
+    #[test]
+    fn parse_tool_args_empty_is_empty_object() {
+        assert_eq!(parse_tool_args("   ").unwrap(), serde_json::json!({}));
+    }
+
+    #[test]
+    fn parse_tool_args_rejects_bare_token() {
+        assert!(parse_tool_args("name=ok junk").is_err());
+    }
+
+    #[test]
+    fn tool_completions_lists_names_then_arg_keys() {
+        // In-memory mode (no engine, no backend) still offers the non-atom toolset.
+        let app = app_with_labels(&[]);
+        let chars: Vec<char> = ":bom_q".chars().collect();
+        let names = app.tool_completions(&chars, chars.len()).unwrap();
+        assert!(names.iter().any(|n| n == "bom_query"));
+
+        let chars: Vec<char> = ":bom_query qu".chars().collect();
+        let keys = app.tool_completions(&chars, chars.len()).unwrap();
+        assert!(keys.iter().any(|k| k == "query="));
+    }
+
+    #[test]
+    fn tool_completions_ignores_non_colon_lines() {
+        let app = app_with_labels(&[]);
+        let chars: Vec<char> = "atom.method".chars().collect();
+        assert!(app.tool_completions(&chars, chars.len()).is_none());
+    }
 
     fn app_with_labels(labels: &[&str]) -> App {
         let rows = labels

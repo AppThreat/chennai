@@ -184,6 +184,31 @@ pub struct AgentCtx {
     pub debug_logger: Option<DebugLogger>,
 }
 
+/// The execution resources a tool needs, independent of any LLM provider.
+///
+/// Both the agent loop (via [`AgentCtx::tool_env`]) and the human REPL build one of
+/// these, so a custom tool can be dispatched with or without an LLM in the loop. This
+/// is what lets `dispatch_tool` be invoked directly from the REPL (`:tool` commands)
+/// as well as from the model's tool calls.
+pub struct ToolEnv<'a> {
+    pub engine: Option<&'a Arc<Mutex<Engine>>>,
+    pub backend: Option<&'a dyn Backend>,
+    pub source_root: Option<&'a str>,
+    pub debug_logger: Option<&'a DebugLogger>,
+}
+
+impl AgentCtx {
+    /// Borrow the provider-free subset of this context needed to run tools.
+    pub fn tool_env(&self) -> ToolEnv<'_> {
+        ToolEnv {
+            engine: self.engine.as_ref(),
+            backend: self.backend.as_deref(),
+            source_root: self.source_root.as_deref(),
+            debug_logger: self.debug_logger.as_ref(),
+        }
+    }
+}
+
 impl AgentCtx {
     // Assembles the prompt from many optional context sections (BOM, console, memory, tags); a
     // builder struct would add ceremony without clarity for a single call path.
@@ -426,21 +451,21 @@ pub struct ToolExecResult {
     pub is_error: bool,
 }
 
-pub fn dispatch_tool(ctx: &AgentCtx, call_id: &str, name: &str, input: &Value) -> ToolExecResult {
+pub fn dispatch_tool(env: &ToolEnv, call_id: &str, name: &str, input: &Value) -> ToolExecResult {
     let result = match name {
         "atom_traversal_docs" => traversal_docs_dispatch(call_id, input),
-        "atom_summary" => engine_request(ctx, call_id, "summary", input),
-        "atom_query" => engine_request(ctx, call_id, "query", input),
-        "atom_dsl_eval" => engine_request(ctx, call_id, "eval", input),
-        "atom_flows" => engine_request(ctx, call_id, "flows", input),
-        "atom_flows_through" => engine_request(ctx, call_id, "flows", input),
+        "atom_summary" => engine_request(env, call_id, "summary", input),
+        "atom_query" => engine_request(env, call_id, "query", input),
+        "atom_dsl_eval" => engine_request(env, call_id, "eval", input),
+        "atom_flows" => engine_request(env, call_id, "flows", input),
+        "atom_flows_through" => engine_request(env, call_id, "flows", input),
         // Convenience tools that compile to a chen DSL expression evaluated via `eval`. They save
         // the model from hand-writing call-graph / control-flow traversals (and remembering the
         // `using NoResolve` resolver) — the single place agents most often got the DSL wrong.
         "atom_callsites" | "atom_callgraph" | "atom_controlflow" => {
             match build_traversal_expr(name, input) {
                 Ok(expr) => {
-                    let mut res = engine_request(ctx, call_id, "eval", &json!({ "expr": expr }));
+                    let mut res = engine_request(env, call_id, "eval", &json!({ "expr": expr }));
                     // Nudge at the decision point: having just located call sites, the model tends
                     // to reach for read_file/ripgrep to "check reachability" by reading. Point it at
                     // the proof tool instead — a result-level hint lands better than a prompt rule.
@@ -462,7 +487,7 @@ pub fn dispatch_tool(ctx: &AgentCtx, call_id: &str, name: &str, input: &Value) -
         "atom_reaches" => {
             match build_reaches_expr(input) {
                 Ok((expr, limit)) => {
-                    let mut res = engine_request(ctx, call_id, "flows", &json!({ "expr": expr, "limit": limit }));
+                    let mut res = engine_request(env, call_id, "flows", &json!({ "expr": expr, "limit": limit }));
                     // An empty proof can mean "not reachable" OR "wrong source tags". The model
                     // tends to over-narrow sourceTags (e.g. only framework-input on a CLI app, where
                     // the untrusted source is cli-source). Before it concludes not-exploitable, point
@@ -483,20 +508,20 @@ pub fn dispatch_tool(ctx: &AgentCtx, call_id: &str, name: &str, input: &Value) -
                 Err(msg) => ToolExecResult { call_id: call_id.into(), content: msg, is_error: true },
             }
         }
-        "atom_detail" => engine_request(ctx, call_id, "detail", input),
-        "atom_algorithms" => engine_request(ctx, call_id, "algo", input),
+        "atom_detail" => engine_request(env, call_id, "detail", input),
+        "atom_algorithms" => engine_request(env, call_id, "algo", input),
         // Backend-specific tool dispatch: tools named <backend>_<command>
-        _ if name.starts_with("rusi_") => backend_dispatch(ctx, call_id, name.strip_prefix("rusi_").unwrap(), input),
-        _ if name.starts_with("golem_") => backend_dispatch(ctx, call_id, name.strip_prefix("golem_").unwrap(), input),
-        _ if name.starts_with("dosai_") => backend_dispatch(ctx, call_id, name.strip_prefix("dosai_").unwrap(), input),
-        _ if name.starts_with("blint_") => backend_dispatch(ctx, call_id, name.strip_prefix("blint_").unwrap(), input),
-        "bom_query" => bom_query_dispatch(ctx, call_id, input),
-        "project_memory" => memory::memory_dispatch(ctx.source_root.as_deref(), call_id, input),
-        "ripgrep"   => wrap_result(call_id, shell::ripgrep(&source_root_path(ctx), input)),
-        "read_file" => wrap_result(call_id, shell::read_file(&source_root_path(ctx), input)),
-        "git_diff"  => wrap_result(call_id, shell::git_diff(&source_root_path(ctx), input)),
-        "git_log"   => wrap_result(call_id, shell::git_log(&source_root_path(ctx), input)),
-        "git_show"  => wrap_result(call_id, shell::git_show(&source_root_path(ctx), input)),
+        _ if name.starts_with("rusi_") => backend_dispatch(env, call_id, name.strip_prefix("rusi_").unwrap(), input),
+        _ if name.starts_with("golem_") => backend_dispatch(env, call_id, name.strip_prefix("golem_").unwrap(), input),
+        _ if name.starts_with("dosai_") => backend_dispatch(env, call_id, name.strip_prefix("dosai_").unwrap(), input),
+        _ if name.starts_with("blint_") => backend_dispatch(env, call_id, name.strip_prefix("blint_").unwrap(), input),
+        "bom_query" => bom_query_dispatch(env, call_id, input),
+        "project_memory" => memory::memory_dispatch(env.source_root, call_id, input),
+        "ripgrep"   => wrap_result(call_id, shell::ripgrep(&source_root_path(env), input)),
+        "read_file" => wrap_result(call_id, shell::read_file(&source_root_path(env), input)),
+        "git_diff"  => wrap_result(call_id, shell::git_diff(&source_root_path(env), input)),
+        "git_log"   => wrap_result(call_id, shell::git_log(&source_root_path(env), input)),
+        "git_show"  => wrap_result(call_id, shell::git_show(&source_root_path(env), input)),
         other => ToolExecResult {
             call_id: call_id.into(),
             content: format!("unknown tool: {other}"),
@@ -504,7 +529,7 @@ pub fn dispatch_tool(ctx: &AgentCtx, call_id: &str, name: &str, input: &Value) -
         },
     };
 
-    if let Some(ref logger) = ctx.debug_logger
+    if let Some(logger) = env.debug_logger
         && DebugLogger::is_tracked(name) {
             logger.log(name, input, &result.content, result.is_error);
     }
@@ -513,8 +538,8 @@ pub fn dispatch_tool(ctx: &AgentCtx, call_id: &str, name: &str, input: &Value) -
 }
 
 /// Unified dispatch for all backend tool calls via the Backend trait.
-fn backend_dispatch(ctx: &AgentCtx, call_id: &str, cmd: &str, input: &Value) -> ToolExecResult {
-    let Some(ref backend) = ctx.backend else {
+fn backend_dispatch(env: &ToolEnv, call_id: &str, cmd: &str, input: &Value) -> ToolExecResult {
+    let Some(backend) = env.backend else {
         return ToolExecResult {
             call_id: call_id.into(),
             content: "analysis backend not loaded".into(),
@@ -650,13 +675,13 @@ fn build_full_index() -> String {
     )
 }
 
-fn bom_query_dispatch(ctx: &AgentCtx, call_id: &str, input: &Value) -> ToolExecResult {
+fn bom_query_dispatch(env: &ToolEnv, call_id: &str, input: &Value) -> ToolExecResult {
     let query = input.get("query").and_then(Value::as_str).unwrap_or("");
     let type_filter = input.get("type_filter").and_then(Value::as_str);
 
-    // We need the bom_store from somewhere. Since AgentCtx doesn't have it directly,
-    // we try to reconstruct from the source_root.
-    let content = match &ctx.source_root {
+    // We need the bom_store from somewhere. Since ToolEnv doesn't carry it directly,
+    // we reconstruct it from the source_root.
+    let content = match env.source_root {
         Some(src) => {
             let path = std::path::Path::new(src);
             let mut store = crate::bom::BomStore::new();
@@ -809,8 +834,8 @@ fn build_reaches_expr(input: &Value) -> Result<(String, i64), String> {
     Ok((format!("{sink}.reachableByFlows({source})"), limit))
 }
 
-fn engine_request(ctx: &AgentCtx, call_id: &str, cmd: &str, input: &Value) -> ToolExecResult {
-    let Some(ref engine_mutex) = ctx.engine else {
+fn engine_request(env: &ToolEnv, call_id: &str, cmd: &str, input: &Value) -> ToolExecResult {
+    let Some(engine_mutex) = env.engine else {
         return ToolExecResult { call_id: call_id.into(), content: "engine not available".into(), is_error: true };
     };
     let mut engine = engine_mutex.lock().unwrap();
@@ -1000,8 +1025,8 @@ fn floor_char_boundary(s: &str, max: usize) -> usize {
     idx
 }
 
-fn source_root_path(ctx: &AgentCtx) -> std::path::PathBuf {
-    ctx.source_root.as_ref().map(std::path::PathBuf::from).unwrap_or_else(|| std::path::PathBuf::from("."))
+fn source_root_path(env: &ToolEnv) -> std::path::PathBuf {
+    env.source_root.map(std::path::PathBuf::from).unwrap_or_else(|| std::path::PathBuf::from("."))
 }
 
 /// Keep only the tool definitions whose `name` is in `allowed` (used by slash
@@ -1109,11 +1134,12 @@ authorized review of your own code.".into(),
                 // Execute tool calls in parallel — all tools are read-only, so there is no
                 // risk of side-effect conflicts. Engine access serialises through the mutex
                 // but shell tools (ripgrep, read_file, git) run fully concurrently.
+                let env = ctx.tool_env();
                 let results: Vec<ToolExecResult> = std::thread::scope(|scope| {
                     tool_calls.iter()
                         .filter(|_| !ctx.cancel.load(Ordering::Relaxed))
                         .map(|(call_id, name, input)| {
-                            scope.spawn(|| dispatch_tool(ctx, call_id, name, input))
+                            scope.spawn(|| dispatch_tool(&env, call_id, name, input))
                         })
                         .collect::<Vec<_>>()
                         .into_iter()
@@ -1210,9 +1236,10 @@ pub fn run_headless(ctx: &AgentCtx, input: &str) -> Result<String, Box<dyn std::
             "end_turn" | "stop" => break,
             "tool_use" | "tool_calls" => {
                 let calls = transcript.last_tool_calls();
+                let env = ctx.tool_env();
                 for (call_id, name, input) in &calls {
                     eprintln!("\n  → executing {name}...");
-                    let r = dispatch_tool(ctx, call_id, name, input);
+                    let r = dispatch_tool(&env, call_id, name, input);
                     transcript.push_tool_result(&r.call_id, &r.content, r.is_error);
                     let preview: String = r.content.chars().take(200).collect();
                     eprintln!("  → result ({} bytes): {}", r.content.len(), preview);
@@ -1500,7 +1527,7 @@ mod tests {
             cancel: Arc::new(AtomicBool::new(false)),
             debug_logger: None,
         };
-        let result = dispatch_tool(&ctx, "id1", "nonexistent_tool", &serde_json::json!({}));
+        let result = dispatch_tool(&ctx.tool_env(), "id1", "nonexistent_tool", &serde_json::json!({}));
         assert!(result.is_error);
         assert!(result.content.contains("unknown tool"));
     }
@@ -1520,7 +1547,7 @@ mod tests {
             cancel: Arc::new(AtomicBool::new(false)),
             debug_logger: None,
         };
-        let result = dispatch_tool(&ctx, "id1", "bom_query", &serde_json::json!({"query": "express"}));
+        let result = dispatch_tool(&ctx.tool_env(), "id1", "bom_query", &serde_json::json!({"query": "express"}));
         assert!(!result.is_error);
         assert!(result.content.contains("BOM store not available"));
     }
