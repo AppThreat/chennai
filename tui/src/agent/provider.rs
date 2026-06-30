@@ -47,6 +47,10 @@ pub enum AgentEvent {
     StopReason(String),
     /// An error from the provider or agent loop.
     Error(String),
+    /// The full conversation transcript at the end of a run, emitted just
+    /// before [`AgentEvent::Done`] so the UI can persist it and seed the next
+    /// turn with prior context.
+    History(Vec<Message>),
     /// The agent loop has finished.
     Done,
     /// A flow result from the engine that the UI should display in the flow master/detail view.

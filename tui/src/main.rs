@@ -1500,6 +1500,7 @@ fn run_app<B: ratatui::backend::Backend>(
                 };
                 let allowed_tools = app.agent_slash_tools.take();
                 let effort = app.agent_slash_effort.take().unwrap_or_else(|| ctx.effort.clone());
+                let history = app.agent_history.clone();
                 let (tx, rx) = std::sync::mpsc::channel::<agent::provider::AgentEvent>();
                 app.agent_rx = Some(rx);
                 let engine_for_thread = ctx.engine.clone();
@@ -1524,7 +1525,7 @@ fn run_app<B: ratatui::backend::Backend>(
                         cancel: cancel_for_thread,
                         debug_logger,
                     };
-                    agent::run_agent(&thread_ctx, &question, tx);
+                    agent::run_agent(&thread_ctx, &question, history, tx);
                 });
             }
         }

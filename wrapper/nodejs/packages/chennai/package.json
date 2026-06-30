@@ -1,6 +1,6 @@
 {
   "name": "@appthreat/chennai",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Interactive terminal UI for exploring AppThreat atom files with AI agent",
   "exports": "./index.js",
   "type": "module",
@@ -34,13 +34,13 @@
     "LICENSE"
   ],
   "optionalDependencies": {
-    "@appthreat/chennai-linux-amd64": "1.0.1",
-    "@appthreat/chennai-linux-arm64": "1.0.1",
-    "@appthreat/chennai-darwin-arm64": "1.0.1",
-    "@appthreat/chennai-darwin-amd64": "1.0.1",
-    "@appthreat/chennai-windows-amd64": "1.0.1",
-    "@appthreat/chennai-windows-arm64": "1.0.1",
-    "@appthreat/chennai-linux-amd64-musl": "1.0.1",
-    "@appthreat/chennai-linux-arm64-musl": "1.0.1"
+    "@appthreat/chennai-linux-amd64": "1.0.2",
+    "@appthreat/chennai-linux-arm64": "1.0.2",
+    "@appthreat/chennai-darwin-arm64": "1.0.2",
+    "@appthreat/chennai-darwin-amd64": "1.0.2",
+    "@appthreat/chennai-windows-amd64": "1.0.2",
+    "@appthreat/chennai-windows-arm64": "1.0.2",
+    "@appthreat/chennai-linux-amd64-musl": "1.0.2",
+    "@appthreat/chennai-linux-arm64-musl": "1.0.2"
   }
 }
