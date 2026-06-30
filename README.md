@@ -308,11 +308,12 @@ A command-line input at the bottom of the screen. Enter queries here to run them
 - Custom flow DSL: expressions containing `reachableByFlows` or `.df(` (atom mode only)
 - DSL prefix with `=`: forces raw eval mode (atom mode only)
 - BOM commands: `bom` or `bom <query>` for dependency display
+- Tool commands: `:<tool_name> key=value …` runs any agent tool directly (see [Running tools directly](#running-tools-directly-tool))
 - Natural language: any free text is routed to the AI agent when the agent is enabled
 
-Tab completions are available with Ctrl+Space. Command history is accessible with Up and Down arrows.
+Tab completions are available with Ctrl+Space, including tool names and argument keys for `:tool` commands. Command history is accessible with Up and Down arrows.
 
-In Rust mode, the agent is the recommended interaction method. The rusi tools (`rusi_summary`, `rusi_query`, `rusi_callgraph`, `rusi_flows`, `rusi_detail`, `rusi_crypto`) are available to the agent for structured analysis.
+In Rust mode, the agent is the recommended interaction method. The rusi tools (`rusi_summary`, `rusi_query`, `rusi_callgraph`, `rusi_flows`, `rusi_detail`, `rusi_crypto`, `rusi_endpoints`) are available to the agent for structured analysis, and can also be run directly from the REPL with `:rusi_*` (see [Running tools directly](#running-tools-directly-tool)).
 
 ### Output panel
 
@@ -404,17 +405,68 @@ Free text input (without a slash) is also routed to the agent for ad hoc questio
 
 ### Agent tools
 
-The agent's available tools depend on the analysis mode.
+The agent's available tools depend on the analysis mode. These are the same tools a human can run with `:tool` (see below).
 
-**Atom mode (14 tools):** atom_traversal_docs, atom_summary, atom_query, atom_dsl_eval, atom_flows, atom_flows_through, atom_detail, atom_algorithms, bom_query, ripgrep, read_file, git_diff, git_log, git_show.
+**Atom mode (19 tools):** atom_traversal_docs, atom_summary, atom_query, atom_dsl_eval, atom_flows, atom_flows_through, atom_callsites, atom_callgraph, atom_controlflow, atom_reaches, atom_detail, atom_algorithms, project_memory, bom_query, ripgrep, read_file, git_diff, git_log, git_show.
 
-**Rust/rusi mode (11 tools):** rusi_summary, rusi_query, rusi_callgraph, rusi_flows, rusi_detail, rusi_crypto, bom_query, ripgrep, read_file, git_diff, git_log, git_show.
+**Rust/rusi mode (14 tools):** rusi_endpoints, rusi_summary, rusi_query, rusi_callgraph, rusi_flows, rusi_detail, rusi_crypto, project_memory, bom_query, ripgrep, read_file, git_diff, git_log, git_show.
 
-**Agent-only mode (for Go, dotnet, binary without structured analysis):** bom_query, ripgrep, read_file, git_diff, git_log, git_show.
+**Go/golem mode:** golem*summary, golem_query, golem_callgraph, golem_flows, golem_sources, golem_sinks, golem_endpoints, golem_crypto, golem_detail, plus the shared tools (project_memory, bom_query, ripgrep, read_file, git*\*).
+
+**.NET/dosai mode:** dosai_summary, dosai_query, dosai_callgraph, dosai_flows, dosai_endpoints, dosai_trace, dosai_detail, plus the shared tools.
+
+**Binary/APK/IPA (blint):** blint_summary, blint_symbols, blint_strings, blint_capabilities, blint_behaviours, blint_findings, blint_components, blint_callgraph, blint_disassembly, plus the shared tools. When an atom is also present, blint tools are offered alongside the atom toolset.
+
+**Agent-only mode (for any target without structured analysis):** project_memory, bom_query, ripgrep, read_file, git_diff, git_log, git_show.
 
 The agent uses the streaming API of the configured provider and renders thinking blocks, text deltas, and tool calls in real time. Tool results are truncated to 48 KiB to stay within model token limits. When the agent produces flow results they are automatically installed into the flow view for interactive exploration.
 
 Agent reports can be saved to markdown with Ctrl+S. Reports include the full transcript, token usage, and any generated data-flow paths or analysis results.
+
+### Running tools directly (`:tool`)
+
+Every agent tool can also be run by hand from the REPL — no API key or LLM round-trip required — by typing a colon, the tool name, and `key=value` arguments. This works in every mode and uses the same tools the agent calls:
+
+```
+:atom_summary
+:atom_query kind=tags pattern=crypto.*
+:atom_callsites name=executeQuery
+:atom_reaches name=executeQuery sourceTags=framework-input,cli-source
+:bom_query query=log4j
+```
+
+Arguments are parsed as `key=value` pairs; values that parse as integers or booleans are coerced (`limit=20`, `deep=true`), everything else is a string. For a value that contains spaces, pass a JSON object instead:
+
+```
+:atom_dsl_eval {"expr": "atom.method.name(\".*Handler\").caller.toJson"}
+```
+
+Type `:` and press Ctrl+Space to autocomplete tool names; after a tool name and a space, Ctrl+Space completes that tool's argument keys. Only the tools for the current analysis mode are offered, so backend tools such as `:blint_strings`, `:rusi_flows`, `:golem_query`, and `:dosai_trace` appear automatically when their backend is loaded.
+
+#### Regex vs. substring matching
+
+The **atom** traversal tools match with **anchored regex** on their `name`/`code`/`fullName` arguments — wrap partial matches in `.*`, and use `(?i)` for case-insensitivity:
+
+| Command                                                         | Meaning                                               |
+| --------------------------------------------------------------- | ----------------------------------------------------- |
+| `:atom_callsites name=system`                                   | call sites of a method named exactly `system`         |
+| `:atom_callsites name=(?i).*exec.*`                             | any call whose name contains `exec`, case-insensitive |
+| `:atom_callsites fullName=java\.sql\.Statement\.execute.*`      | match on the fully-qualified callee                   |
+| `:atom_callgraph name=(?i).*handler.* direction=callers`        | methods that call any `*handler*` method              |
+| `:atom_controlflow code=.*executeQuery.* relation=controlledBy` | guards that must hold to reach an `executeQuery` call |
+| `:atom_reaches name=(?i).*(system\|popen\|exec)`                | prove untrusted input reaches an exec-like sink       |
+| `:atom_query kind=tags pattern=framework.*`                     | tags matching the regex `framework.*`                 |
+
+The **backend** tools (`blint_*`, `rusi_*`, `golem_*`, `dosai_*`) instead filter with a **case-insensitive substring** `pattern` (not regex):
+
+| Command                                        | Meaning                                      |
+| ---------------------------------------------- | -------------------------------------------- |
+| `:blint_strings pattern=http`                  | strings containing `http`                    |
+| `:blint_symbols pattern=system`                | symbols whose name or type contains `system` |
+| `:rusi_query kind=usages pattern=Command::new` | Rust call usages mentioning `Command::new`   |
+| `:rusi_flows pattern=process-exec`             | rusi taint slices touching `process-exec`    |
+| `:golem_query kind=dataflow pattern=Getenv`    | Go data-flow entries mentioning `Getenv`     |
+| `:dosai_trace pattern=sql`                     | .NET taint slices touching `sql`             |
 
 ### Offline operation
 
