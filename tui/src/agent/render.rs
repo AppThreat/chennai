@@ -135,7 +135,28 @@ fn render_flows(data: &Value) -> Option<String> {
     let mut out = String::new();
     let title = data.get("title").and_then(Value::as_str).unwrap_or("Data flows");
     let total = data.get("total").and_then(Value::as_i64).unwrap_or(flows.len() as i64);
-    out.push_str(&format!("**{title}** — {} flow(s) shown of {total}\n", flows.len()));
+    let offset = data.get("offset").and_then(Value::as_i64).unwrap_or(0);
+    let capped = data.get("capped").and_then(Value::as_bool).unwrap_or(false);
+    let next_offset = data.get("nextOffset").and_then(Value::as_i64);
+    out.push_str(&format!(
+        "**{title}** — {} flow(s) shown of {total} (offset {offset})\n",
+        flows.len()
+    ));
+    // Tell the agent how to get the rest instead of assuming it has seen every flow. This is what
+    // lets it page deliberately through a bounded result rather than over-running a huge query.
+    if capped {
+        out.push_str(
+            "_Path enumeration hit the `take` budget, so this total is a LOWER BOUND — \
+             more flows likely exist. Re-run with a larger `take` (and/or scoped \
+             `sourceTags`/`sinkTags`) to widen, or page with `offset`._\n",
+        );
+    }
+    if let Some(next) = next_offset {
+        out.push_str(&format!(
+            "_More flows available: call atom_flows again with `offset={next}` (same other args) \
+             for the next page._\n"
+        ));
+    }
     if flows.is_empty() {
         return Some(out);
     }
@@ -313,6 +334,29 @@ mod tests {
         assert!(md.contains("### Flow 1: req → exec"));
         assert!(md.contains("h.rs:3"));
         assert!(md.contains("| sink | run | r.rs:9 |"));
+    }
+
+    #[test]
+    fn flows_surface_pagination_and_capped_hints() {
+        let data = json!({
+            "title": "Reachable flows",
+            "total": 100,
+            "offset": 0,
+            "capped": true,
+            "nextOffset": 50,
+            "flows": [{
+                "source": "req",
+                "sink": "exec",
+                "steps": [
+                    {"kind": "source", "method": "h", "file": "h.rs", "line": 1, "symbol": "x", "code": "x"},
+                    {"kind": "sink", "method": "r", "file": "r.rs", "line": 2, "symbol": "x", "code": "exec(x)"}
+                ]
+            }]
+        });
+        let md = render_flows(&data).unwrap();
+        assert!(md.contains("offset 0"));
+        assert!(md.contains("LOWER BOUND"), "capped hint missing: {md}");
+        assert!(md.contains("offset=50"), "nextOffset hint missing: {md}");
     }
 
     #[test]

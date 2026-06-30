@@ -248,7 +248,7 @@ Version: {version}
 - atom_traversal_docs — look up DSL traversal roots, step methods, and examples.
 - atom_query — flat tables: files, methods, externalMethods, calls, tags, imports, literals, configFiles…
 - atom_dsl_eval — arbitrary chen DSL (the power tool). Auto-`.toJson`, paged.
-- atom_flows / atom_flows_through — data-flow (source→sink) paths; presets dataflows/reachables/cryptos.
+- atom_flows / atom_flows_through — data-flow (source→sink) paths; presets dataflows/reachables/cryptos are bounded by `take` and paginated via `offset`/`limit`, highest-value flows first.
 - atom_detail — properties, children, call tree, and real source for a node.
 - atom_algorithms — pagerank, scc, dominators, toposort, shortest-path, reachable-by.
 - git_diff / git_log / git_show — read-only git history.
@@ -335,19 +335,24 @@ read it and self-correct.
     store facts grounded in custom analysis tools** (`atom_*`, `blint_*`, `rusi_*`, `golem_*`,
     `dosai_*`, `bom_*`). Do NOT store facts based on `read_file`, `ripgrep`, or git tools —
     those produce no structural evidence and are not interesting for long-term memory.
-9. **Scope data-flow queries — never run `dataflows` blind on large codebases.** The
-   `dataflows` preset enumerates EVERY source-to-sink path and is unbounded; on a large
-   atom (>10000 files; check the file count in the atom summary above) it can run for
-   minutes and exhaust memory. Do NOT use it there. Instead query for SPECIFIC reachable
-   flows between a chosen source tag and sink tag. First run atom_query on `tags` to see
-   which source/sink tags this atom actually has, then pass a scoped `expr` to atom_flows
-   of the form `(sink).reachableByFlows(source)`, scoping both ends to a tag and a node
-   kind. Cheat sheet (reachableByFlows between two tags):
+9. **Data-flow queries are paginated — page through them, don't over-run them.** The
+   `dataflows` and `reachables` presets are BOUNDED: path enumeration stops at the `take`
+   budget (default 100) and you page the result with `offset`/`limit`. They are safe on
+   large atoms. The most exploitable flows (untrusted framework/CLI input → SQL,
+   command-execution, file-io, deserialization sinks) are returned FIRST, so the first page
+   is the most valuable. Read the result header: when it reports `capped`, the total is a
+   LOWER BOUND — raise `take` (or scope `sourceTags`/`sinkTags`) to find more; when it
+   reports `nextOffset`, call atom_flows again with that `offset` (same other args) to get
+   the next page. Start with `reachables` (or `dataflows`), then either page or, for a
+   specific question, scope precisely: run atom_query on `tags` to see which source/sink
+   tags this atom has, then pass a scoped `expr` of the form `(sink).reachableByFlows(source)`,
+   scoping both ends to a tag and a node kind. Cheat sheet (reachableByFlows between two tags):
      atom.tag.name("sql").call.reachableByFlows(atom.tag.name("framework-input").parameter, atom.tag.name("framework-input").identifier, atom.tag.name("framework-input").call)
      atom.tag.name("exec").call.argument.isIdentifier.reachableByFlows(atom.tag.name("cli-source").parameter)
      atom.tag.name("(service-egress|tracker)").call.reachableByFlows(atom.tag.name("(sensitive-data|pii)").identifier, atom.tag.name("(sensitive-data|pii)").parameter)
      atom.tag.name("crypto-generate").call.reachableByFlows(atom.tag.name("crypto-algorithm").literal)
-   Prefer the `reachables` preset over `dataflows` when you do need a broad scan.
+   You can also scope a preset directly without writing DSL: pass `sourceTags`/`sinkTags`
+   (e.g. sinkTags="sql|code-execution") to atom_flows.
 
 {response_style}
 

@@ -29,7 +29,8 @@ Perform a thorough, tool-grounded security review of this codebase. Every findin
    - Note the language and framework — this determines the threat model.
 
 2. **Find reachable taint paths.** Start from the `reachables` preset:
-   - Call `atom_flows { preset: "reachables" }` to find flows attributable to known libraries.
+   - Call `atom_flows { preset: "reachables" }` to find flows attributable to known libraries. This is bounded by `take` (default 100) and the highest-value flows (untrusted input → SQL/command-execution/file-io/deserialization sinks) come first.
+   - If the result is `capped` or reports `nextOffset`, keep going: raise `take`, page with `offset`, or scope with `sourceTags`/`sinkTags` (e.g. `sinkTags: "sql|code-execution"`) to focus on a vulnerability class.
    - Optionally call `atom_algorithms { name: "pagerank" }` to identify hot methods that handle tainted input.
 
 3. **Drill into candidate flows.** For each promising flow:

@@ -1761,6 +1761,7 @@ mod tests {
             shown: 2,
             offset: 0,
             flows: vec![main, sub],
+            ..Default::default()
         });
         app.focus = Panel::Output;
         // Mirror what dispatch_flows does.
@@ -1811,7 +1812,7 @@ mod tests {
             ..Default::default()
         };
         let mut app = App::new(None, "x.atom".into(), Summary::default(), None);
-        app.flows = Some(FlowSet { title: "F".into(), total: 1, shown: 1, offset: 0, flows: vec![flow] });
+        app.flows = Some(FlowSet { title: "F".into(), total: 1, shown: 1, offset: 0, flows: vec![flow], ..Default::default() });
         app.flow_visible = vec![0];
         app.focus = Panel::Output;
 

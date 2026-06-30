@@ -183,14 +183,37 @@ fn atom_dsl_eval() -> Value {
 fn atom_flows() -> Value {
     json!({
         "name": "atom_flows",
-        "description": "Compute data flows (source-to-sink paths) in the atom. THIS IS THE PRIMARY TOOL for any question about reachability, taint, 'can untrusted input reach X', injection, or whether a sink is exploitable — ripgrep CANNOT answer these, only atom_flows can prove an end-to-end path. Reach for it whenever the user asks about vulnerabilities, exploitability, or how data moves through the app. Each flow is an ordered list of steps (source -> propagation -> ... -> sink).\n\nSCALING: The 'dataflows' preset enumerates EVERY source-to-sink path and is unbounded — do NOT use it on large codebases (>10000 files). It can run for many minutes and exhaust memory. Instead, query for SPECIFIC reachable flows between a source and a sink by passing a targeted 'expr' (or 'source'+'sink') that scopes both ends to a tag or identifier. Prefer 'reachables' over 'dataflows' as a preset, and always scope custom queries to the narrowest source/sink tags that answer the question.\n\nThe engine resolves flows with `(sink).reachableByFlows(source)`. Scope both ends to tags (`atom.tag.name(\"<tag>\")`) plus a node kind (`.call`, `.parameter`, `.identifier`, `.literal`). Cheat sheet of targeted between-tags queries (pass as 'expr'):\n  // untrusted framework input -> SQL sink\n  atom.tag.name(\"sql\").call.reachableByFlows(atom.tag.name(\"framework-input\").parameter, atom.tag.name(\"framework-input\").identifier, atom.tag.name(\"framework-input\").call)\n  // any tagged source -> command-execution sink (call args too)\n  atom.tag.name(\"exec\").call.argument.isIdentifier.reachableByFlows(atom.tag.name(\"cli-source\").parameter)\n  // sensitive/PII data -> network/tracker egress (JVM/Android)\n  atom.tag.name(\"(service-egress|tracker)\").call.reachableByFlows(atom.tag.name(\"(sensitive-data|pii)\").identifier, atom.tag.name(\"(sensitive-data|pii)\").parameter)\n  // crypto key/IV generation reachable from a weak algorithm literal\n  atom.tag.name(\"crypto-generate\").call.reachableByFlows(atom.tag.name(\"crypto-algorithm\").literal)\nUse atom_query on tags first (`kind:tags`) to discover which source/sink tags actually exist in THIS atom before composing the query. Use a preset ('reachables', 'cryptos'), provide a scoped DSL 'expr', or specify explicit 'source'+'sink' expressions.",
+        "description": "Compute data flows (source-to-sink paths) in the atom. THIS IS THE PRIMARY TOOL for any question about reachability, taint, 'can untrusted input reach X', injection, or whether a sink is exploitable — ripgrep CANNOT answer these, only atom_flows can prove an end-to-end path. Reach for it whenever the user asks about vulnerabilities, exploitability, or how data moves through the app. Each flow is an ordered list of steps (source -> propagation -> ... -> sink).\n\nThe 'dataflows' and 'reachables' presets are PAGINATED and BOUNDED, so they are safe to run on large codebases: path enumeration stops at the 'take' budget (default 100) and you page the result with 'offset'/'limit'. The highest-value flows — untrusted framework/CLI input reaching SQL, command-execution, file-io, and deserialization sinks — are returned FIRST, so the first page is the most useful. The result reports 'capped' (the take budget was hit, so more flows likely exist — raise 'take') and 'nextOffset' (pass it back as 'offset' for the next page). Start with the default 'reachables' or 'dataflows' preset; raise 'take' or scope with 'sourceTags'/'sinkTags' to dig deeper.\n\nFor a SPECIFIC source→sink question, scope precisely with a targeted 'expr' (or 'source'+'sink'). The engine resolves flows with `(sink).reachableByFlows(source)`. Scope both ends to tags (`atom.tag.name(\"<tag>\")`) plus a node kind (`.call`, `.parameter`, `.identifier`, `.literal`). Cheat sheet of targeted between-tags queries (pass as 'expr'):\n  // untrusted framework input -> SQL sink\n  atom.tag.name(\"sql\").call.reachableByFlows(atom.tag.name(\"framework-input\").parameter, atom.tag.name(\"framework-input\").identifier, atom.tag.name(\"framework-input\").call)\n  // any tagged source -> command-execution sink (call args too)\n  atom.tag.name(\"exec\").call.argument.isIdentifier.reachableByFlows(atom.tag.name(\"cli-source\").parameter)\n  // sensitive/PII data -> network/tracker egress (JVM/Android)\n  atom.tag.name(\"(service-egress|tracker)\").call.reachableByFlows(atom.tag.name(\"(sensitive-data|pii)\").identifier, atom.tag.name(\"(sensitive-data|pii)\").parameter)\n  // crypto key/IV generation reachable from a weak algorithm literal\n  atom.tag.name(\"crypto-generate\").call.reachableByFlows(atom.tag.name(\"crypto-algorithm\").literal)\nUse atom_query on tags first (`kind:tags`) to discover which source/sink tags actually exist in THIS atom before composing the query. Use a preset ('reachables', 'dataflows', 'cryptos'), provide a scoped DSL 'expr', or specify explicit 'source'+'sink' expressions.",
         "input_schema": {
             "type": "object",
             "properties": {
                 "preset": {
                     "type": "string",
-                    "description": "One of the built-in flow presets: 'dataflows' (ALL flows — unbounded, do NOT use on codebases >10000 files; prefer a scoped 'expr' or 'reachables' instead), 'reachables' (flows attributable to a known package/dependency), 'cryptos' (crypto flows)",
+                    "description": "One of the built-in flow presets, all paginated/bounded by 'take': 'reachables' (flows attributable to a known package/dependency — start here), 'dataflows' (all default source→sink flows), 'cryptos' (crypto flows). High-value flows are returned first.",
                     "enum": ["dataflows", "reachables", "cryptos"]
+                },
+                "take": {
+                    "type": "integer",
+                    "description": "Cap on the number of source-to-sink paths ENUMERATED for a preset (default 100). This is the responsiveness lever on large atoms. If the result is 'capped', raise this to find more flows.",
+                    "default": 100
+                },
+                "offset": {
+                    "type": "integer",
+                    "description": "Row offset into the computed flows, for pagination (default 0). Pass the result's 'nextOffset' to get the next page without recomputing.",
+                    "default": 0
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Max flows to return in this page (default 50).",
+                    "default": 50
+                },
+                "sourceTags": {
+                    "type": "string",
+                    "description": "Override the default source tag set for 'dataflows'/'reachables'. A '|'- or ','-delimited list, e.g. 'framework-input,cli-source'. Use atom_query kind:tags to discover available tags."
+                },
+                "sinkTags": {
+                    "type": "string",
+                    "description": "Override the default sink tag set for 'dataflows'/'reachables'. A '|'- or ','-delimited list, e.g. 'sql|code-execution|file-io'."
                 },
                 "expr": {
                     "type": "string",
@@ -226,8 +249,21 @@ fn atom_flows_through() -> Value {
                 },
                 "preset": {
                     "type": "string",
-                    "description": "Optional base preset to narrow the search space before filtering. Defaults to 'dataflows', which is unbounded and unsafe on large codebases (>10000 files) — prefer 'reachables' there.",
+                    "description": "Optional base preset to narrow the search space before filtering. Bounded by 'take' (default 100); 'reachables' is a good default on large atoms.",
                     "enum": ["dataflows", "reachables", "cryptos"]
+                },
+                "take": {
+                    "type": "integer",
+                    "description": "Cap on the number of source-to-sink paths enumerated before filtering (default 100). Raise it if filtering leaves too few flows.",
+                    "default": 100
+                },
+                "offset": {
+                    "type": "integer",
+                    "description": "Row offset into the filtered flows, for pagination (default 0)."
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Max flows to return in this page (default 50)."
                 }
             }
         }

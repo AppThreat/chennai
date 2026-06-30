@@ -114,6 +114,18 @@ pub struct FlowSet {
     #[serde(default)]
     #[allow(dead_code)]
     pub offset: i64,
+    /// Window size requested for this page (0 when not reported by the engine).
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub limit: i64,
+    /// True when path enumeration stopped at the `take` budget, so `total` is a lower bound and
+    /// more flows likely exist. The UI surfaces this so users know to widen `take`.
+    #[serde(default)]
+    pub capped: bool,
+    /// Offset to pass back to fetch the next page, or `None` when this is the last page.
+    #[serde(default, rename = "nextOffset")]
+    #[allow(dead_code)]
+    pub next_offset: Option<i64>,
     #[serde(default)]
     pub flows: Vec<Flow>,
 }

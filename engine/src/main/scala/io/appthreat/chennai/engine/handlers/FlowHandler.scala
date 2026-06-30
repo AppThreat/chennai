@@ -178,6 +178,7 @@ object FlowHandler:
     offset: Int,
     limit: Int,
     purlOnly: Boolean,
+    capped: Boolean = false,
     passesThrough: Option[String] = None,
     doesNotPassThrough: Option[String] = None
   ): Json =
@@ -220,17 +221,27 @@ object FlowHandler:
     }.toMap
 
     val total = filtered.size
+    val off   = offset.max(0)
+    val lim   = limit.max(0)
     val window =
-        withIds.slice(offset.max(0), offset.max(0) + limit.max(0)).map { case (f, i) =>
+        withIds.slice(off, off + lim).map { case (f, i) =>
             f.flowJson(i, subOf.get(i))
         }
+    // A further page exists when the window stops short of the (post-filter) total.
+    val nextOffset = if off + window.size < total then Some(off + window.size) else None
 
     Json.obj(
       "title"  -> Json.fromString(title),
       "total"  -> Json.fromInt(total),
       "shown"  -> Json.fromInt(window.size),
-      "offset" -> Json.fromInt(offset.max(0)),
-      "flows"  -> Json.arr(window*)
+      "offset" -> Json.fromInt(off),
+      "limit"  -> Json.fromInt(lim),
+      // `capped` => path enumeration stopped at the `take` budget, so `total` is a lower bound
+      // and there are likely more flows than reported. Re-run with a larger `take` to widen.
+      "capped" -> Json.fromBoolean(capped),
+      // Convenience pointer for paginating: pass this as `offset` to fetch the next page.
+      "nextOffset" -> nextOffset.map(Json.fromInt).getOrElse(Json.Null),
+      "flows"      -> Json.arr(window*)
     )
   end toFlowSet
 
@@ -275,24 +286,78 @@ object FlowHandler:
     "adware"
   )
 
+  // High-value source/sink tags surfaced FIRST, so an agent paging through a bounded result sees
+  // the flows most likely to be exploitable (untrusted framework input reaching an injection,
+  // command-execution, file-io, or deserialization sink) before the long tail of library flows.
+  private val PrioritySourceTags = Seq("framework-input", "framework-route", "cli-source")
+  private val PrioritySinkTags = Seq(
+    "sql",
+    "code-execution",
+    "unsafe-deserialization",
+    "serialization",
+    "file-io",
+    "reflection"
+  )
+
   private def tagRegex(tags: Seq[String]): String = tags.mkString("(", "|", ")")
 
   private val DynamicLangs = Set("PYTHON", "PYTHONSRC", "JAVASCRIPT", "JSSRC", "RUBYSRC")
 
+  /** Default upper bound on the number of source-to-sink paths enumerated for a preset, before any
+    * windowing. This is the lever that keeps `dataflows`/`reachables` responsive on large
+    * codebases: path enumeration short-circuits once this many paths have been produced, rather
+    * than walking the entire (potentially unbounded) flow space. Callers override via `take`.
+    */
+  val DefaultTake = 100
+
   /** Compute the `reachables` flows directly (type-checked Scala), mirroring the basic +
     * dynamic-language + default-tag flow collectors in io.appthreat.atom `ReachableSlicing`.
+    *
+    * Flows are emitted as a lazy iterator and capped at `take` paths by the caller, so enumeration
+    * stops early on large atoms. Higher-value flows (priority source → priority sink) are produced
+    * first so they survive both the `take` cap and the later fingerprint dedup.
+    *
+    * @param srcTags
+    *   source tag names to scope flow origins to (defaults to [[DefaultSourceTags]]).
+    * @param sinkTags
+    *   sink tag names to scope flow destinations to (defaults to [[DefaultSinkTags]]).
     */
-  private def computeReachables(cpg: Cpg): List[Path] =
+  private def reachableIterator(
+    cpg: Cpg,
+    srcTags: Seq[String],
+    sinkTags: Seq[String]
+  ): Iterator[Path] =
     given EngineContext = EngineContext()
     val lang   = Try(cpg.metaData.language.headOption.getOrElse("")).getOrElse("").toUpperCase
-    val srcRe  = tagRegex(DefaultSourceTags)
-    val sinkRe = tagRegex(DefaultSinkTags)
+    val srcRe  = tagRegex(srcTags)
+    val sinkRe = tagRegex(sinkTags)
 
     // `def` (not `val`): each traversal is re-evaluated per use so the iterators are not exhausted.
     def sP                                                  = cpg.tag.name(srcRe).parameter
     def sI                                                  = cpg.tag.name(srcRe).identifier
     def sC                                                  = cpg.tag.name(srcRe).call
     def basicFrom(sinks: Iterator[CfgNode]): Iterator[Path] = sinks.reachableByFlows(sP, sI, sC)
+
+    // Priority flows: untrusted framework/CLI input reaching a high-value sink. Restricted to the
+    // intersection of the requested tags and the priority sets so a scoped query stays scoped.
+    val prioSrc = tagRegex(srcTags.filter(PrioritySourceTags.contains))
+    val priority =
+        if srcTags.exists(PrioritySourceTags.contains) &&
+          sinkTags.exists(PrioritySinkTags.contains)
+        then
+          val prioSinkRe = tagRegex(sinkTags.filter(PrioritySinkTags.contains))
+          def pSrcP      = cpg.tag.name(prioSrc).parameter
+          def pSrcI      = cpg.tag.name(prioSrc).identifier
+          def pSrcC      = cpg.tag.name(prioSrc).call
+          Iterator(
+            cpg.tag.name(prioSinkRe).call.reachableByFlows(pSrcP, pSrcI, pSrcC),
+            cpg.tag.name(prioSinkRe).call.argument.isIdentifier.reachableByFlows(
+              pSrcP,
+              pSrcI,
+              pSrcC
+            )
+          ).flatten
+        else Iterator.empty[Path]
 
     val basic = Iterator(
       basicFrom(cpg.tag.name(sinkRe).call),
@@ -322,19 +387,30 @@ object FlowHandler:
           ).flatten
         else Iterator.empty[Path]
 
-    (basic ++ defaultTag ++ dynamic).toList
-  end computeReachables
+    priority ++ basic ++ defaultTag ++ dynamic
+  end reachableIterator
+
+  /** Materialise up to `take` reachable paths (priority flows first). */
+  private def computeReachables(
+    cpg: Cpg,
+    take: Int,
+    srcTags: Seq[String] = DefaultSourceTags,
+    sinkTags: Seq[String] = DefaultSinkTags
+  ): List[Path] =
+      reachableIterator(cpg, srcTags, sinkTags).take(take.max(0)).toList
 
   /** Compute the `cryptos` flows (crypto-algorithm → crypto-generate), language-aware. */
-  private def computeCryptos(cpg: Cpg): List[Path] =
+  private def computeCryptos(cpg: Cpg, take: Int): List[Path] =
     given EngineContext = EngineContext()
     val lang = Try(cpg.metaData.language.headOption.getOrElse("")).getOrElse("").toUpperCase
-    if DynamicLangs.contains(lang) then
-      cpg.tag.name("crypto-generate").call
-          .reachableByFlows(cpg.tag.name("crypto-algorithm").call).toList
-    else
-      cpg.tag.name("crypto-generate").call
-          .reachableByFlows(cpg.tag.name("crypto-algorithm").literal).toList
+    val it =
+        if DynamicLangs.contains(lang) then
+          cpg.tag.name("crypto-generate").call
+              .reachableByFlows(cpg.tag.name("crypto-algorithm").call)
+        else
+          cpg.tag.name("crypto-generate").call
+              .reachableByFlows(cpg.tag.name("crypto-algorithm").literal)
+    it.take(take.max(0)).toList
 
   /** Entry point: compute and shape flows for the open atom.
     *
@@ -346,10 +422,37 @@ object FlowHandler:
     *   - `source` + `sink` → `(sink).reachableByFlows(source)`, via the REPL bridge.
     *   - `passesThrough` / `doesNotPassThrough` → filter result by step method/code/file substring
     *     matching (case-insensitive). These are applied to every output path.
+    *
+    * Slicing / pagination args (all optional):
+    *   - `take` → cap on the number of paths enumerated for a preset (default [[DefaultTake]]); the
+    *     responsiveness lever on large atoms. The result is flagged `capped` when this is hit.
+    *   - `offset` / `limit` → window into the computed flows (default offset 0, limit 50). Use
+    *     `nextOffset` from the response to page forward without recomputing.
+    *   - `sourceTags` / `sinkTags` → override the default source/sink tag sets for the `dataflows`
+    *     and `reachables` presets. Accept a JSON array or a `|`/`,`-delimited string.
     */
+  /** Parse a tag list argument, accepting either a JSON array of strings (`["sql","exec"]`) or a
+    * single pipe/comma-delimited string (`"sql|exec"`). Returns `None` when absent or empty so the
+    * caller falls back to its default tag set.
+    */
+  private def tagListArg(args: io.circe.HCursor, key: String): Option[Seq[String]] =
+      args.get[List[String]](key).toOption
+          .orElse(
+            args.get[String](key).toOption
+                .map(_.split("[|,]").iterator.map(_.trim).filter(_.nonEmpty).toList)
+          )
+          .map(_.filter(_.nonEmpty))
+          .filter(_.nonEmpty)
+
   def flows(cpg: Cpg, bridge: ReplBridge, args: io.circe.HCursor): Either[String, Json] =
-    val offset        = args.get[Int]("offset").getOrElse(0)
-    val limit         = args.get[Int]("limit").getOrElse(500)
+    val offset = args.get[Int]("offset").getOrElse(0)
+    val limit  = args.get[Int]("limit").getOrElse(50)
+    // `take` caps how many paths are *enumerated* (the cost lever on large atoms); `limit`/`offset`
+    // window the already-computed result for pagination. They are independent: page through a large
+    // `take` budget with successive `offset`s without recomputing.
+    val take          = args.get[Int]("take").getOrElse(DefaultTake)
+    val srcTags       = tagListArg(args, "sourceTags").getOrElse(DefaultSourceTags)
+    val sinkTags      = tagListArg(args, "sinkTags").getOrElse(DefaultSinkTags)
     val expr          = args.get[String]("expr").toOption.map(_.trim).filter(_.nonEmpty)
     val preset        = args.get[String]("preset").toOption.map(_.trim).filter(_.nonEmpty)
     val source        = args.get[String]("source").toOption.map(_.trim).filter(_.nonEmpty)
@@ -358,24 +461,36 @@ object FlowHandler:
     val doesNotPassThrough =
         args.get[String]("doesNotPassThrough").toOption.map(_.trim).filter(_.nonEmpty)
 
-    def shaped(title: String, paths: List[Path], purlOnly: Boolean) =
-        toFlowSet(title, paths, offset, limit, purlOnly, passesThrough, doesNotPassThrough)
+    // A preset enumeration is "capped" when it produced exactly `take` paths — there may be more.
+    def shaped(title: String, paths: List[Path], purlOnly: Boolean, fromPreset: Boolean) =
+        toFlowSet(
+          title,
+          paths,
+          offset,
+          limit,
+          purlOnly,
+          capped = fromPreset && take > 0 && paths.sizeIs >= take,
+          passesThrough,
+          doesNotPassThrough
+        )
 
     (expr, preset, source, sink) match
       case (Some(e), _, _, _) =>
-          bridge.evalFlows(e).map(p => shaped("Data flows", p, purlOnly = false))
+          bridge.evalFlows(e).map(p =>
+              shaped("Data flows", p, purlOnly = false, fromPreset = false)
+          )
       case (_, Some("cryptos"), _, _) =>
-          Try(computeCryptos(cpg)).toEither.left.map(_.getMessage)
-              .map(p => shaped("Crypto flows", p, purlOnly = false))
+          Try(computeCryptos(cpg, take)).toEither.left.map(_.getMessage)
+              .map(p => shaped("Crypto flows", p, purlOnly = false, fromPreset = true))
       case (_, Some("reachables"), _, _) =>
-          Try(computeReachables(cpg)).toEither.left.map(_.getMessage)
-              .map(p => shaped("Reachable flows", p, purlOnly = true))
+          Try(computeReachables(cpg, take, srcTags, sinkTags)).toEither.left.map(_.getMessage)
+              .map(p => shaped("Reachable flows", p, purlOnly = true, fromPreset = true))
       case (_, Some("dataflows"), _, _) | (_, None, None, None) =>
-          Try(computeReachables(cpg)).toEither.left.map(_.getMessage)
-              .map(p => shaped("Data flows", p, purlOnly = false))
+          Try(computeReachables(cpg, take, srcTags, sinkTags)).toEither.left.map(_.getMessage)
+              .map(p => shaped("Data flows", p, purlOnly = false, fromPreset = true))
       case (_, _, Some(s), Some(k)) =>
           bridge.evalFlows(s"($k).reachableByFlows($s)")
-              .map(p => shaped("Data flows", p, purlOnly = false))
+              .map(p => shaped("Data flows", p, purlOnly = false, fromPreset = false))
       case _ =>
           Left("flows requires 'expr', 'preset', or both 'source' and 'sink'")
   end flows

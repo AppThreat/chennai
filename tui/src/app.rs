@@ -749,9 +749,10 @@ impl App {
         }
 
         // Data-flow expressions are routed to the structured `flows` command (master/detail view):
-        // the bare `reachables`/`cryptos` presets, or any expression invoking the dataflow DSL.
-        let flow_args = if t == "dataflows" || t == "reachables" || t == "cryptos" {
-            Some(serde_json::json!({ "preset": t }))
+        // a `reachables`/`cryptos`/`dataflows` preset (optionally with `take=`/`limit=`/`offset=`
+        // and `sourceTags=`/`sinkTags=` slicing args), or any expression invoking the dataflow DSL.
+        let flow_args = if let Some(args) = parse_flow_command(&t) {
+            Some(args)
         } else if lower.contains("reachablebyflows") || t.contains(".df(") {
             Some(serde_json::json!({ "expr": t }))
         } else {
@@ -970,7 +971,7 @@ impl App {
             let mut engine = engine_arc.lock().unwrap();
             match engine.request::<FlowSet>("flows", args) {
                 Ok(fs) => {
-                    let status = format!("{}: {} flow(s)", fs.title, fs.total);
+                    let status = flow_status(&fs);
                     self.flows = Some(fs);
                     self.output = None;
                     self.flow_state = ListState::default();
@@ -1631,7 +1632,7 @@ impl App {
     pub fn apply_flow_outcome(&mut self, outcome: FlowOutcome) -> (bool, String) {
         match outcome {
             FlowOutcome::Result(fs) => {
-                let status = format!("{}: {} flow(s)", fs.title, fs.total);
+                let status = flow_status(&fs);
                 self.flows = Some(fs);
                 self.output = None;
                 self.flow_state = ListState::default();
@@ -2059,6 +2060,62 @@ impl App {
     }
 }
 
+/// Parse a flow-preset command line into engine `flows` arguments.
+///
+/// Recognises a leading preset word (`dataflows`, `reachables`, or `cryptos`) optionally followed
+/// by whitespace-separated `key=value` slicing args. Supported keys:
+///   - `take` / `limit` / `offset` → integer arguments (invalid values are ignored).
+///   - `sourceTags` / `sinkTags` → `|`- or `,`-delimited tag lists (passed through verbatim).
+///
+/// Examples: `dataflows`, `reachables take=200 limit=20`, `dataflows sinkTags=sql,code-execution`.
+/// Returns `None` when the line does not start with a known preset.
+pub fn parse_flow_command(input: &str) -> Option<serde_json::Value> {
+    let mut parts = input.split_whitespace();
+    let preset = parts.next()?.to_ascii_lowercase();
+    if !matches!(preset.as_str(), "dataflows" | "reachables" | "cryptos") {
+        return None;
+    }
+    let mut args = serde_json::Map::new();
+    args.insert("preset".into(), serde_json::Value::String(preset));
+    for tok in parts {
+        let Some((key, val)) = tok.split_once('=') else {
+            // A bare trailing token that isn't a key=value pair means this isn't a clean flow
+            // command (e.g. free text starting with the word "dataflows"); don't claim it.
+            return None;
+        };
+        match key {
+            "take" | "limit" | "offset" => {
+                if let Ok(n) = val.parse::<i64>() {
+                    args.insert(key.into(), serde_json::Value::from(n));
+                }
+            }
+            "sourceTags" | "sinkTags" => {
+                args.insert(key.into(), serde_json::Value::String(val.to_string()));
+            }
+            _ => return None,
+        }
+    }
+    // The interactive master/detail view has no page-forward control, so default `limit` to the
+    // (bounded) `take` budget — show every enumerated flow on one page rather than the engine's
+    // smaller agent-oriented default. Explicit `limit=` still wins.
+    if !args.contains_key("limit") {
+        let take = args.get("take").and_then(serde_json::Value::as_i64).unwrap_or(100);
+        args.insert("limit".into(), serde_json::Value::from(take));
+    }
+    Some(serde_json::Value::Object(args))
+}
+
+/// Build the one-line status string for a completed flow query. When the result was `capped`
+/// (path enumeration stopped at the `take` budget) the total is shown as a lower bound with a
+/// hint to raise `take`.
+fn flow_status(fs: &crate::model::FlowSet) -> String {
+    if fs.capped {
+        format!("{}: {}+ flow(s) (capped — raise take=N for more)", fs.title, fs.total)
+    } else {
+        format!("{}: {} flow(s)", fs.title, fs.total)
+    }
+}
+
 /// Heuristic: does `input` look like a DSL expression or a structured command that should go
 /// directly to the engine rather than the AI agent?
 ///
@@ -2087,8 +2144,8 @@ fn looks_like_dsl_or_command(t: &str) -> bool {
     if t.starts_with("atom.") {
         return true;
     }
-    // Flow presets.
-    if lower == "dataflows" || lower == "reachables" || lower == "cryptos" {
+    // Flow presets (optionally followed by `take=`/`limit=`/`offset=`/`sourceTags=`/`sinkTags=`).
+    if parse_flow_command(t).is_some() {
         return true;
     }
     // Flow DSL markers.
@@ -2272,6 +2329,63 @@ mod tests {
         assert!(looks_like_dsl_or_command("dataflows"));
         assert!(looks_like_dsl_or_command("reachables"));
         assert!(looks_like_dsl_or_command("cryptos"));
+        // Presets with slicing args are still routed to the engine, not the agent.
+        assert!(looks_like_dsl_or_command("reachables take=200 limit=20"));
+        assert!(looks_like_dsl_or_command("dataflows sinkTags=sql,code-execution"));
+    }
+
+    #[test]
+    fn parse_flow_command_bare_preset() {
+        let args = parse_flow_command("reachables").unwrap();
+        assert_eq!(args["preset"], "reachables");
+        assert!(args.get("take").is_none());
+    }
+
+    #[test]
+    fn parse_flow_command_parses_slicing_args() {
+        let args = parse_flow_command("dataflows take=200 limit=20 offset=40").unwrap();
+        assert_eq!(args["preset"], "dataflows");
+        assert_eq!(args["take"], 200);
+        assert_eq!(args["limit"], 20);
+        assert_eq!(args["offset"], 40);
+    }
+
+    #[test]
+    fn parse_flow_command_parses_tag_overrides() {
+        let args = parse_flow_command("reachables sourceTags=framework-input sinkTags=sql|exec").unwrap();
+        assert_eq!(args["sourceTags"], "framework-input");
+        assert_eq!(args["sinkTags"], "sql|exec");
+    }
+
+    #[test]
+    fn parse_flow_command_is_case_insensitive_on_preset() {
+        assert_eq!(parse_flow_command("DataFlows").unwrap()["preset"], "dataflows");
+    }
+
+    #[test]
+    fn parse_flow_command_rejects_non_presets_and_freetext() {
+        // Not a preset word.
+        assert!(parse_flow_command("explain the auth flow").is_none());
+        // A preset word followed by free text (not key=value) is NOT a flow command, so it can
+        // still be routed to the agent as a natural-language query.
+        assert!(parse_flow_command("dataflows please").is_none());
+        // Unknown key=value is rejected too.
+        assert!(parse_flow_command("dataflows depth=3").is_none());
+        // A bad integer value is ignored, leaving just the preset.
+        let args = parse_flow_command("dataflows take=abc").unwrap();
+        assert_eq!(args["preset"], "dataflows");
+        assert!(args.get("take").is_none());
+    }
+
+    #[test]
+    fn flow_status_reports_capped() {
+        let mut fs = crate::model::FlowSet { total: 100, ..Default::default() };
+        fs.title = "Data flows".into();
+        fs.capped = true;
+        assert!(flow_status(&fs).contains("100+"));
+        assert!(flow_status(&fs).contains("capped"));
+        fs.capped = false;
+        assert_eq!(flow_status(&fs), "Data flows: 100 flow(s)");
     }
 
     #[test]
