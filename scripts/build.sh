@@ -6,7 +6,7 @@ set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 echo "==> Building engine (sbt stage)"
-(cd "$root/engine" && sbt -batch scalafmt stage test)
+(cd "$root/engine" && sbt -batch clean stage scalafmt test)
 
 echo "==> Building TUI (cargo build --release)"
 (cd "$root/tui" && cargo clippy && cargo test && cargo build --release)
