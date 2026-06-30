@@ -507,6 +507,27 @@ impl App {
         self.repl.clear();
     }
 
+    /// Clear the agent transcript, token meters and REPL scrollback to start a fresh
+    /// session. Keeps the loaded atom/backend/engine and summary panel intact, so the
+    /// next query starts from a clean slate without reloading the analysis.
+    pub fn clear_session(&mut self) {
+        self.agent_transcript.clear();
+        self.agent_total_in = 0;
+        self.agent_total_out = 0;
+        self.agent_last_tool = None;
+        self.agent_scroll = 0;
+        self.agent_auto_scroll = true;
+        self.agent_report_saved = false;
+        self.agent_query_text.clear();
+        self.agent_current_text.clear();
+        self.agent_current_thinking.clear();
+        self.agent_pending_tool = None;
+        self.repl.clear_scrollback();
+        self.output = None;
+        self.flows = None;
+        self.detail = None;
+    }
+
     /// Run the query for a summary row, echoing the command into the REPL first.
     pub fn run_summary_row(&mut self, idx: usize, focus_output: bool) {
         let repl_text = self
@@ -543,15 +564,31 @@ impl App {
             return;
         }
 
+        // Help: list everything a human can type, plus the tools the AI agent calls.
+        // Works whether or not the agent is enabled, and matches both `help` and `/help`.
+        if t.eq_ignore_ascii_case("help") || t == "/help" {
+            let backend_name = self.backend.as_ref().map(|b| b.backend_name());
+            self.repl.record(&t, help_text(self.agent_enabled, backend_name), true);
+            self.status = "commands listed".into();
+            return;
+        }
+
+        // Clear: wipe the agent transcript, token meters and REPL scrollback to start a
+        // fresh session. The loaded atom/backend/engine and summary panel are kept intact.
+        if t == "/clear" {
+            if self.agent_active {
+                self.repl.record(&t, "agent is running — cancel it first ([c] or Esc)".into(), false);
+            } else {
+                self.clear_session();
+                self.status = "session cleared".into();
+            }
+            return;
+        }
+
         // Slash commands: /security-review, /code-review, /explain, /trace, /help
         if let Some(slash_cmd) = t.strip_prefix('/') {
             if self.agent_enabled && !self.agent_active {
                 let cmd = slash_cmd.to_string();
-                if cmd == "help" {
-                    self.repl.record(&t, "available commands: /security-review, /code-review, /explain, /trace, /help".into(), true);
-                    self.status = "agent commands listed".into();
-                    return;
-                }
                 // The query is shown in the agent transcript, not the REPL scrollback.
                 self.status = format!("agent: /{cmd}");
                 self.agent_query_text = t.clone();
@@ -2058,6 +2095,70 @@ impl App {
 
         lines.join("\n")
     }
+}
+
+/// Build the `help` text listing what a human can type in the REPL, plus a reference
+/// to the tools the AI agent calls on its own. `agent_enabled` toggles the AI-specific
+/// lines; `backend_name` (e.g. "rusi") names the loaded non-atom backend, if any.
+pub fn help_text(agent_enabled: bool, backend_name: Option<&str>) -> String {
+    let mut s = String::new();
+    s.push_str("Chennai — commands you can type in the REPL\n");
+
+    s.push_str("\nAsk / control:\n");
+    if agent_enabled {
+        s.push_str("  <natural language>           Ask the AI agent, e.g. \"where is user input validated?\"\n");
+        s.push_str("  /security-review             Audit the code for vulnerabilities\n");
+        s.push_str("  /code-review                 Review the code for bugs and quality\n");
+        s.push_str("  /explain                     Explain how the code works\n");
+        s.push_str("  /trace                       Trace a data flow end to end\n");
+    } else {
+        s.push_str("  (AI agent disabled — set ANTHROPIC_API_KEY or OPENAI_API_KEY to enable\n");
+        s.push_str("   natural-language questions and /security-review, /code-review, /explain, /trace)\n");
+    }
+    s.push_str("  /clear                       Clear the transcript & scrollback (keeps atom loaded)\n");
+    s.push_str("  help                         Show this help\n");
+
+    if backend_name.is_none() {
+        s.push_str("\nQuery commands (chen DSL):\n");
+        s.push_str("  atom.file                    List files\n");
+        s.push_str("  atom.method                  All methods (also .external / .internal)\n");
+        s.push_str("  atom.call                    Call sites\n");
+        s.push_str("  atom.namespace               Namespaces\n");
+        s.push_str("  atom.annotation              Annotations\n");
+        s.push_str("  atom.imports                 Imports\n");
+        s.push_str("  atom.literal                 Literals\n");
+        s.push_str("  atom.configFile              Config files\n");
+        s.push_str("  atom.tag.name(\"crypto.*\")    Nodes by tag pattern (framework.*, pkg.*, …)\n");
+        s.push_str("  <chen DSL expr>.toJson       Evaluate any chen expression\n");
+
+        s.push_str("\nData-flow commands:\n");
+        s.push_str("  dataflows                    Show data flows (master/detail view)\n");
+        s.push_str("  reachables take=200 limit=20 Reachable flows, with optional slicing args\n");
+        s.push_str("  cryptos                      Crypto-related flows\n");
+        s.push_str("  <expr>.reachableByFlows      Run an arbitrary data-flow expression\n");
+    }
+
+    s.push_str("\nOther:\n");
+    s.push_str("  bom [filter]                 Show the CycloneDX SBOM components\n");
+    s.push_str("  :memory list                 List per-project facts (also: show <n>, forget <n>, save [<n>], prune)\n");
+
+    if agent_enabled {
+        s.push_str("\nAI agent tools (called by the agent, not typed by you):\n");
+        match backend_name {
+            Some(name) => {
+                s.push_str(&format!(
+                    "  {name}_*                      Backend analysis tools for the loaded {name} project\n"
+                ));
+            }
+            None => {
+                s.push_str("  atom_*                       summary, query, dsl_eval, flows, callsites,\n");
+                s.push_str("                               callgraph, controlflow, reaches, detail, algorithms\n");
+                s.push_str("  rusi_/golem_/dosai_/blint_*  Backend tools, when a backend is loaded\n");
+            }
+        }
+    }
+
+    s
 }
 
 /// Parse a flow-preset command line into engine `flows` arguments.

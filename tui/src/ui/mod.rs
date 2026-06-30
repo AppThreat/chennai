@@ -1275,6 +1275,25 @@ fn wrap_line(line: &str, width: usize) -> Vec<String> {
     result
 }
 
+/// Format a count with `k`/`m` suffixes so token meters read `1.2k` / `3.4m`
+/// instead of raw integers. Values under 1000 are shown verbatim, and a trailing
+/// `.0` is trimmed (`2.0k` → `2k`).
+fn humanize_count(n: u32) -> String {
+    fn scaled(v: f64, suffix: &str) -> String {
+        let s = format!("{v:.1}");
+        let s = s.strip_suffix(".0").map(str::to_string).unwrap_or(s);
+        format!("{s}{suffix}")
+    }
+    let f = n as f64;
+    if f >= 1_000_000.0 {
+        scaled(f / 1_000_000.0, "m")
+    } else if f >= 1_000.0 {
+        scaled(f / 1_000.0, "k")
+    } else {
+        n.to_string()
+    }
+}
+
 /// One-line progress/usage footer for the agent panel: spinner + current tool
 /// while running, a running token meter, and key hints.
 fn agent_footer_line<'a>(app: &App, theme: &Theme) -> Line<'a> {
@@ -1290,7 +1309,11 @@ fn agent_footer_line<'a>(app: &App, theme: &Theme) -> Line<'a> {
     }
     if app.agent_total_in > 0 || app.agent_total_out > 0 {
         spans.push(Span::styled(
-            format!("· Σ {} in / {} out ", app.agent_total_in, app.agent_total_out),
+            format!(
+                "· Σ {} in / {} out ",
+                humanize_count(app.agent_total_in),
+                humanize_count(app.agent_total_out)
+            ),
             Style::default().fg(theme.muted),
         ));
     }
@@ -1589,6 +1612,17 @@ mod tests {
     use crate::model::{Cell, ResultTable, Summary, SummaryRow};
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
+
+    #[test]
+    fn humanize_count_uses_k_and_m_suffixes() {
+        assert_eq!(humanize_count(0), "0");
+        assert_eq!(humanize_count(999), "999");
+        assert_eq!(humanize_count(1_000), "1k");
+        assert_eq!(humanize_count(1_234), "1.2k");
+        assert_eq!(humanize_count(12_500), "12.5k");
+        assert_eq!(humanize_count(2_000_000), "2m");
+        assert_eq!(humanize_count(3_450_000), "3.5m");
+    }
 
     fn rendered_text(app: &mut App) -> String {
         let theme = Theme::dark();

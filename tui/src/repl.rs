@@ -141,6 +141,12 @@ impl Repl {
         self.hist_pos = None;
     }
 
+    /// Clear the executed-command scrollback. The recall history (Up arrow) and the
+    /// current input line are left untouched, so this only wipes what's displayed.
+    pub fn clear_scrollback(&mut self) {
+        self.entries.clear();
+    }
+
     /// Record an executed command and its outcome; deduplicates consecutive identical inputs in the
     /// recall history.
     pub fn record(&mut self, input: &str, status: String, ok: bool) {
