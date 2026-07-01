@@ -302,6 +302,10 @@ pub struct App {
     pub agent_slash_effort: Option<String>,
     /// Whether the report has been saved for the current agent run.
     pub agent_report_saved: bool,
+    /// Conversation history (LLM messages) carried across prompts so follow-up
+    /// questions retain context from earlier turns. Seeded into each new agent
+    /// run and refreshed when the run completes. Cleared by `clear_session`.
+    pub agent_history: Vec<crate::agent::provider::Message>,
     /// When true, thinking blocks are shown in full (not collapsed to 120-char preview).
     pub agent_thinking_expanded: bool,
     /// Cumulative token usage across the current agent run (for the usage meter).
@@ -429,6 +433,7 @@ impl App {
             agent_slash_tools: None,
             agent_slash_effort: None,
             agent_report_saved: false,
+            agent_history: Vec::new(),
             agent_thinking_expanded: false,
             agent_total_in: 0,
             agent_total_out: 0,
@@ -518,6 +523,7 @@ impl App {
         self.agent_scroll = 0;
         self.agent_auto_scroll = true;
         self.agent_report_saved = false;
+        self.agent_history.clear();
         self.agent_query_text.clear();
         self.agent_current_text.clear();
         self.agent_current_thinking.clear();
@@ -1885,6 +1891,10 @@ impl App {
                 self.flush_current_thinking();
                 self.agent_transcript.push(AgentEntry::Error(msg));
                 self.agent_active = false;
+            }
+            AgentEvent::History(messages) => {
+                // Persist the conversation so the next prompt resumes with context.
+                self.agent_history = messages;
             }
             AgentEvent::Done => {
                 self.flush_current_text();

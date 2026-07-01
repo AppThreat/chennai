@@ -408,6 +408,13 @@ bounds + dedups the result automatically. Reserve atom_dsl_eval for traversals t
     store facts grounded in custom analysis tools** (`atom_*`, `blint_*`, `rusi_*`, `golem_*`,
     `dosai_*`, `bom_*`). Do NOT store facts based on `read_file`, `ripgrep`, or git tools —
     those produce no structural evidence and are not interesting for long-term memory.
+    **SAVE proactively.** Whenever a custom analysis tool yields a durable structural fact —
+    a callgraph relationship, a confirmed/refuted dataflow path, an entrypoint or auth
+    boundary, a reachable sink — call `project_memory` with `action:"save"` BEFORE you write
+    your final answer. Set `grounded_by` to the tool that produced the evidence, add the
+    relevant `source_refs` (file:line), and pick a `confidence`. This is part of completing
+    the task, not optional extra work: a useful analysis that leaves no fact behind is
+    incomplete. Update an existing fact (same `name`) rather than duplicating it.
 9. **Data-flow queries are paginated — page through them, don't over-run them.** The
    `dataflows` and `reachables` presets are BOUNDED: path enumeration stops at the `take`
    budget (default 100) and you page the result with `offset`/`limit`. They are safe on
@@ -1063,8 +1070,14 @@ fn friendly_provider_error(e: &ProviderError) -> String {
 // Agent loop (background-thread entry point)
 // ---------------------------------------------------------------------------
 
-pub fn run_agent(ctx: &AgentCtx, user_input: &str, tx: mpsc::Sender<AgentEvent>) {
-    let mut transcript = Transcript::new();
+pub fn run_agent(
+    ctx: &AgentCtx,
+    user_input: &str,
+    history: Vec<provider::Message>,
+    tx: mpsc::Sender<AgentEvent>,
+) {
+    // Seed the transcript with prior turns so follow-up questions retain context.
+    let mut transcript = Transcript::with_initial(history);
     transcript.push_user(user_input);
 
     // Select the appropriate tool definitions based on the analysis mode.
@@ -1079,8 +1092,7 @@ pub fn run_agent(ctx: &AgentCtx, user_input: &str, tx: mpsc::Sender<AgentEvent>)
 
     loop {
         if ctx.cancel.load(Ordering::Relaxed) {
-            tx.send(AgentEvent::Done).ok();
-            return;
+            break;
         }
 
         let mut sink = ChannelSink(tx.clone());
@@ -1100,8 +1112,7 @@ pub fn run_agent(ctx: &AgentCtx, user_input: &str, tx: mpsc::Sender<AgentEvent>)
             Ok(r) => r,
             Err(e) => {
                 tx.send(AgentEvent::Error(friendly_provider_error(&e))).ok();
-                tx.send(AgentEvent::Done).ok();
-                return;
+                break;
             }
         };
 
@@ -1109,8 +1120,7 @@ pub fn run_agent(ctx: &AgentCtx, user_input: &str, tx: mpsc::Sender<AgentEvent>)
 
         match result.stop_reason.as_str() {
             "end_turn" | "stop" => {
-                tx.send(AgentEvent::Done).ok();
-                return;
+                break;
             }
             // The model declined (safety classifier). Non-fatal: surface a clean
             // message and leave the session usable so the user can rephrase.
@@ -1120,15 +1130,13 @@ pub fn run_agent(ctx: &AgentCtx, user_input: &str, tx: mpsc::Sender<AgentEvent>)
 safety classifier even for legitimate review — try rephrasing, e.g. frame it as an \
 authorized review of your own code.".into(),
                 )).ok();
-                tx.send(AgentEvent::Done).ok();
-                return;
+                break;
             }
             "tool_use" | "tool_calls" => {
                 let tool_calls = transcript.last_tool_calls();
                 if tool_calls.is_empty() {
                     tx.send(AgentEvent::Error("model requested tools but none found".into())).ok();
-                    tx.send(AgentEvent::Done).ok();
-                    return;
+                    break;
                 }
 
                 // Execute tool calls in parallel — all tools are read-only, so there is no
@@ -1158,11 +1166,14 @@ authorized review of your own code.".into(),
                 }
             }
             _ => {
-                tx.send(AgentEvent::Done).ok();
-                return;
+                break;
             }
         }
     }
+
+    // Persist the full transcript so the next prompt resumes with context.
+    tx.send(AgentEvent::History(transcript.messages().to_vec())).ok();
+    tx.send(AgentEvent::Done).ok();
 }
 
 // ---------------------------------------------------------------------------
