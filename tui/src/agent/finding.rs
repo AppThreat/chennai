@@ -63,6 +63,15 @@ pub struct Finding {
     pub source: Location,
     pub sink: Location,
     pub proof: Proof,
+    /// Whether the source→sink path is reachable — mirrors `proof.verified`, surfaced
+    /// at the top level so benchmark tooling can filter without descending into `proof`.
+    pub reachable: bool,
+    /// Sanitizer/validation routines the agent checked and found absent (or present).
+    #[serde(default)]
+    pub sanitizers_checked: Vec<String>,
+    /// The analysis tool(s) that produced the evidence, e.g. "atom_flows, atom_callsites".
+    #[serde(default)]
+    pub grounded_by: Option<String>,
     pub remediation: Option<String>,
 }
 
@@ -144,18 +153,27 @@ impl FindingSet {
             let remediation = f.remediation.as_deref()
                 .map(|r| format!("\n- **Remediation:** {}", r))
                 .unwrap_or_default();
+            let grounded = f.grounded_by.as_deref()
+                .filter(|s| !s.is_empty())
+                .map(|g| format!("\n- **Grounded by:** {}", g))
+                .unwrap_or_default();
+            let sanitizers = if f.sanitizers_checked.is_empty() {
+                String::new()
+            } else {
+                format!("\n- **Sanitizers checked:** {}", f.sanitizers_checked.join(", "))
+            };
 
             out.push_str(&format!(
                 "## {} — {}\n\
                  **Severity:** {} | **Confidence:** {} | **ID:** {}{}\n\
                  - **Source:** `{}`{}\n\
                  - **Sink:** `{}`{}\n\
-                 - **Proof:** `{}` — {} path(s), {}{}\n\n",
+                 - **Proof:** `{}` — {} path(s), {}{}{}{}\n\n",
                 f.id, f.title, sev, conf, f.id, cwe,
                 f.source.file, src_line,
                 f.sink.file, snk_line,
                 f.proof.expr, f.proof.path_count, proven,
-                remediation,
+                sanitizers, grounded, remediation,
             ));
         }
         out
@@ -209,9 +227,14 @@ impl TokenLedger {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Count flow paths in an engine `flows` response. The engine may return paths
-/// under `"flows"` or `"rows"` depending on the request shape.
+/// Count flow paths in an engine `flows` response. The FlowHandler reports the full
+/// pre-pagination count under `"total"` (the accurate number of proof paths); the
+/// `"flows"` array is only the current page window, so it undercounts when the result
+/// is paginated. Prefer `total`, then fall back to the array lengths for other shapes.
 pub fn count_flow_paths(data: &serde_json::Value) -> usize {
+    if let Some(total) = data.get("total").and_then(|v| v.as_u64()) {
+        return total as usize;
+    }
     data.get("flows")
         .and_then(|v| v.as_array())
         .map(|a| a.len())
@@ -286,6 +309,9 @@ mod tests {
             source: Location { file: "src/input.rs".into(), line: Some(1), tag: Some(tag.into()) },
             sink: Location { file: sink_file.into(), line: sink_line, tag: None },
             proof: Proof { expr: "sink.reachableByFlows(source)".into(), path_count: 3, verified: true },
+            reachable: true,
+            sanitizers_checked: vec!["escapeHtml".into()],
+            grounded_by: Some("atom_reaches".into()),
             remediation: Some("Use safe API".into()),
         }
     }
@@ -439,6 +465,14 @@ mod tests {
         assert_eq!(count_flow_paths(&data2), 1);
         let data3 = serde_json::json!({"error": "bad"});
         assert_eq!(count_flow_paths(&data3), 0);
+    }
+
+    #[test]
+    fn count_flow_paths_prefers_total_over_windowed_page() {
+        // The FlowHandler reports the full count in `total` while `flows` is only the
+        // paged window (here capped at limit=5); the accurate proof count is `total`.
+        let data = serde_json::json!({"total": 37, "flows": [{"id":1},{"id":2},{"id":3},{"id":4},{"id":5}]});
+        assert_eq!(count_flow_paths(&data), 37);
     }
 
     #[test]

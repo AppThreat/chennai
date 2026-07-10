@@ -1077,6 +1077,17 @@ fn report_finding_dispatch(env: &ToolEnv, call_id: &str, input: &Value) -> ToolE
     let cwe = input.get("cwe").and_then(Value::as_str).map(String::from);
     let mut confidence = finding::parse_confidence(input.get("confidence").and_then(Value::as_str).unwrap_or("Low"));
     let remediation = input.get("remediation").and_then(Value::as_str).map(String::from);
+    let grounded_by = input.get("grounded_by").and_then(Value::as_str).map(String::from);
+    // Accept sanitizers_checked as either a JSON array of strings or a single
+    // comma/semicolon-separated string (the schema advertises a string).
+    let sanitizers_checked: Vec<String> = match input.get("sanitizers_checked") {
+        Some(Value::Array(arr)) => arr.iter().filter_map(|v| v.as_str().map(String::from)).collect(),
+        Some(Value::String(s)) => s.split([',', ';'])
+            .map(|p| p.trim().to_string())
+            .filter(|p| !p.is_empty())
+            .collect(),
+        _ => Vec::new(),
+    };
     let proof_expr = input.get("proof_expr").and_then(Value::as_str).unwrap_or("");
 
     let source = match finding::parse_location(input.get("source")) {
@@ -1151,6 +1162,9 @@ fn report_finding_dispatch(env: &ToolEnv, call_id: &str, input: &Value) -> ToolE
             path_count,
             verified,
         },
+        reachable: verified,
+        sanitizers_checked,
+        grounded_by,
         remediation,
     };
 
