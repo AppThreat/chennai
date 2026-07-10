@@ -13,7 +13,7 @@ mod rusi;
 mod shared;
 mod ui;
 
-use agent::{AgentCtx, DebugLogger};
+use agent::{finding::FindingSet, finding::TokenLedger, AgentCtx, DebugLogger};
 use app::{App, BgStatus, BgTaskInfo, InitPhase, Panel};
 use bom::{find_existing_boms, BomStore};
 use config::Config;
@@ -238,7 +238,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let atom_dir = existing_atom.parent().unwrap_or(Path::new(".")).to_string_lossy().to_string();
             let agent_source_root = source_root.clone()
                 .or(Some(atom_dir));
-            return run_headless_agent(config, eng, agent_source_root, summary, question);
+            let reports_dir = args.reports_dir.unwrap_or_else(|| {
+                let base = source_root.clone().unwrap_or_else(|| {
+                    existing_atom.parent().map(|p| p.to_string_lossy().to_string()).unwrap_or_else(|| ".".into())
+                });
+                PathBuf::from(base).join(".chen").join("chennai-reports")
+            });
+            return run_headless_agent(config, eng, agent_source_root, summary, question, reports_dir);
         }
 
         let engine_arc = Arc::new(Mutex::new(eng));
@@ -357,6 +363,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         allowed_tools: None,
                         cancel: Arc::new(AtomicBool::new(false)),
                         debug_logger: if config.debug { DebugLogger::new(agent_source_root.as_deref()) } else { None },
+                        findings: Arc::new(Mutex::new(FindingSet::new())),
+                        token_ledger: Arc::new(Mutex::new(TokenLedger::default())),
                     })
                 }
                 Err(e) => {
@@ -569,6 +577,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         allowed_tools: None,
                         cancel: Arc::new(AtomicBool::new(false)),
                         debug_logger: if config.debug { DebugLogger::new(agent_source_root.as_deref()) } else { None },
+                        findings: Arc::new(Mutex::new(FindingSet::new())),
+                        token_ledger: Arc::new(Mutex::new(TokenLedger::default())),
                     })
                 }
                 Err(e) => {
@@ -842,6 +852,8 @@ fn run_non_atom_mode(
                     allowed_tools: None,
                     cancel: Arc::new(AtomicBool::new(false)),
                     debug_logger: if config.debug { DebugLogger::new(Some(&source_root_str)) } else { None },
+                    findings: Arc::new(Mutex::new(FindingSet::new())),
+                    token_ledger: Arc::new(Mutex::new(TokenLedger::default())),
                 })
             }
             Err(e) => {
@@ -937,7 +949,7 @@ fn finish_non_atom_startup(
     };
 
     if let Some(question) = ask {
-        return run_headless_agent_non_atom(config, backend, source_root_str, system_prompt, question);
+        return run_headless_agent_non_atom(config, backend, source_root_str, system_prompt, question, reports_dir);
     }
 
     let mut app = App::new(None, source_dir.to_string_lossy().to_string(), Summary::default(), source_root.clone());
@@ -978,6 +990,8 @@ fn finish_non_atom_startup(
                     allowed_tools: None,
                     cancel: Arc::new(AtomicBool::new(false)),
                     debug_logger: if config.debug { DebugLogger::new(Some(&source_root_str)) } else { None },
+                    findings: Arc::new(Mutex::new(FindingSet::new())),
+                    token_ledger: Arc::new(Mutex::new(TokenLedger::default())),
                 })
             }
             Err(e) => {
@@ -1276,6 +1290,7 @@ fn run_headless_agent(
     source_root: Option<String>,
     summary: Summary,
     question: String,
+    reports_dir: PathBuf,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if !config.enabled {
         eprintln!("AI agent is not enabled. Set ANTHROPIC_API_KEY or OPENAI_API_KEY to enable.");
@@ -1302,9 +1317,11 @@ fn run_headless_agent(
         allowed_tools: None,
         cancel: Arc::new(AtomicBool::new(false)),
         debug_logger,
+        findings: Arc::new(Mutex::new(FindingSet::new())),
+        token_ledger: Arc::new(Mutex::new(TokenLedger::default())),
     };
     debug_eprintln!(config.debug, "Asking: {question}");
-    let result = agent::run_headless(&ctx, &question)?;
+    let result = agent::run_headless(&ctx, &question, Some(&reports_dir))?;
     println!("\n{}", result);
     Ok(())
 }
@@ -1316,6 +1333,7 @@ fn run_headless_agent_non_atom(
     source_root: String,
     system_prompt: String,
     question: String,
+    reports_dir: PathBuf,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if !config.enabled {
         eprintln!("AI agent is not enabled. Set ANTHROPIC_API_KEY or OPENAI_API_KEY to enable.");
@@ -1335,9 +1353,11 @@ fn run_headless_agent_non_atom(
         allowed_tools: None,
         cancel: Arc::new(AtomicBool::new(false)),
         debug_logger,
+        findings: Arc::new(Mutex::new(FindingSet::new())),
+        token_ledger: Arc::new(Mutex::new(TokenLedger::default())),
     };
     debug_eprintln!(config.debug, "Asking: {question}");
-    let result = agent::run_headless(&ctx, &question)?;
+    let result = agent::run_headless(&ctx, &question, Some(&reports_dir))?;
     println!("\n{}", result);
     Ok(())
 }
@@ -1489,6 +1509,8 @@ fn run_app<B: ratatui::backend::Backend>(
                         allowed_tools: None,
                         cancel,
                         debug_logger: if config.debug { DebugLogger::new(source_root.as_deref()) } else { None },
+                        findings: Arc::new(Mutex::new(FindingSet::new())),
+                        token_ledger: Arc::new(Mutex::new(TokenLedger::default())),
                     });
                 }
             if let Some(ctx) = agent_ctx.take() {
@@ -1510,6 +1532,8 @@ fn run_app<B: ratatui::backend::Backend>(
                 let max_tokens = ctx.max_tokens;
                 let source_root_for_thread = ctx.source_root.clone();
                 let debug_logger = ctx.debug_logger.clone();
+                let findings = ctx.findings.clone();
+                let token_ledger = ctx.token_ledger.clone();
 
                 thread::spawn(move || {
                     let thread_ctx = AgentCtx {
@@ -1524,6 +1548,8 @@ fn run_app<B: ratatui::backend::Backend>(
                         allowed_tools,
                         cancel: cancel_for_thread,
                         debug_logger,
+                        findings,
+                        token_ledger,
                     };
                     agent::run_agent(&thread_ctx, &question, history, tx);
                 });

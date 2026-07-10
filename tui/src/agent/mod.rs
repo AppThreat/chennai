@@ -14,6 +14,7 @@ pub mod provider;
 pub mod render;
 pub mod shell;
 pub mod tools;
+pub mod finding;
 pub mod memory;
 pub mod transcript;
 pub use debug_log::DebugLogger;
@@ -21,10 +22,12 @@ pub use debug_log::DebugLogger;
 use crate::config::{Config, ProviderKind};
 use crate::engine::Engine;
 use crate::shared::backend::Backend;
+use finding::{Finding, FindingSet, TokenLedger};
 use provider::{
     AgentEvent, ChannelSink, ContentBlock, EventSink, LlmProvider, ProviderError, TurnRequest,
 };
 use serde_json::{json, Value};
+use std::path::Path;
 use std::sync::mpsc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -182,6 +185,10 @@ pub struct AgentCtx {
     /// golem_, dosai_, blint_) to timestamped JSON files under
     /// `<source_root>/.chen/chennai-debug-logs/`.  Enabled via `--debug`.
     pub debug_logger: Option<DebugLogger>,
+    /// Accumulated security findings, shared across tool calls.
+    pub findings: Arc<Mutex<FindingSet>>,
+    /// Token-usage ledger aggregated from `AgentEvent::Usage` events.
+    pub token_ledger: Arc<Mutex<TokenLedger>>,
 }
 
 /// The execution resources a tool needs, independent of any LLM provider.
@@ -195,6 +202,7 @@ pub struct ToolEnv<'a> {
     pub backend: Option<&'a dyn Backend>,
     pub source_root: Option<&'a str>,
     pub debug_logger: Option<&'a DebugLogger>,
+    pub findings: Option<&'a Arc<Mutex<FindingSet>>>,
 }
 
 impl AgentCtx {
@@ -205,6 +213,7 @@ impl AgentCtx {
             backend: self.backend.as_deref(),
             source_root: self.source_root.as_deref(),
             debug_logger: self.debug_logger.as_ref(),
+            findings: Some(&self.findings),
         }
     }
 }
@@ -517,6 +526,13 @@ pub fn dispatch_tool(env: &ToolEnv, call_id: &str, name: &str, input: &Value) ->
         }
         "atom_detail" => engine_request(env, call_id, "detail", input),
         "atom_algorithms" => engine_request(env, call_id, "algo", input),
+        "report_finding" => {
+            if env.engine.is_none() {
+                ToolExecResult { call_id: call_id.into(), content: "engine not available for proof re-execution".into(), is_error: true }
+            } else {
+                report_finding_dispatch(env, call_id, input)
+            }
+        }
         // Backend-specific tool dispatch: tools named <backend>_<command>
         _ if name.starts_with("rusi_") => backend_dispatch(env, call_id, name.strip_prefix("rusi_").unwrap(), input),
         _ if name.starts_with("golem_") => backend_dispatch(env, call_id, name.strip_prefix("golem_").unwrap(), input),
@@ -1032,8 +1048,150 @@ fn floor_char_boundary(s: &str, max: usize) -> usize {
     idx
 }
 
+// ---------------------------------------------------------------------------
+// report_finding dispatch
+// ---------------------------------------------------------------------------
+
+/// Dispatch a `report_finding` tool call.
+///
+/// 1. Parses the finding from the model's input (title, severity, confidence,
+///    source, sink, proof_expr, remediation).
+/// 2. When `proof_expr` is non-empty and an engine is available, re-runs the
+///    expression deterministically via the `flows` verb. If the engine returns
+///    ≥1 path the proof is `verified`; if 0 paths or an error, confidence is
+///    demoted to `Low` and a warning note is appended.
+/// 3. Accumulates the finding on the shared `FindingSet` via `env.findings`.
+/// 4. Returns a short confirmation string to the model.
+fn report_finding_dispatch(env: &ToolEnv, call_id: &str, input: &Value) -> ToolExecResult {
+    let findings_arc = match env.findings {
+        Some(f) => f,
+        None => return ToolExecResult {
+            call_id: call_id.into(),
+            content: "findings accumulator not available".into(),
+            is_error: true,
+        },
+    };
+
+    let title = input.get("title").and_then(Value::as_str).unwrap_or("Untitled Finding");
+    let severity = finding::parse_severity(input.get("severity").and_then(Value::as_str).unwrap_or("Medium"));
+    let cwe = input.get("cwe").and_then(Value::as_str).map(String::from);
+    let mut confidence = finding::parse_confidence(input.get("confidence").and_then(Value::as_str).unwrap_or("Low"));
+    let remediation = input.get("remediation").and_then(Value::as_str).map(String::from);
+    let proof_expr = input.get("proof_expr").and_then(Value::as_str).unwrap_or("");
+
+    let source = match finding::parse_location(input.get("source")) {
+        Ok(s) => s,
+        Err(e) => return ToolExecResult { call_id: call_id.into(), content: format!("bad source: {e}"), is_error: true },
+    };
+    let sink = match finding::parse_location(input.get("sink")) {
+        Ok(s) => s,
+        Err(e) => return ToolExecResult { call_id: call_id.into(), content: format!("bad sink: {e}"), is_error: true },
+    };
+
+    // ID generated deterministically so repeated submissions collide at dedupe.
+    let id = finding::finding_id(title, &source, &sink);
+
+    // --- Proof re-execution (deterministic) ---
+    let (verified, path_count, demoted) = {
+        // Check cache first (holding the lock briefly).
+        let fs = findings_arc.lock().unwrap();
+        if let Some(&cached) = fs.proof_cache.get(proof_expr) {
+            if cached {
+                (true, 1, false)
+            } else {
+                (false, 0, true)
+            }
+        } else {
+            drop(fs); // release lock before potentially-slow engine call
+
+            if proof_expr.is_empty() || env.engine.is_none() {
+                // No proof to re-execute → demote.
+                (false, 0, true)
+            } else {
+                let engine = env.engine.unwrap();
+                let mut eng = engine.lock().unwrap();
+                let engine_result = eng.request::<Value>("flows", json!({"expr": proof_expr, "limit": 5}));
+                match engine_result {
+                    Ok(data) => {
+                        let count = finding::count_flow_paths(&data);
+                        let reachable = count > 0;
+                        // Cache for subsequent calls.
+                        let mut fs = findings_arc.lock().unwrap();
+                        fs.proof_cache.insert(proof_expr.to_string(), reachable);
+                        if reachable {
+                            (true, count, false)
+                        } else {
+                            (false, 0, true)
+                        }
+                    }
+                    Err(_) => {
+                        let mut fs = findings_arc.lock().unwrap();
+                        fs.proof_cache.insert(proof_expr.to_string(), false);
+                        (false, 0, true)
+                    }
+                }
+            }
+        }
+    };
+
+    if demoted {
+        confidence = finding::Confidence::Low;
+    }
+
+    let finding = Finding {
+        id: id.clone(),
+        title: title.to_string(),
+        severity,
+        cwe,
+        confidence: confidence.clone(),
+        source,
+        sink,
+        proof: finding::Proof {
+            expr: proof_expr.to_string(),
+            path_count,
+            verified,
+        },
+        remediation,
+    };
+
+    // Accumulate.
+    {
+        let mut fs = findings_arc.lock().unwrap();
+        fs.add(finding);
+    }
+
+    let verified_str = if verified { "verified" } else { "unverified" };
+    let mut content = format!("Finding {id} submitted ({confidence:?}, {verified_str})");
+    if demoted && !proof_expr.is_empty() {
+        content.push_str(
+            "; proof did not resolve — reported as LOW / not-exploitable; \
+             do not claim a taint path the engine won't reproduce.",
+        );
+    }
+    ToolExecResult { call_id: call_id.into(), content, is_error: false }
+}
+
 fn source_root_path(env: &ToolEnv) -> std::path::PathBuf {
     env.source_root.map(std::path::PathBuf::from).unwrap_or_else(|| std::path::PathBuf::from("."))
+}
+
+/// An [`EventSink`] wrapper that records `AgentEvent::Usage` into a [`TokenLedger`]
+/// before forwarding to the inner sink. Used in both interactive and headless loops
+/// so token accounting is centralised.
+struct TokenLedgerSink<S: EventSink> {
+    inner: S,
+    ledger: Arc<Mutex<TokenLedger>>,
+}
+
+impl<S: EventSink> EventSink for TokenLedgerSink<S> {
+    fn emit(&mut self, event: AgentEvent) {
+        if let AgentEvent::Usage { input_tokens, output_tokens, cache_read_tokens } = &event {
+            if let Ok(mut ledger) = self.ledger.lock() {
+                ledger.record_usage(*input_tokens, *output_tokens, *cache_read_tokens);
+            }
+        }
+        self.inner.emit(event);
+    }
 }
 
 /// Keep only the tool definitions whose `name` is in `allowed` (used by slash
@@ -1095,7 +1253,10 @@ pub fn run_agent(
             break;
         }
 
-        let mut sink = ChannelSink(tx.clone());
+        let mut sink = TokenLedgerSink {
+            inner: ChannelSink(tx.clone()),
+            ledger: ctx.token_ledger.clone(),
+        };
         let cancel: &AtomicBool = &ctx.cancel;
         let result = match ctx.provider.stream_turn(
             &TurnRequest {
@@ -1180,7 +1341,9 @@ authorized review of your own code.".into(),
 // Headless mode (for --ask)
 // ---------------------------------------------------------------------------
 
-struct HeadlessSink;
+struct HeadlessSink {
+    ledger: Arc<Mutex<TokenLedger>>,
+}
 impl EventSink for HeadlessSink {
     fn emit(&mut self, event: AgentEvent) {
         match &event {
@@ -1197,6 +1360,9 @@ impl EventSink for HeadlessSink {
                 eprintln!("\n[TOOL CALL: {}({})]", name, input_str);
             }
             AgentEvent::Usage { input_tokens, output_tokens, cache_read_tokens } => {
+                if let Ok(mut ledger) = self.ledger.lock() {
+                    ledger.record_usage(*input_tokens, *output_tokens, *cache_read_tokens);
+                }
                 eprintln!("\n[Usage: {} in / {} out / {:?} cache]", input_tokens, output_tokens, cache_read_tokens);
             }
             AgentEvent::StopReason(r) => {
@@ -1207,7 +1373,7 @@ impl EventSink for HeadlessSink {
     }
 }
 
-pub fn run_headless(ctx: &AgentCtx, input: &str) -> Result<String, Box<dyn std::error::Error>> {
+pub fn run_headless(ctx: &AgentCtx, input: &str, reports_dir: Option<&Path>) -> Result<String, Box<dyn std::error::Error>> {
     let base_tools = match (ctx.engine.is_some(), ctx.backend.as_ref()) {
         // Atom + backend (e.g. APK/JAR with both atom and blint): atom-primary, both toolsets.
         (true, Some(backend)) => tools::atom_plus_backend_tool_definitions(backend),
@@ -1219,7 +1385,7 @@ pub fn run_headless(ctx: &AgentCtx, input: &str) -> Result<String, Box<dyn std::
     let mut transcript = Transcript::new();
     transcript.push_user(input);
     let mut final_text = String::new();
-    let mut sink = HeadlessSink;
+    let mut sink = HeadlessSink { ledger: ctx.token_ledger.clone() };
     let cancel: &AtomicBool = &ctx.cancel;
 
     loop {
@@ -1259,6 +1425,28 @@ pub fn run_headless(ctx: &AgentCtx, input: &str) -> Result<String, Box<dyn std::
             _ => break,
         }
     }
+
+    // --- Post-run: write reports and print ledger summary ---
+    let findings = ctx.findings.lock().unwrap();
+    let total = findings.findings.len();
+    let confirmed = findings.confirmed_count();
+
+    if let Some(dir) = reports_dir {
+        if !findings.findings.is_empty() {
+            let _ = std::fs::create_dir_all(dir);
+            let md = findings.render_markdown();
+            let _ = std::fs::write(dir.join("report.md"), &md);
+            let jv = findings.render_json();
+            if let Ok(json_str) = serde_json::to_string_pretty(&jv) {
+                let _ = std::fs::write(dir.join("report.json"), &json_str);
+            }
+        }
+    }
+    drop(findings);
+
+    let ledger = ctx.token_ledger.lock().unwrap();
+    eprintln!("\n[{} | {} findings: {} confirmed]", ledger.summary(), total, confirmed);
+
     Ok(final_text)
 }
 
@@ -1537,6 +1725,8 @@ mod tests {
             allowed_tools: None,
             cancel: Arc::new(AtomicBool::new(false)),
             debug_logger: None,
+            findings: Arc::new(Mutex::new(finding::FindingSet::new())),
+            token_ledger: Arc::new(Mutex::new(finding::TokenLedger::default())),
         };
         let result = dispatch_tool(&ctx.tool_env(), "id1", "nonexistent_tool", &serde_json::json!({}));
         assert!(result.is_error);
@@ -1557,6 +1747,8 @@ mod tests {
             allowed_tools: None,
             cancel: Arc::new(AtomicBool::new(false)),
             debug_logger: None,
+            findings: Arc::new(Mutex::new(finding::FindingSet::new())),
+            token_ledger: Arc::new(Mutex::new(finding::TokenLedger::default())),
         };
         let result = dispatch_tool(&ctx.tool_env(), "id1", "bom_query", &serde_json::json!({"query": "express"}));
         assert!(!result.is_error);
@@ -1672,5 +1864,131 @@ mod tests {
         assert!(out.contains("TRUNCATED"));
         // Valid UTF-8 by construction (String), and no char was split.
         assert!(out.starts_with("café"));
+    }
+
+    // -----------------------------------------------------------------------
+    // report_finding dispatch tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn report_finding_without_engine_returns_error() {
+        let findings = Arc::new(Mutex::new(FindingSet::new()));
+        let env = ToolEnv {
+            engine: None,
+            backend: None,
+            source_root: None,
+            debug_logger: None,
+            findings: Some(&findings),
+        };
+        let input = json!({
+            "title": "Test",
+            "severity": "High",
+            "confidence": "Confirmed",
+            "source": {"file": "a.py", "line": 1},
+            "sink": {"file": "b.py", "line": 10},
+            "proof_expr": "some.flow()",
+        });
+        let result = dispatch_tool(&env, "id1", "report_finding", &input);
+        assert!(result.is_error);
+        assert!(result.content.contains("engine not available"));
+    }
+
+    #[test]
+    fn report_finding_empty_proof_demotes_to_low() {
+        let findings = Arc::new(Mutex::new(FindingSet::new()));
+        let env = ToolEnv {
+            engine: None,
+            backend: None,
+            source_root: None,
+            debug_logger: None,
+            findings: Some(&findings),
+        };
+        let input = json!({
+            "title": "Empty proof test",
+            "severity": "Critical",
+            "confidence": "Confirmed",
+            "source": {"file": "in.py", "line": 1, "tag": "cli-source"},
+            "sink": {"file": "out.py", "line": 42},
+            "proof_expr": "",
+        });
+        let result = report_finding_dispatch(&env, "id1", &input);
+        assert!(!result.is_error, "{}", result.content);
+        assert!(result.content.contains("unverified"));
+        let fs = findings.lock().unwrap();
+        assert_eq!(fs.findings.len(), 1);
+        assert_eq!(fs.findings[0].confidence, finding::Confidence::Low);
+        assert!(!fs.findings[0].proof.verified);
+        assert_eq!(fs.findings[0].proof.path_count, 0);
+    }
+
+    #[test]
+    fn report_finding_accumulates_and_dedupes() {
+        let findings = Arc::new(Mutex::new(FindingSet::new()));
+        let env = ToolEnv {
+            engine: None,
+            backend: None,
+            source_root: None,
+            debug_logger: None,
+            findings: Some(&findings),
+        };
+
+        // Submit two findings with same (source.tag, sink.file, sink.line).
+        let input1 = json!({
+            "title": "Duplicate A",
+            "severity": "High",
+            "confidence": "Plausible",
+            "source": {"file": "a.py", "line": 1, "tag": "cli"},
+            "sink": {"file": "b.py", "line": 10},
+            "proof_expr": "",
+        });
+        let input2 = json!({
+            "title": "Duplicate B (better)",
+            "severity": "Critical",
+            "confidence": "Confirmed",
+            "source": {"file": "a.py", "line": 1, "tag": "cli"},
+            "sink": {"file": "b.py", "line": 10},
+            "proof_expr": "",
+        });
+        report_finding_dispatch(&env, "id1", &input1);
+        report_finding_dispatch(&env, "id2", &input2);
+
+        let fs = findings.lock().unwrap();
+        // Dedupe collapsed to 1 — the higher severity+confidence should win.
+        assert_eq!(fs.findings.len(), 1);
+        assert_eq!(fs.findings[0].title, "Duplicate B (better)");
+        assert_eq!(fs.findings[0].severity, finding::Severity::Critical);
+    }
+
+    #[test]
+    fn report_finding_proof_cache_hits_without_engine() {
+        let findings = Arc::new(Mutex::new(FindingSet::new()));
+        // Pre-cache an expression as reachable.
+        {
+            let mut fs = findings.lock().unwrap();
+            fs.proof_cache.insert("already.proven.flow()".into(), true);
+        }
+        let env = ToolEnv {
+            engine: None,
+            backend: None,
+            source_root: None,
+            debug_logger: None,
+            findings: Some(&findings),
+        };
+        let input = json!({
+            "title": "Cached reachable",
+            "severity": "High",
+            "confidence": "Confirmed",
+            "source": {"file": "a.py", "line": 1},
+            "sink": {"file": "b.py", "line": 10},
+            "proof_expr": "already.proven.flow()",
+        });
+        let result = report_finding_dispatch(&env, "id1", &input);
+        assert!(!result.is_error);
+        // Cached as reachable → verified, confidence kept.
+        assert!(result.content.contains("verified"));
+        let fs = findings.lock().unwrap();
+        assert_eq!(fs.findings.len(), 1);
+        assert!(fs.findings[0].proof.verified);
+        assert_eq!(fs.findings[0].confidence, finding::Confidence::Confirmed);
     }
 }

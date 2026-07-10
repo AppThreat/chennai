@@ -48,6 +48,7 @@ pub fn all_tool_definitions() -> Vec<Value> {
         atom_detail(),
         atom_algorithms(),
         project_memory(),
+        report_finding_tool(),
         bom_query(),
         ripgrep_tool(),
         read_file_tool(),
@@ -666,9 +667,98 @@ match. A recalled fact is a HINT; re-verify it before reporting.",
     })
 }
 
+/// Tool for submitting a structured security finding with deterministic proof
+/// re-execution. The model provides the finding details and a chen DSL expression
+/// that proves reachability; the tool re-runs the expression via the engine,
+/// stamps `verified`/`unverified`, demotes confidence when the proof fails, and
+/// accumulates the finding for final reporting.
+fn report_finding_tool() -> Value {
+    json!({
+        "name": "report_finding",
+        "description": "Submit a structured security finding with deterministic proof re-execution. \
+Provide the finding details (title, severity, confidence, cwe, source, sink) and a chen DSL \
+expression (proof_expr) that PROVES reachability — typically the expression you would pass to \
+atom_reaches or atom_flows. The tool RE-RUNS the expression against the engine: if ≥1 flow path \
+resolves, the finding is marked verified and keeps its confidence; if 0 paths resolve (or the \
+engine errors), confidence is demoted to LOW with a warning note to not claim an unproven taint \
+path. Use this to conclude a finding chain: after atom_callsites + atom_reaches prove a real \
+source→sink path, call report_finding to record it. Do NOT report a finding as HIGH/Confirmed \
+unless the proof re-executed successfully.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "title": {
+                    "type": "string",
+                    "description": "Short finding title, e.g. 'Command Injection in executeCommand'"
+                },
+                "severity": {
+                    "type": "string",
+                    "description": "Critical | High | Medium | Low | Info",
+                    "enum": ["Critical", "High", "Medium", "Low", "Info"]
+                },
+                "cwe": {
+                    "type": "string",
+                    "description": "Optional CWE identifier, e.g. 'CWE-78'"
+                },
+                "confidence": {
+                    "type": "string",
+                    "description": "Your confidence BEFORE re-execution: Confirmed | Plausible | Low. The tool may demote to Low if proof fails.",
+                    "enum": ["Confirmed", "Plausible", "Low"]
+                },
+                "source": {
+                    "type": "object",
+                    "description": "The untrusted-input / source location",
+                    "properties": {
+                        "file": { "type": "string" },
+                        "line": { "type": "integer" },
+                        "tag": { "type": "string" }
+                    },
+                    "required": ["file"]
+                },
+                "sink": {
+                    "type": "object",
+                    "description": "The vulnerable sink location",
+                    "properties": {
+                        "file": { "type": "string" },
+                        "line": { "type": "integer" },
+                        "tag": { "type": "string" }
+                    },
+                    "required": ["file"]
+                },
+                "proof_expr": {
+                    "type": "string",
+                    "description": "The chen DSL expression that proves reachability, e.g. 'atom.call.name(\"system\").reachableByFlows(...)'. The tool re-runs this against the engine. If empty, confidence is demoted to LOW."
+                },
+                "sanitizers_checked": {
+                    "type": "string",
+                    "description": "Optional: list of sanitizer methods/routes checked that confirm no encoding/escaping is in place"
+                },
+                "grounded_by": {
+                    "type": "string",
+                    "description": "The tool(s) that produced the evidence for this finding, e.g. 'atom_flows, atom_callsites'"
+                },
+                "remediation": {
+                    "type": "string",
+                    "description": "Optional remediation advice"
+                }
+            },
+            "required": ["title", "severity", "confidence", "source", "sink"]
+        }
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn report_finding_tool_is_in_all_definitions() {
+        let defs = all_tool_definitions();
+        let names: Vec<&str> = defs.iter().filter_map(|t| t["name"].as_str()).collect();
+        assert!(names.contains(&"report_finding"), "report_finding should be in all_tool_definitions");
+        let rf: &Value = defs.iter().find(|t| t["name"].as_str() == Some("report_finding")).unwrap();
+        assert!(rf["input_schema"]["required"].as_array().map(|a| a.len()).unwrap_or(0) >= 5);
+    }
 
     #[test]
     fn atom_plus_backend_merges_without_duplicating_shared_tools() {

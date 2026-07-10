@@ -791,6 +791,7 @@ impl App {
                 backend: self.backend.as_deref(),
                 source_root: self.source_root.as_deref(),
                 debug_logger: None,
+                findings: None,
             };
             let res = crate::agent::dispatch_tool(&env, "repl", name, &input);
             self.status = if res.is_error { format!(":{name} failed") } else { format!(":{name}") };
