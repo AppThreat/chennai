@@ -1,0 +1,85 @@
+README.md
+  s_c6e2ea51d33dcc::t_c210a2d3b99be8 230-259
+tui/src/agent/tools.rs
+  s_040543fb0ac21f::t_02fc077f36311c 672-712
+  s_040543fb0ac21f::t_495e2c0db3d4b5 52,67
+tui/src/main.rs
+  s_040543fb0ac21f::t_93dd3d4373d63d 1363
+  s_040543fb0ac21f::t_ec489364682ab5 1326
+  s_040543fb0ac21f::t_614edb831fa1d1 367-369,582-584,1519-1521
+  s_040543fb0ac21f::t_3c785da457aa24 859
+  s_040543fb0ac21f::t_4f4991c3356ea3 1544,1561
+  s_040543fb0ac21f::t_42cb2c4d5f9361 16
+  s_040543fb0ac21f::t_bfa80bde387f4b 998
+tui/src/agent/provider.rs
+  s_040543fb0ac21f::t_f0f566de745ee5 73
+tui/src/agent/mod.rs
+  s_040543fb0ac21f::t_02637953c0b651 1206-1260
+  s_040543fb0ac21f::t_5df6bc3a072963 211
+  s_040543fb0ac21f::t_552545e568e0f5 27
+  s_040543fb0ac21f::t_4d13e41d5f52cc 560
+  s_040543fb0ac21f::t_9c2b71b5a9c23c 1884
+  s_040543fb0ac21f::t_83e036235865ee 2127
+  s_040543fb0ac21f::t_df64020ace0344 1591-1600
+  s_040543fb0ac21f::t_a62ddb349c043d 13
+  s_040543fb0ac21f::t_ef9718498e1efa 223
+  s_040543fb0ac21f::t_fdcaa9b1827194 455-464
+  s_040543fb0ac21f::t_50411e859751e6 1324-1332
+  s_c6e2ea51d33dcc::t_d171deeabb76e1 1578-1586
+  s_040543fb0ac21f::t_5c3e50cefb6730 1972
+  s_040543fb0ac21f::t_e51bd2eb7c5d84 194-196
+  s_c6e2ea51d33dcc::t_5cdcb0b8c989ab 1136-1137
+  s_040543fb0ac21f::t_acfbe841141292 1363
+  s_040543fb0ac21f::t_e47494a67a8084 1891-1955
+  s_040543fb0ac21f::t_33fb5a2e6a4bf0 2156
+  s_040543fb0ac21f::t_8094754d853530 2200
+  s_040543fb0ac21f::t_a263c732ad2c49 1498-1507
+  s_040543fb0ac21f::t_90128538793bf0 1352-1362,1364-1366
+  s_c6e2ea51d33dcc::t_f0395b998e70e8 1159-1161
+  s_040543fb0ac21f::t_3d8656ba398261 1446-1455
+  s_040543fb0ac21f::t_6d561bd3675475 1523-1535
+  s_040543fb0ac21f::t_56e974820cf685 2103
+  s_c6e2ea51d33dcc::t_57aa3224a8fc9c 1275-1278
+tui/src/app.rs
+  s_040543fb0ac21f::t_2a347c3e4fc54c 795
+tui/src/agent/transcript.rs
+  s_040543fb0ac21f::t_8563c200c4216f 171-184
+  s_040543fb0ac21f::t_db307be3e699f0 187
+  s_040543fb0ac21f::t_0fafb87b2ff223 199,358-468,503-553
+  s_c6e2ea51d33dcc::t_8f9b580978c2db 80-81,83-92,98,122-125,127-128,138,140,145-148,150-164
+  s_040543fb0ac21f::t_248590ae41c5fa 13-16,21,26,61-79,82,93-97,99-121,126,129-137,139,141-144,149,165-170,185-186,188-198
+  s_c6e2ea51d33dcc::t_510a101e4644fc 469-502
+  s_040543fb0ac21f::t_e398c6c02dea29 200
+tui/src/agent/process_note.rs
+  s_040543fb0ac21f::t_a370df50a7b27c 1-217
+tui/src/agent/memory.rs
+  s_040543fb0ac21f::t_5402f1ed729d0c 166
+tui/src/agent/anthropic.rs
+  s_c6e2ea51d33dcc::t_ec99d9f1663bc0 179-183,188-195
+  s_c6e2ea51d33dcc::t_912721d358c1e8 698-725
+  s_c6e2ea51d33dcc::t_71069874121ea2 697
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "cbe35d06eb8fb991b1be65a49a90c9a953232a29",
+  "prompts": {},
+  "sessions": {
+    "s_040543fb0ac21f": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_0b37bd352ffe4nUpNBWCO1JK3C",
+        "model": "deepseek-v4-flash"
+      },
+      "human_author": "Prabhu Subramanian <prabhu@appthreat.com>"
+    },
+    "s_c6e2ea51d33dcc": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a86a5d48-7c4a-4ef2-8f12-f983a288cae5",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Prabhu Subramanian <prabhu@appthreat.com>"
+    }
+  }
+}
