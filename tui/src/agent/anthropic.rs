@@ -176,23 +176,23 @@ fn build_request_body(req: &TurnRequest, model: &str) -> Value {
     }
     body.insert("tools".into(), json!(tools));
 
-    // Messages: convert internal transcript to Anthropic format. Consecutive tool_result
-    // messages are merged into a single user message with multiple tool_result content blocks,
-    // which the Anthropic API requires.
+    // Messages: convert internal transcript to Anthropic format. The API requires strict
+    // user/assistant alternation, so any consecutive messages that both serialize to the
+    // "user" role — plain user turns, tool_result turns, or a mix — are merged into a single
+    // user message carrying multiple content blocks. This covers tool results as well as
+    // synopsis and working-note messages, none of which may appear as separate user turns.
     let messages: Vec<Value> = {
         let mut merged: Vec<Value> = Vec::new();
         for msg in req.messages.iter().filter(|m| m.role != "system") {
             let anthropic_msg = message_to_anthropic(msg);
-            if msg.role == "tool_result" {
-                // Merge consecutive tool_result messages into the last user message.
-                if let Some(last) = merged.last_mut()
-                    && last["role"] == "user"
-                        && let (Some(last_content), Some(new_content)) =
-                            (last["content"].as_array_mut(), anthropic_msg["content"].as_array())
-                        {
-                            last_content.extend(new_content.iter().cloned());
-                            continue;
-                        }
+            if anthropic_msg["role"] == "user"
+                && let Some(last) = merged.last_mut()
+                && last["role"] == "user"
+                && let (Some(last_content), Some(new_content)) =
+                    (last["content"].as_array_mut(), anthropic_msg["content"].as_array())
+            {
+                last_content.extend(new_content.iter().cloned());
+                continue;
             }
             merged.push(anthropic_msg);
         }
@@ -692,6 +692,35 @@ mod tests {
         assert_eq!(blocks[1]["type"], "tool_use");
         // Tool result merged into a following user message.
         assert_eq!(body["messages"][2]["content"][0]["type"], "tool_result");
+    }
+
+    #[test]
+    fn consecutive_user_messages_merge_into_one_turn() {
+        // A working note injected after a tool_result must not produce two consecutive
+        // user turns on the wire — the API requires strict role alternation. Both merge
+        // into a single user message with a tool_result block followed by a text block.
+        let cancel = AtomicBool::new(false);
+        let msgs = vec![
+            Message::user("analyze"),
+            Message::assistant(vec![ContentBlock::ToolUse {
+                id: "tu_1".into(), name: "atom_query".into(), input: json!({"kind": "files"}),
+            }]),
+            Message::tool_result("tu_1", "{\"total\":2}", false),
+            Message::user("## Process Note\n**Confirmed:**\n  - SQLi in search"),
+        ];
+        let body = build_request_body(&req("SYS", &[], &msgs, false, "high", &cancel), "claude-opus-4-8");
+        let messages = body["messages"].as_array().unwrap();
+        // user(analyze), assistant(tool_use), user(tool_result + note) = 3 turns, not 4.
+        assert_eq!(messages.len(), 3, "consecutive user turns must be merged");
+        assert_eq!(messages[2]["role"], "user");
+        let content = messages[2]["content"].as_array().unwrap();
+        assert_eq!(content[0]["type"], "tool_result");
+        assert_eq!(content[1]["type"], "text");
+        assert!(content[1]["text"].as_str().unwrap().contains("Process Note"));
+        // No two consecutive turns share a role.
+        for w in messages.windows(2) {
+            assert_ne!(w[0]["role"], w[1]["role"], "roles must alternate");
+        }
     }
 
     #[test]

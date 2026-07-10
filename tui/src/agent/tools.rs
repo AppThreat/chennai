@@ -49,6 +49,7 @@ pub fn all_tool_definitions() -> Vec<Value> {
         atom_algorithms(),
         project_memory(),
         report_finding_tool(),
+        process_note_tool(),
         bom_query(),
         ripgrep_tool(),
         read_file_tool(),
@@ -63,6 +64,7 @@ pub fn all_tool_definitions() -> Vec<Value> {
 pub fn non_atom_tool_definitions() -> Vec<Value> {
     vec![
         project_memory(),
+        process_note_tool(),
         bom_query(),
         ripgrep_tool(),
         read_file_tool(),
@@ -660,6 +662,47 @@ match. A recalled fact is a HINT; re-verify it before reporting.",
                 "body": {
                     "type": "string",
                     "description": "The fact text / detailed description (required for save)"
+                }
+            },
+            "required": ["action"]
+        }
+    })
+}
+
+/// Tool for managing the Process Note (durable working memory for the current
+/// analysis session). The Process Note records what the model has confirmed,
+/// ruled out, is investigating, entrypoints found, and next steps. It survives
+/// compaction and is persisted under `.chen/agent-state/` for resume after
+/// interruption. Unlike `project_memory` (cross-session) and `report_finding`
+/// (results), the Process Note is the model's own scratchpad — updated as work
+/// progresses. Ruling something out here prevents re-investigation in later turns.
+fn process_note_tool() -> Value {
+    json!({
+        "name": "process_note",
+        "description": "Manage the Process Note — durable working memory for this analysis session. \
+Use this to record confirmed findings, ruled-out leads, open questions, entrypoints, and next \
+steps as you progress. The note is re-injected before every turn so you always see your own \
+progress. Ruling something out here prevents re-investigation.\n\
+  - action: 'get' → return the current note\n\
+  - action: 'append' → add items to a field (no duplicates)\n\
+  - action: 'replace' → overwrite a field entirely\n\
+Fields: confirmed, ruled_out, open_questions, entrypoints, next_steps",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["get", "append", "replace"]
+                },
+                "field": {
+                    "type": "string",
+                    "enum": ["confirmed", "ruled_out", "open_questions", "entrypoints", "next_steps"],
+                    "description": "Required for append and replace."
+                },
+                "items": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Items to append or set (required for append and replace)."
                 }
             },
             "required": ["action"]

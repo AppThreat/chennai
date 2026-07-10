@@ -70,7 +70,7 @@ pub enum AgentEvent {
 /// echoed back to the API verbatim — including the signature — on the next
 /// request, or the API rejects the turn with a 400. Dropping or mutating the
 /// signature breaks every multi-turn tool loop. See [`crate::agent::anthropic`].
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ContentBlock {
     Text(String),
     /// Summarized (or empty, when `display: "omitted"`) reasoning plus the

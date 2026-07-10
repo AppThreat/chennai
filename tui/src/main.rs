@@ -13,7 +13,7 @@ mod rusi;
 mod shared;
 mod ui;
 
-use agent::{finding::FindingSet, finding::TokenLedger, AgentCtx, DebugLogger};
+use agent::{finding::FindingSet, finding::TokenLedger, process_note::ProcessNote, AgentCtx, DebugLogger};
 use app::{App, BgStatus, BgTaskInfo, InitPhase, Panel};
 use bom::{find_existing_boms, BomStore};
 use config::Config;
@@ -364,8 +364,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         cancel: Arc::new(AtomicBool::new(false)),
                         debug_logger: if config.debug { DebugLogger::new(agent_source_root.as_deref()) } else { None },
                         findings: Arc::new(Mutex::new(FindingSet::new())),
-                        token_ledger: Arc::new(Mutex::new(TokenLedger::default())),
-                    })
+            token_ledger: Arc::new(Mutex::new(TokenLedger::default())),
+            process_note: Arc::new(Mutex::new(ProcessNote::default())),
+        })
                 }
                 Err(e) => {
                     debug_eprintln!(config.debug, "Warning: failed to create LLM provider: {e}. Agent disabled.");
@@ -578,8 +579,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         cancel: Arc::new(AtomicBool::new(false)),
                         debug_logger: if config.debug { DebugLogger::new(agent_source_root.as_deref()) } else { None },
                         findings: Arc::new(Mutex::new(FindingSet::new())),
-                        token_ledger: Arc::new(Mutex::new(TokenLedger::default())),
-                    })
+            token_ledger: Arc::new(Mutex::new(TokenLedger::default())),
+            process_note: Arc::new(Mutex::new(ProcessNote::default())),
+        })
                 }
                 Err(e) => {
                     debug_eprintln!(config.debug, "Warning: failed to create LLM provider: {e}. Agent disabled.");
@@ -854,6 +856,7 @@ fn run_non_atom_mode(
                     debug_logger: if config.debug { DebugLogger::new(Some(&source_root_str)) } else { None },
                     findings: Arc::new(Mutex::new(FindingSet::new())),
                     token_ledger: Arc::new(Mutex::new(TokenLedger::default())),
+                    process_note: Arc::new(Mutex::new(ProcessNote::default())),
                 })
             }
             Err(e) => {
@@ -992,6 +995,7 @@ fn finish_non_atom_startup(
                     debug_logger: if config.debug { DebugLogger::new(Some(&source_root_str)) } else { None },
                     findings: Arc::new(Mutex::new(FindingSet::new())),
                     token_ledger: Arc::new(Mutex::new(TokenLedger::default())),
+                    process_note: Arc::new(Mutex::new(ProcessNote::default())),
                 })
             }
             Err(e) => {
@@ -1319,6 +1323,7 @@ fn run_headless_agent(
         debug_logger,
         findings: Arc::new(Mutex::new(FindingSet::new())),
         token_ledger: Arc::new(Mutex::new(TokenLedger::default())),
+        process_note: Arc::new(Mutex::new(ProcessNote::default())),
     };
     debug_eprintln!(config.debug, "Asking: {question}");
     let result = agent::run_headless(&ctx, &question, Some(&reports_dir))?;
@@ -1355,6 +1360,7 @@ fn run_headless_agent_non_atom(
         debug_logger,
         findings: Arc::new(Mutex::new(FindingSet::new())),
         token_ledger: Arc::new(Mutex::new(TokenLedger::default())),
+        process_note: Arc::new(Mutex::new(ProcessNote::default())),
     };
     debug_eprintln!(config.debug, "Asking: {question}");
     let result = agent::run_headless(&ctx, &question, Some(&reports_dir))?;
@@ -1510,8 +1516,9 @@ fn run_app<B: ratatui::backend::Backend>(
                         cancel,
                         debug_logger: if config.debug { DebugLogger::new(source_root.as_deref()) } else { None },
                         findings: Arc::new(Mutex::new(FindingSet::new())),
-                        token_ledger: Arc::new(Mutex::new(TokenLedger::default())),
-                    });
+            token_ledger: Arc::new(Mutex::new(TokenLedger::default())),
+            process_note: Arc::new(Mutex::new(ProcessNote::default())),
+        });
                 }
             if let Some(ctx) = agent_ctx.take() {
                 let question = app.agent_query_text.clone();
@@ -1534,6 +1541,7 @@ fn run_app<B: ratatui::backend::Backend>(
                 let debug_logger = ctx.debug_logger.clone();
                 let findings = ctx.findings.clone();
                 let token_ledger = ctx.token_ledger.clone();
+                let process_note = ctx.process_note.clone();
 
                 thread::spawn(move || {
                     let thread_ctx = AgentCtx {
@@ -1550,6 +1558,7 @@ fn run_app<B: ratatui::backend::Backend>(
                         debug_logger,
                         findings,
                         token_ledger,
+                        process_note,
                     };
                     agent::run_agent(&thread_ctx, &question, history, tx);
                 });

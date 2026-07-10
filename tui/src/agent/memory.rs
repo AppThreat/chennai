@@ -163,7 +163,7 @@ impl FactStore {
         let existing = std::fs::read_to_string(&gitignore_path).unwrap_or_default();
         let mut lines: Vec<&str> = existing.lines().collect();
 
-        let needed = ["facts-memory/", "chennai-debug-logs/", "chennai-reports/"];
+        let needed = ["facts-memory/", "chennai-debug-logs/", "chennai-reports/", "agent-state/"];
         let mut changed = false;
         for entry in &needed {
             if !lines.contains(entry) {

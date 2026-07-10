@@ -10,6 +10,7 @@
 pub mod anthropic;
 pub mod debug_log;
 pub mod openai;
+pub mod process_note;
 pub mod provider;
 pub mod render;
 pub mod shell;
@@ -23,6 +24,7 @@ use crate::config::{Config, ProviderKind};
 use crate::engine::Engine;
 use crate::shared::backend::Backend;
 use finding::{Finding, FindingSet, TokenLedger};
+use process_note::ProcessNote;
 use provider::{
     AgentEvent, ChannelSink, ContentBlock, EventSink, LlmProvider, ProviderError, TurnRequest,
 };
@@ -189,6 +191,9 @@ pub struct AgentCtx {
     pub findings: Arc<Mutex<FindingSet>>,
     /// Token-usage ledger aggregated from `AgentEvent::Usage` events.
     pub token_ledger: Arc<Mutex<TokenLedger>>,
+    /// Process Note — durable working memory for the current analysis session.
+    /// Re-injected before every turn so the model always sees its own progress.
+    pub process_note: Arc<Mutex<ProcessNote>>,
 }
 
 /// The execution resources a tool needs, independent of any LLM provider.
@@ -203,6 +208,7 @@ pub struct ToolEnv<'a> {
     pub source_root: Option<&'a str>,
     pub debug_logger: Option<&'a DebugLogger>,
     pub findings: Option<&'a Arc<Mutex<FindingSet>>>,
+    pub process_note: Option<&'a Arc<Mutex<ProcessNote>>>,
 }
 
 impl AgentCtx {
@@ -214,6 +220,7 @@ impl AgentCtx {
             source_root: self.source_root.as_deref(),
             debug_logger: self.debug_logger.as_ref(),
             findings: Some(&self.findings),
+            process_note: Some(&self.process_note),
         }
     }
 }
@@ -445,6 +452,16 @@ bounds + dedups the result automatically. Reserve atom_dsl_eval for traversals t
 
 {response_style}
 
+## Process Note (working memory for this session)
+The Process Note is your durable scratchpad, re-injected before every turn. Use the
+`process_note` tool to record confirmed findings, ruled-out leads, open questions,
+entrypoints, and next steps as you go. Ruling something out there prevents
+re-investigation. The note survives context compaction and is persisted to
+`.chen/agent-state/` so a killed/interrupted session can resume. Unlike
+`project_memory` (cross-session facts) and `report_finding` (final results),
+the Process Note is the **current session's working memory** — update it
+frequently. Call `process_note action:"get"` at any point to see your note.
+
 ## Efficiency rules
 Wait for atom tool results to arrive before calling ripgrep or read_file. Calling ripgrep in the same turn as atom_dsl_eval or atom_flows means you are guessing instead of reading evidence. One well-chosen atom query eliminates the need for several ripgrep calls.
 
@@ -540,6 +557,7 @@ pub fn dispatch_tool(env: &ToolEnv, call_id: &str, name: &str, input: &Value) ->
         _ if name.starts_with("blint_") => backend_dispatch(env, call_id, name.strip_prefix("blint_").unwrap(), input),
         "bom_query" => bom_query_dispatch(env, call_id, input),
         "project_memory" => memory::memory_dispatch(env.source_root, call_id, input),
+        "process_note" => process_note_dispatch(env, call_id, input),
         "ripgrep"   => wrap_result(call_id, shell::ripgrep(&source_root_path(env), input)),
         "read_file" => wrap_result(call_id, shell::read_file(&source_root_path(env), input)),
         "git_diff"  => wrap_result(call_id, shell::git_diff(&source_root_path(env), input)),
@@ -1115,11 +1133,8 @@ fn report_finding_dispatch(env: &ToolEnv, call_id: &str, input: &Value) -> ToolE
         } else {
             drop(fs); // release lock before potentially-slow engine call
 
-            if proof_expr.is_empty() || env.engine.is_none() {
-                // No proof to re-execute → demote.
-                (false, 0, true)
-            } else {
-                let engine = env.engine.unwrap();
+            let engine = env.engine.filter(|_| !proof_expr.is_empty());
+            if let Some(engine) = engine {
                 let mut eng = engine.lock().unwrap();
                 let engine_result = eng.request::<Value>("flows", json!({"expr": proof_expr, "limit": 5}));
                 match engine_result {
@@ -1141,6 +1156,9 @@ fn report_finding_dispatch(env: &ToolEnv, call_id: &str, input: &Value) -> ToolE
                         (false, 0, true)
                     }
                 }
+            } else {
+                // No proof expression, or no engine available → cannot verify, so demote.
+                (false, 0, true)
             }
         }
     };
@@ -1185,6 +1203,61 @@ fn report_finding_dispatch(env: &ToolEnv, call_id: &str, input: &Value) -> ToolE
     ToolExecResult { call_id: call_id.into(), content, is_error: false }
 }
 
+/// Dispatch a `process_note` tool call.
+fn process_note_dispatch(env: &ToolEnv, call_id: &str, input: &Value) -> ToolExecResult {
+    let note_arc = match env.process_note {
+        Some(n) => n,
+        None => return ToolExecResult {
+            call_id: call_id.into(),
+            content: "process_note not available".into(),
+            is_error: true,
+        },
+    };
+    let action = input.get("action").and_then(Value::as_str).unwrap_or("");
+    let mut note = note_arc.lock().unwrap();
+    match action {
+        "get" => {
+            let rendered = note.render();
+            let content = if rendered.is_empty() {
+                "Process Note is empty.".to_string()
+            } else {
+                rendered
+            };
+            ToolExecResult { call_id: call_id.into(), content, is_error: false }
+        }
+        "append" => {
+            let field = input.get("field").and_then(Value::as_str).unwrap_or("");
+            let items: Vec<String> = input.get("items")
+                .and_then(Value::as_array)
+                .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                .unwrap_or_default();
+            if items.is_empty() {
+                return ToolExecResult { call_id: call_id.into(), content: "'items' is required for append".into(), is_error: true };
+            }
+            match note.append_to(field, &items) {
+                Ok(()) => ToolExecResult { call_id: call_id.into(), content: format!("Appended {} item(s) to '{}'.", items.len(), field), is_error: false },
+                Err(e) => ToolExecResult { call_id: call_id.into(), content: e, is_error: true },
+            }
+        }
+        "replace" => {
+            let field = input.get("field").and_then(Value::as_str).unwrap_or("");
+            let items: Vec<String> = input.get("items")
+                .and_then(Value::as_array)
+                .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                .unwrap_or_default();
+            match note.replace_field(field, &items) {
+                Ok(()) => ToolExecResult { call_id: call_id.into(), content: format!("Replaced '{}' with {} item(s).", field, items.len()), is_error: false },
+                Err(e) => ToolExecResult { call_id: call_id.into(), content: e, is_error: true },
+            }
+        }
+        other => ToolExecResult {
+            call_id: call_id.into(),
+            content: format!("Unknown action '{other}'. Valid actions: get, append, replace."),
+            is_error: true,
+        },
+    }
+}
+
 fn source_root_path(env: &ToolEnv) -> std::path::PathBuf {
     env.source_root.map(std::path::PathBuf::from).unwrap_or_else(|| std::path::PathBuf::from("."))
 }
@@ -1199,10 +1272,10 @@ struct TokenLedgerSink<S: EventSink> {
 
 impl<S: EventSink> EventSink for TokenLedgerSink<S> {
     fn emit(&mut self, event: AgentEvent) {
-        if let AgentEvent::Usage { input_tokens, output_tokens, cache_read_tokens } = &event {
-            if let Ok(mut ledger) = self.ledger.lock() {
-                ledger.record_usage(*input_tokens, *output_tokens, *cache_read_tokens);
-            }
+        if let AgentEvent::Usage { input_tokens, output_tokens, cache_read_tokens } = &event
+            && let Ok(mut ledger) = self.ledger.lock()
+        {
+            ledger.record_usage(*input_tokens, *output_tokens, *cache_read_tokens);
         }
         self.inner.emit(event);
     }
@@ -1248,6 +1321,15 @@ pub fn run_agent(
     history: Vec<provider::Message>,
     tx: mpsc::Sender<AgentEvent>,
 ) {
+    // Load persisted Process Note so interrupted runs resume with working memory.
+    {
+        let persisted = ProcessNote::load(ctx.source_root.as_deref());
+        if !persisted.is_empty() {
+            let mut note = ctx.process_note.lock().unwrap();
+            *note = persisted;
+        }
+    }
+
     // Seed the transcript with prior turns so follow-up questions retain context.
     let mut transcript = Transcript::with_initial(history);
     transcript.push_user(user_input);
@@ -1265,6 +1347,21 @@ pub fn run_agent(
     loop {
         if ctx.cancel.load(Ordering::Relaxed) {
             break;
+        }
+
+        // Compact the transcript when it exceeds the soft budget.
+        transcript.compact(2);
+
+        // Inject the Process Note as a user message updated in place.
+        // This is durable working memory distinct from project_memory and FindingSet.
+        let note_text = {
+            let note = ctx.process_note.lock().unwrap();
+            note.render()
+        };
+        if !note_text.is_empty() {
+            // Remove any previous Process Note injection to avoid duplication.
+            transcript.remove_user_messages_starting_with(transcript::Transcript::PROCESS_NOTE_PREFIX);
+            transcript.push_user(&note_text);
         }
 
         let mut sink = TokenLedgerSink {
@@ -1346,6 +1443,16 @@ authorized review of your own code.".into(),
         }
     }
 
+    // Persist agent state for resumability.
+    {
+        let note = ctx.process_note.lock().unwrap();
+        let _ = note.save(ctx.source_root.as_deref());
+    }
+    {
+        let findings = ctx.findings.lock().unwrap();
+        let _ = ProcessNote::save_findings(ctx.source_root.as_deref(), &findings);
+    }
+
     // Persist the full transcript so the next prompt resumes with context.
     tx.send(AgentEvent::History(transcript.messages().to_vec())).ok();
     tx.send(AgentEvent::Done).ok();
@@ -1388,6 +1495,16 @@ impl EventSink for HeadlessSink {
 }
 
 pub fn run_headless(ctx: &AgentCtx, input: &str, reports_dir: Option<&Path>) -> Result<String, Box<dyn std::error::Error>> {
+    // Load persisted Process Note so interrupted runs resume with working memory.
+    {
+        let persisted = ProcessNote::load(ctx.source_root.as_deref());
+        if !persisted.is_empty() {
+            let mut note = ctx.process_note.lock().unwrap();
+            *note = persisted;
+            eprintln!("\n[Resumed Process Note from .chen/agent-state/]");
+        }
+    }
+
     let base_tools = match (ctx.engine.is_some(), ctx.backend.as_ref()) {
         // Atom + backend (e.g. APK/JAR with both atom and blint): atom-primary, both toolsets.
         (true, Some(backend)) => tools::atom_plus_backend_tool_definitions(backend),
@@ -1403,6 +1520,19 @@ pub fn run_headless(ctx: &AgentCtx, input: &str, reports_dir: Option<&Path>) -> 
     let cancel: &AtomicBool = &ctx.cancel;
 
     loop {
+        // Compact the transcript when it exceeds the soft budget.
+        transcript.compact(2);
+
+        // Inject the Process Note as a user message updated in place.
+        let note_text = {
+            let note = ctx.process_note.lock().unwrap();
+            note.render()
+        };
+        if !note_text.is_empty() {
+            transcript.remove_user_messages_starting_with(transcript::Transcript::PROCESS_NOTE_PREFIX);
+            transcript.push_user(&note_text);
+        }
+
         let result = match ctx.provider.stream_turn(
             &TurnRequest {
                 system: &ctx.system_prompt,
@@ -1445,17 +1575,27 @@ pub fn run_headless(ctx: &AgentCtx, input: &str, reports_dir: Option<&Path>) -> 
     let total = findings.findings.len();
     let confirmed = findings.confirmed_count();
 
-    if let Some(dir) = reports_dir {
-        if !findings.findings.is_empty() {
-            let _ = std::fs::create_dir_all(dir);
-            let md = findings.render_markdown();
-            let _ = std::fs::write(dir.join("report.md"), &md);
-            let jv = findings.render_json();
-            if let Ok(json_str) = serde_json::to_string_pretty(&jv) {
-                let _ = std::fs::write(dir.join("report.json"), &json_str);
-            }
+    if let Some(dir) = reports_dir
+        && !findings.findings.is_empty()
+    {
+        let _ = std::fs::create_dir_all(dir);
+        let md = findings.render_markdown();
+        let _ = std::fs::write(dir.join("report.md"), &md);
+        let jv = findings.render_json();
+        if let Ok(json_str) = serde_json::to_string_pretty(&jv) {
+            let _ = std::fs::write(dir.join("report.json"), &json_str);
         }
     }
+    drop(findings);
+
+    // --- Persist agent state for resumability ---
+    {
+        let note = ctx.process_note.lock().unwrap();
+        let _ = note.save(ctx.source_root.as_deref());
+        // Drop the lock before saving findings (which takes a different lock).
+    }
+    let findings = ctx.findings.lock().unwrap();
+    let _ = ProcessNote::save_findings(ctx.source_root.as_deref(), &findings);
     drop(findings);
 
     let ledger = ctx.token_ledger.lock().unwrap();
@@ -1741,10 +1881,76 @@ mod tests {
             debug_logger: None,
             findings: Arc::new(Mutex::new(finding::FindingSet::new())),
             token_ledger: Arc::new(Mutex::new(finding::TokenLedger::default())),
+            process_note: Arc::new(Mutex::new(ProcessNote::default())),
         };
         let result = dispatch_tool(&ctx.tool_env(), "id1", "nonexistent_tool", &serde_json::json!({}));
         assert!(result.is_error);
         assert!(result.content.contains("unknown tool"));
+    }
+
+    #[test]
+    fn dispatch_tool_process_note_get_returns_empty_when_unused() {
+        let note = Arc::new(Mutex::new(ProcessNote::default()));
+        let env = ToolEnv {
+            engine: None,
+            backend: None,
+            source_root: None,
+            debug_logger: None,
+            findings: None,
+            process_note: Some(&note),
+        };
+        let result = dispatch_tool(&env, "id1", "process_note", &serde_json::json!({"action": "get"}));
+        assert!(!result.is_error);
+        assert!(result.content.contains("empty"));
+    }
+
+    #[test]
+    fn dispatch_tool_process_note_append_and_get() {
+        let note = Arc::new(Mutex::new(ProcessNote::default()));
+        let env = ToolEnv {
+            engine: None,
+            backend: None,
+            source_root: None,
+            debug_logger: None,
+            findings: None,
+            process_note: Some(&note),
+        };
+        let append = dispatch_tool(&env, "id1", "process_note", &serde_json::json!({
+            "action": "append",
+            "field": "confirmed",
+            "items": ["SQL injection in search"]
+        }));
+        assert!(!append.is_error, "{}", append.content);
+        let get = dispatch_tool(&env, "id2", "process_note", &serde_json::json!({"action": "get"}));
+        assert!(!get.is_error);
+        assert!(get.content.contains("SQL injection in search"));
+    }
+
+    #[test]
+    fn dispatch_tool_process_note_replace_overwrites() {
+        let note = Arc::new(Mutex::new(ProcessNote::default()));
+        let env = ToolEnv {
+            engine: None,
+            backend: None,
+            source_root: None,
+            debug_logger: None,
+            findings: None,
+            process_note: Some(&note),
+        };
+        dispatch_tool(&env, "id1", "process_note", &serde_json::json!({
+            "action": "append",
+            "field": "next_steps",
+            "items": ["old step"]
+        }));
+        dispatch_tool(&env, "id2", "process_note", &serde_json::json!({
+            "action": "replace",
+            "field": "next_steps",
+            "items": ["new step"]
+        }));
+        let get = dispatch_tool(&env, "id3", "process_note", &serde_json::json!({"action": "get"}));
+        assert!(!get.is_error);
+        assert!(get.content.contains("new step"));
+        assert!(!get.content.contains("old step"));
     }
 
     #[test]
@@ -1763,6 +1969,7 @@ mod tests {
             debug_logger: None,
             findings: Arc::new(Mutex::new(finding::FindingSet::new())),
             token_ledger: Arc::new(Mutex::new(finding::TokenLedger::default())),
+            process_note: Arc::new(Mutex::new(ProcessNote::default())),
         };
         let result = dispatch_tool(&ctx.tool_env(), "id1", "bom_query", &serde_json::json!({"query": "express"}));
         assert!(!result.is_error);
@@ -1893,6 +2100,7 @@ mod tests {
             source_root: None,
             debug_logger: None,
             findings: Some(&findings),
+            process_note: None,
         };
         let input = json!({
             "title": "Test",
@@ -1916,6 +2124,7 @@ mod tests {
             source_root: None,
             debug_logger: None,
             findings: Some(&findings),
+            process_note: None,
         };
         let input = json!({
             "title": "Empty proof test",
@@ -1944,6 +2153,7 @@ mod tests {
             source_root: None,
             debug_logger: None,
             findings: Some(&findings),
+            process_note: None,
         };
 
         // Submit two findings with same (source.tag, sink.file, sink.line).
@@ -1987,6 +2197,7 @@ mod tests {
             source_root: None,
             debug_logger: None,
             findings: Some(&findings),
+            process_note: None,
         };
         let input = json!({
             "title": "Cached reachable",

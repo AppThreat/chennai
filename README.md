@@ -227,6 +227,36 @@ entrypoints, auth boundaries, confirmed/refuted findings, user corrections) unde
 - Facts are auto-pruned at session start and after each save (de-duplication,
   staleness demotion, eviction of low-priority facts when over budget).
 
+### Structured findings with verified proofs
+
+When the AI agent identifies a security weakness it records it as a **structured finding**
+rather than free-form prose, using the `report_finding` tool.
+
+- Each finding carries a source and sink location, a severity and confidence, an optional
+  CWE, the sanitizers that were checked, and a chen DSL **proof expression** that demonstrates
+  the untrusted-input-to-sink data flow.
+- The proof is **re-executed against the engine at submission time**. If the flow resolves to
+  one or more real paths the finding is marked verified and keeps its confidence; if it resolves
+  to zero paths the confidence is demoted to low, so an unproven claim is never reported as a
+  high-confidence result. Repeated submissions of the same proof reuse the first result.
+- In headless mode (`--ask`) the accumulated findings are deduplicated, ranked by severity and
+  confidence, and written to `report.md` and `report.json` in the reports directory. A one-line
+  token-usage and finding-count summary is printed when the run finishes.
+
+### Session working memory
+
+During a single analysis the agent keeps a **working note** — its confirmed findings, ruled-out
+leads, open questions, discovered entrypoints, and planned next steps — updated through the
+`process_note` tool.
+
+- The note is shown to the model on every turn, so it always sees its own progress and avoids
+  re-investigating a lead it has already dismissed.
+- Long conversations are **compacted automatically** once they grow past a soft budget: older
+  tool results are replaced by short summaries while recent exchanges and the working note are
+  kept in full, keeping token usage bounded on large codebases.
+- The working note and findings are saved under `<source_root>/.chen/agent-state/` (local only
+  and git-ignored) so an interrupted session can resume where it left off.
+
 ### Options
 
 | Option                 | Default               | Description                                                         |
