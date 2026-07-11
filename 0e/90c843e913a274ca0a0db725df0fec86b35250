@@ -1,0 +1,96 @@
+tui/agents/roles/recon.md
+  s_0cb31498b4c7f5::t_2d7cc669861587 1-6
+tui/agents/roles/auth-boundary.md
+  s_0cb31498b4c7f5::t_2406da1b047996 1-6
+tui/src/agent/tools.rs
+  s_0cb31498b4c7f5::t_66447bc3d1328e 827
+  s_0cb31498b4c7f5::t_9d66da2b467c06 793-822,829-851
+  s_0cb31498b4c7f5::t_be54d6b0433794 825-826,828
+tui/agents/roles/reporter.md
+  s_c6e2ea51d33dcc::t_88297c73b4bd28 2,7-24
+  s_0cb31498b4c7f5::t_fa3c33bd8a6a9c 1,3-6
+tui/src/agent/mod.rs
+  s_0cb31498b4c7f5::t_6bcd1c4b8c9c21 1931,2020
+  s_0cb31498b4c7f5::t_189b62bcd04fd9 1367-1370
+  s_0cb31498b4c7f5::t_56bd9708bfa8d9 224-227
+  s_0cb31498b4c7f5::t_4e53db6d5f7113 46-53
+  s_0cb31498b4c7f5::t_c0ba154d3f8ba9 2076-2103
+  s_0cb31498b4c7f5::t_183887fea3cb03 94-123
+  s_0cb31498b4c7f5::t_bf2c104a57ed06 1545-1548
+  s_0cb31498b4c7f5::t_a79c03ee9820e6 20
+tui/src/config.rs
+  s_0cb31498b4c7f5::t_2bdc3703de41db 219,226
+  s_0cb31498b4c7f5::t_3d00d0c2d5a45b 71,74
+  s_0cb31498b4c7f5::t_971e123d52b4ba 107
+  s_0cb31498b4c7f5::t_86576dc50bfc3b 179
+  s_0cb31498b4c7f5::t_a9aac8fec65215 62-64
+tui/agents/roles/supply-chain.md
+  s_0cb31498b4c7f5::t_f9811b2043581c 1-6
+tui/src/agent/orchestrator.rs
+  s_c6e2ea51d33dcc::t_534ac3ede8f0ed 150-153,174-178
+  s_0cb31498b4c7f5::t_d29980e01da5fa 11
+  s_c6e2ea51d33dcc::t_bd7e8e18b13821 138-141
+  s_0cb31498b4c7f5::t_e8922b6ffebfa0 335
+  s_c6e2ea51d33dcc::t_46f24405632451 863-865,867-880
+  s_c6e2ea51d33dcc::t_6882cadf39c671 593-610
+  s_c6e2ea51d33dcc::t_03ee0f1b13176c 114-116
+  s_c6e2ea51d33dcc::t_9a1168e7ad8608 728,730,732-734
+  s_0cb31498b4c7f5::t_7918b8bc823775 667,680
+  s_0cb31498b4c7f5::t_c85474db9f98a1 570
+  s_0cb31498b4c7f5::t_24321947244032 346
+  s_c6e2ea51d33dcc::t_66993e49ed428f 42-55,61,69-73
+  s_0cb31498b4c7f5::t_37c66ad4dda65a 1-10,12-16,18-41,56-60,62-68,74-76,80,90-106,108-113,117-137,142-149,154-173,179-334,336-345,347-569,571-592,611-623,625-663,665-666,668-679,681-727,729,731,735-742,747-804,806-809,813-862,866,881-882
+  s_0cb31498b4c7f5::t_a3dd3be1428950 664
+  s_c6e2ea51d33dcc::t_724f16b4fdcafa 743-746
+  s_0cb31498b4c7f5::t_0caaf2d32cdf20 624
+  s_0cb31498b4c7f5::t_9008a77e725b44 805,810-812
+  s_c6e2ea51d33dcc::t_5e50d015820c06 107
+  s_0cb31498b4c7f5::t_5106702704b0a7 17
+  s_c6e2ea51d33dcc::t_493f73d1cd4dfd 77-79,81-89
+tui/agents/orchestrator.md
+  s_0cb31498b4c7f5::t_498d7fef70edee 1-25
+tui/src/main.rs
+  s_0cb31498b4c7f5::t_89ec28bd83f413 92-95
+  s_0cb31498b4c7f5::t_c2f5260435a562 196
+  s_0cb31498b4c7f5::t_ef3d987af7871e 861
+  s_0cb31498b4c7f5::t_2d81225776348e 368
+  s_0cb31498b4c7f5::t_9dfb562a42e96e 584
+  s_0cb31498b4c7f5::t_92677f452d8aea 1001
+  s_0cb31498b4c7f5::t_a081e548a88673 1526
+  s_0cb31498b4c7f5::t_7c0572d107785b 1368
+  s_0cb31498b4c7f5::t_0e01ab10953878 1330
+  s_0cb31498b4c7f5::t_104530b79cccd9 1556,1569
+README.md
+  s_c6e2ea51d33dcc::t_3fcffd78d21d61 260-283
+  s_c6e2ea51d33dcc::t_8d757b7cbc0a98 292
+tui/agents/roles/taint-prover.md
+  s_c6e2ea51d33dcc::t_7149f0ccdf052f 6-10
+  s_0cb31498b4c7f5::t_4bb432f28bd5f2 1-5
+tui/agents/roles/sink-hunter.md
+  s_0cb31498b4c7f5::t_601a1de63c118d 1-5
+  s_c6e2ea51d33dcc::t_d9ac12b16040b2 6-10
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "0e90c843e913a274ca0a0db725df0fec86b35250",
+  "prompts": {},
+  "sessions": {
+    "s_0cb31498b4c7f5": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_0b1c4723dffeGlimvr9KKRoZ3g",
+        "model": "deepseek-v4-flash"
+      },
+      "human_author": "Prabhu Subramanian <prabhu@appthreat.com>"
+    },
+    "s_c6e2ea51d33dcc": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a86a5d48-7c4a-4ef2-8f12-f983a288cae5",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Prabhu Subramanian <prabhu@appthreat.com>"
+    }
+  }
+}
