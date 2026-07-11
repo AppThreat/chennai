@@ -17,6 +17,7 @@ pub mod shell;
 pub mod tools;
 pub mod finding;
 pub mod memory;
+pub mod orchestrator;
 pub mod transcript;
 pub use debug_log::DebugLogger;
 
@@ -41,6 +42,14 @@ const PROMPT_SECURITY_REVIEW: &str = include_str!("../../agents/security-review.
 const PROMPT_EXPLAIN: &str = include_str!("../../agents/explain.md");
 const PROMPT_TRACE: &str = include_str!("../../agents/trace.md");
 const PROMPT_CODE_REVIEW: &str = include_str!("../../agents/code-review.md");
+
+// Embedded role-prompt templates for sub-agents in orchestrated mode.
+const ROLE_RECON: &str = include_str!("../../agents/roles/recon.md");
+const ROLE_SINK_HUNTER: &str = include_str!("../../agents/roles/sink-hunter.md");
+const ROLE_TAINT_PROVER: &str = include_str!("../../agents/roles/taint-prover.md");
+const ROLE_AUTH_BOUNDARY: &str = include_str!("../../agents/roles/auth-boundary.md");
+const ROLE_SUPPLY_CHAIN: &str = include_str!("../../agents/roles/supply-chain.md");
+const ROLE_REPORTER: &str = include_str!("../../agents/roles/reporter.md");
 
 /// Full traversal reference docs, compiled into the binary so the agent can look up
 /// any traversal root or step method on demand without bloating the system prompt.
@@ -80,6 +89,36 @@ fn builtin_prompt(cmd: &str) -> Option<&'static str> {
 pub fn slash_command(cmd: &str) -> Option<SlashCommand> {
     let raw = user_override_prompt(cmd).or_else(|| builtin_prompt(cmd).map(str::to_string))?;
     Some(parse_frontmatter(&raw))
+}
+
+/// Resolve a role template to a parsed [`SlashCommand`], preferring a user
+/// override at `~/.config/chennai/agents/roles/<name>.md` over the built-in.
+/// Returns `None` for unknown roles with no override file.
+pub fn role(name: &str) -> Option<SlashCommand> {
+    let raw = user_override_role(name).or_else(|| builtin_role(name).map(str::to_string))?;
+    Some(parse_frontmatter(&raw))
+}
+
+/// Built-in (compiled-in) role template for a known role name.
+fn builtin_role(name: &str) -> Option<&'static str> {
+    match name {
+        "recon" => Some(ROLE_RECON),
+        "sink-hunter" => Some(ROLE_SINK_HUNTER),
+        "taint-prover" => Some(ROLE_TAINT_PROVER),
+        "auth-boundary" => Some(ROLE_AUTH_BOUNDARY),
+        "supply-chain" => Some(ROLE_SUPPLY_CHAIN),
+        "reporter" => Some(ROLE_REPORTER),
+        _ => None,
+    }
+}
+
+/// Read a user override role template if present.
+fn user_override_role(name: &str) -> Option<String> {
+    let home = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")).ok()?;
+    let path = std::path::Path::new(&home)
+        .join(".config").join("chennai").join("agents").join("roles")
+        .join(format!("{name}.md"));
+    std::fs::read_to_string(path).ok()
 }
 
 /// Read a user override prompt file if present.
@@ -182,6 +221,10 @@ pub struct AgentCtx {
     /// When set, only these tool names are offered to the model (used by slash
     /// commands to scope the toolset). `None` means all tools.
     pub allowed_tools: Option<Vec<String>>,
+    /// When true, the agent loop delegates to the orchestrator which spawns
+    /// focused sub-agents instead of running a single monolithic analysis.
+    /// The orchestrator has its own system prompt and scoped toolset.
+    pub orchestrate: bool,
     pub cancel: Arc<AtomicBool>,
     /// Optional debug logger that records custom tool calls (atom_, bom_, rusi_,
     /// golem_, dosai_, blint_) to timestamped JSON files under
@@ -1321,6 +1364,10 @@ pub fn run_agent(
     history: Vec<provider::Message>,
     tx: mpsc::Sender<AgentEvent>,
 ) {
+    if ctx.orchestrate {
+        return orchestrator::run_orchestrator_async(ctx, user_input, history, tx);
+    }
+
     // Load persisted Process Note so interrupted runs resume with working memory.
     {
         let persisted = ProcessNote::load(ctx.source_root.as_deref());
@@ -1495,6 +1542,10 @@ impl EventSink for HeadlessSink {
 }
 
 pub fn run_headless(ctx: &AgentCtx, input: &str, reports_dir: Option<&Path>) -> Result<String, Box<dyn std::error::Error>> {
+    if ctx.orchestrate {
+        return orchestrator::run_orchestrator(ctx, input, reports_dir);
+    }
+
     // Load persisted Process Note so interrupted runs resume with working memory.
     {
         let persisted = ProcessNote::load(ctx.source_root.as_deref());
@@ -1877,6 +1928,7 @@ mod tests {
             no_thinking: false,
             effort: "high".into(),
             allowed_tools: None,
+            orchestrate: false,
             cancel: Arc::new(AtomicBool::new(false)),
             debug_logger: None,
             findings: Arc::new(Mutex::new(finding::FindingSet::new())),
@@ -1965,6 +2017,7 @@ mod tests {
             no_thinking: false,
             effort: "high".into(),
             allowed_tools: None,
+            orchestrate: false,
             cancel: Arc::new(AtomicBool::new(false)),
             debug_logger: None,
             findings: Arc::new(Mutex::new(finding::FindingSet::new())),
@@ -2018,6 +2071,34 @@ mod tests {
         let sc = slash_command("security-review").expect("security-review exists");
         assert!(sc.tools.as_ref().map(|t| t.contains(&"atom_flows".to_string())).unwrap_or(false));
         assert!(!sc.body.is_empty());
+    }
+
+    #[test]
+    fn builtin_roles_parse_and_have_tools() {
+        for name in &["recon", "sink-hunter", "taint-prover", "auth-boundary", "supply-chain", "reporter"] {
+            let r = role(name).unwrap_or_else(|| panic!("role {name} should exist"));
+            assert!(!r.body.is_empty(), "role {name} body must not be empty");
+            assert!(r.tools.is_some(), "role {name} must have tools frontmatter");
+            assert!(!r.tools.as_ref().unwrap().is_empty(), "role {name} tools must not be empty");
+            // Each role's tools must match the allowlist spec: verify recon has atom_query
+            if *name == "recon" {
+                assert!(r.tools.as_ref().unwrap().contains(&"atom_query".into()));
+                assert!(r.tools.as_ref().unwrap().contains(&"process_note".into()));
+            }
+            if *name == "taint-prover" {
+                assert!(r.tools.as_ref().unwrap().contains(&"atom_reaches".into()));
+                assert!(r.tools.as_ref().unwrap().contains(&"report_finding".into()));
+            }
+            if *name == "sink-hunter" {
+                assert!(r.tools.as_ref().unwrap().contains(&"atom_callsites".into()));
+                assert!(r.tools.as_ref().unwrap().contains(&"atom_reaches".into()));
+            }
+        }
+    }
+
+    #[test]
+    fn unknown_role_returns_none() {
+        assert!(role("nonexistent-role").is_none());
     }
 
     #[test]

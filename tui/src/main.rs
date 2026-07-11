@@ -89,6 +89,10 @@ struct Args {
     /// dosai_*, blint_*) to timestamped JSON files under `.chen/chennai-debug-logs/`.
     #[arg(long, default_value_t = false)]
     debug: bool,
+    /// Use the orchestrator loop: the agent delegates analysis to focused
+    /// sub-agents with isolated contexts, then synthesizes their results.
+    #[arg(long, default_value_t = false)]
+    orchestrate: bool,
     /// Subcommand to run instead of launching the TUI.
     #[command(subcommand)]
     command: Option<CliCommand>,
@@ -189,7 +193,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let path_buf = std::fs::canonicalize(&path_buf).unwrap_or(path_buf);
     let path = &path_buf;
 
-    let mut config = Config::load_with_base_url(args.provider.as_deref(), args.model.as_deref(), args.api_key.as_deref(), args.base_url.as_deref(), args.no_thinking, args.effort.as_deref());
+    let mut config = Config::load_with_base_url(args.provider.as_deref(), args.model.as_deref(), args.api_key.as_deref(), args.base_url.as_deref(), args.no_thinking, args.effort.as_deref(), args.orchestrate);
     config.debug = args.debug;
     let theme = match args.theme.as_str() { "light" => Theme::light(), _ => Theme::dark() };
     let source_root = args.source.clone();
@@ -361,6 +365,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         no_thinking: config.no_thinking,
                         effort: config.effort.clone(),
                         allowed_tools: None,
+                        orchestrate: config.orchestrate,
                         cancel: Arc::new(AtomicBool::new(false)),
                         debug_logger: if config.debug { DebugLogger::new(agent_source_root.as_deref()) } else { None },
                         findings: Arc::new(Mutex::new(FindingSet::new())),
@@ -576,6 +581,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         no_thinking: config.no_thinking,
                         effort: config.effort.clone(),
                         allowed_tools: None,
+                        orchestrate: config.orchestrate,
                         cancel: Arc::new(AtomicBool::new(false)),
                         debug_logger: if config.debug { DebugLogger::new(agent_source_root.as_deref()) } else { None },
                         findings: Arc::new(Mutex::new(FindingSet::new())),
@@ -852,6 +858,7 @@ fn run_non_atom_mode(
                     no_thinking: config.no_thinking,
                     effort: config.effort.clone(),
                     allowed_tools: None,
+                    orchestrate: config.orchestrate,
                     cancel: Arc::new(AtomicBool::new(false)),
                     debug_logger: if config.debug { DebugLogger::new(Some(&source_root_str)) } else { None },
                     findings: Arc::new(Mutex::new(FindingSet::new())),
@@ -991,6 +998,7 @@ fn finish_non_atom_startup(
                     no_thinking: config.no_thinking,
                     effort: config.effort.clone(),
                     allowed_tools: None,
+                    orchestrate: config.orchestrate,
                     cancel: Arc::new(AtomicBool::new(false)),
                     debug_logger: if config.debug { DebugLogger::new(Some(&source_root_str)) } else { None },
                     findings: Arc::new(Mutex::new(FindingSet::new())),
@@ -1319,6 +1327,7 @@ fn run_headless_agent(
         no_thinking: config.no_thinking,
         effort: config.effort.clone(),
         allowed_tools: None,
+        orchestrate: config.orchestrate,
         cancel: Arc::new(AtomicBool::new(false)),
         debug_logger,
         findings: Arc::new(Mutex::new(FindingSet::new())),
@@ -1356,6 +1365,7 @@ fn run_headless_agent_non_atom(
         no_thinking: config.no_thinking,
         effort: config.effort.clone(),
         allowed_tools: None,
+        orchestrate: config.orchestrate,
         cancel: Arc::new(AtomicBool::new(false)),
         debug_logger,
         findings: Arc::new(Mutex::new(FindingSet::new())),
@@ -1513,6 +1523,7 @@ fn run_app<B: ratatui::backend::Backend>(
                         no_thinking: config.no_thinking,
                         effort: config.effort.clone(),
                         allowed_tools: None,
+                        orchestrate: config.orchestrate,
                         cancel,
                         debug_logger: if config.debug { DebugLogger::new(source_root.as_deref()) } else { None },
                         findings: Arc::new(Mutex::new(FindingSet::new())),
@@ -1542,6 +1553,7 @@ fn run_app<B: ratatui::backend::Backend>(
                 let findings = ctx.findings.clone();
                 let token_ledger = ctx.token_ledger.clone();
                 let process_note = ctx.process_note.clone();
+                let orchestrate = ctx.orchestrate;
 
                 thread::spawn(move || {
                     let thread_ctx = AgentCtx {
@@ -1554,6 +1566,7 @@ fn run_app<B: ratatui::backend::Backend>(
                         no_thinking,
                         effort,
                         allowed_tools,
+                        orchestrate,
                         cancel: cancel_for_thread,
                         debug_logger,
                         findings,

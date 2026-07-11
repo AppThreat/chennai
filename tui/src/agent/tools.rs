@@ -790,8 +790,65 @@ unless the proof re-executed successfully.",
     })
 }
 
+/// Tool definition for `spawn_subagent` — used by the orchestrator only.
+/// Not included in the normal tool definitions; the orchestrator injects it itself.
+pub fn spawn_subagent_tool() -> Value {
+    json!({
+        "name": "spawn_subagent",
+        "description": "Dispatch a focused sub-agent with its own toolset and context, \
+returning its plain-text summary. The sub-agent shares the same findings pool and process note.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "role": {
+                    "type": "string",
+                    "description": "Which sub-agent role to spawn",
+                    "enum": ["recon", "sink-hunter", "taint-prover", "auth-boundary", "supply-chain", "reporter"]
+                },
+                "objective": {
+                    "type": "string",
+                    "description": "The specific task or question for this sub-agent"
+                },
+                "max_turns": {
+                    "type": "integer",
+                    "description": "Maximum turns for the sub-agent (default 10)",
+                    "default": 10
+                }
+            },
+            "required": ["role", "objective"]
+        }
+    })
+}
+
 #[cfg(test)]
 mod tests {
+    use super::{
+        all_tool_definitions, atom_plus_backend_tool_definitions, non_atom_tool_definitions,
+        spawn_subagent_tool,
+    };
+
+    #[test]
+    fn spawn_subagent_tool_has_correct_schema() {
+        let def = spawn_subagent_tool();
+        assert_eq!(def["name"], "spawn_subagent");
+        let props = &def["input_schema"]["properties"];
+        assert!(props["role"].is_object());
+        assert!(props["objective"].is_object());
+        assert!(props["max_turns"].is_object());
+        let required = def["input_schema"]["required"].as_array().unwrap();
+        assert!(required.contains(&serde_json::Value::String("role".into())));
+        assert!(required.contains(&serde_json::Value::String("objective".into())));
+    }
+
+    #[test]
+    fn spawn_subagent_not_in_standard_toolsets() {
+        let all = all_tool_definitions();
+        let names: Vec<&str> = all.iter().filter_map(|t| t["name"].as_str()).collect();
+        assert!(!names.contains(&"spawn_subagent"), "spawn_subagent must not be in all_tool_definitions");
+        let non_atom = non_atom_tool_definitions();
+        let non_atom_names: Vec<&str> = non_atom.iter().filter_map(|t| t["name"].as_str()).collect();
+        assert!(!non_atom_names.contains(&"spawn_subagent"));
+    }
     use super::*;
 
     #[test]

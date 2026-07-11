@@ -59,16 +59,19 @@ pub struct Config {
     /// When true, tool calls (atom_*, bom_*, rusi_*, golem_*, dosai_*, blint_*)
     /// are logged to timestamped JSON files under `.chen/chennai-debug-logs/`.
     pub debug: bool,
+    /// When true, the agent uses the orchestrator loop which delegates analysis
+    /// to focused sub-agents with isolated contexts.
+    pub orchestrate: bool,
 }
 
 impl Config {
     /// Load from the default config path, then apply env-var and CLI overrides.
     #[allow(dead_code)]
     pub fn load(cli_provider: Option<&str>, cli_model: Option<&str>, cli_api_key: Option<&str>) -> Self {
-        Self::load_with_base_url(cli_provider, cli_model, cli_api_key, None, false, None)
+        Self::load_with_base_url(cli_provider, cli_model, cli_api_key, None, false, None, false)
     }
 
-    pub fn load_with_base_url(cli_provider: Option<&str>, cli_model: Option<&str>, cli_api_key: Option<&str>, cli_base_url: Option<&str>, cli_no_thinking: bool, cli_effort: Option<&str>) -> Self {
+    pub fn load_with_base_url(cli_provider: Option<&str>, cli_model: Option<&str>, cli_api_key: Option<&str>, cli_base_url: Option<&str>, cli_no_thinking: bool, cli_effort: Option<&str>, cli_orchestrate: bool) -> Self {
         let file_cfg = Self::load_file();
 
         // Precedence for each setting: CLI flag > environment variable > config file > default.
@@ -101,7 +104,7 @@ impl Config {
             .or(file_cfg.effort)
             .unwrap_or_else(|| "high".to_string());
 
-        Config { provider, model, base_url, api_key, enabled, no_thinking: cli_no_thinking, effort, debug: false }
+        Config { provider, model, base_url, api_key, enabled, no_thinking: cli_no_thinking, effort, debug: false, orchestrate: cli_orchestrate }
     }
 
     /// Read the config file at `~/.config/chennai/config.toml`.
@@ -173,7 +176,7 @@ mod tests {
     #[test]
     fn cli_effort_overrides_default() {
         let _guard = ENV_MUTEX.lock().unwrap();
-        let cfg = Config::load_with_base_url(None, None, None, None, false, Some("xhigh"));
+        let cfg = Config::load_with_base_url(None, None, None, None, false, Some("xhigh"), false);
         assert_eq!(cfg.effort, "xhigh");
     }
 
@@ -213,14 +216,14 @@ mod tests {
         }
 
         // Env vars apply when no CLI flags are given.
-        let cfg = Config::load_with_base_url(None, None, None, None, false, None);
+        let cfg = Config::load_with_base_url(None, None, None, None, false, None, false);
         assert_eq!(cfg.provider, ProviderKind::OpenAI);
         assert_eq!(cfg.model, "gpt-4o");
         assert_eq!(cfg.base_url.as_deref(), Some("https://example.test/v1"));
 
         // CLI flags take precedence over env vars.
         let cfg = Config::load_with_base_url(
-            Some("anthropic"), Some("claude-x"), None, Some("https://cli.test"), false, None,
+            Some("anthropic"), Some("claude-x"), None, Some("https://cli.test"), false, None, false,
         );
         assert_eq!(cfg.provider, ProviderKind::Anthropic);
         assert_eq!(cfg.model, "claude-x");

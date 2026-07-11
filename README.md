@@ -257,6 +257,30 @@ leads, open questions, discovered entrypoints, and planned next steps — update
 - The working note and findings are saved under `<source_root>/.chen/agent-state/` (local only
   and git-ignored) so an interrupted session can resume where it left off.
 
+### Orchestrated audits (`--orchestrate`)
+
+For a broad audit, `--orchestrate` runs the agent as a coordinator that dispatches focused
+**sub-agents** instead of doing everything in one long conversation. Each sub-agent has a
+single job and a minimal toolset:
+
+- **recon** — maps entrypoints, frameworks, untrusted-input tags, and candidate sinks.
+- **sink-hunter** — locates dangerous sink call sites and proves reachability.
+- **taint-prover** — proves end-to-end source→sink data-flow paths.
+- **auth-boundary** — checks whether reachable sinks are guarded by auth/validation.
+- **supply-chain** — reviews dependencies for known-vulnerable or suspicious usage.
+- **reporter** — synthesizes the final report and records each confirmed finding.
+
+Each sub-agent runs in its own isolated conversation and returns only a short summary to the
+coordinator, so the coordinator's context stays small even across a large audit. The sub-agents
+share one findings pool and one working note, so results and ruled-out leads accumulate without
+duplicated effort. The role prompts live in `tui/agents/roles/`; drop a file with the same name
+under `~/.config/chennai/agents/roles/` to override a role for your own workflow.
+
+```bash
+chennai app.atom --source ./app --orchestrate \
+  --ask "Audit for command injection and path traversal"
+```
+
 ### Options
 
 | Option                 | Default               | Description                                                         |
@@ -265,6 +289,7 @@ leads, open questions, discovered entrypoints, and planned next steps — update
 | `--theme dark/light`   | dark                  | Color theme                                                         |
 | `--source PATH`        | project dir           | Project source root for file resolution                             |
 | `--ask TEXT`           | --                    | Headless mode: ask a question and print the answer                  |
+| `--orchestrate`        | false                 | Coordinate focused sub-agents for a broad audit (see above)         |
 | `--provider STR`       | anthropic             | LLM provider (anthropic or openai)                                  |
 | `--model STR`          | claude-opus-4-8       | LLM model name                                                      |
 | `--api-key STR`        | env var               | API key for the LLM provider                                        |
