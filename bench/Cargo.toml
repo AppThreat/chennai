@@ -1,3 +1,6 @@
+# Standalone crate with its own target dir; not part of the chennai (tui) build.
+[workspace]
+
 [package]
 name = "chennai-bench"
 version = "0.1.0"

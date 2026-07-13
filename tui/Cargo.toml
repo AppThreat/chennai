@@ -1,3 +1,9 @@
+# Standalone crate (not part of a parent workspace): this empty [workspace]
+# table pins the workspace root here so `cargo build` emits to `tui/target/`,
+# which the release CI and packaging scripts expect. The benchmark harness in
+# `../bench` is an independent crate with its own target dir.
+[workspace]
+
 [package]
 name = "chennai"
 version = "1.0.2"
