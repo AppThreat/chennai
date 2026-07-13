@@ -1,0 +1,24 @@
+tui/Cargo.toml
+  s_596d5af88db0aa::t_2145854d01551f 9
+engine/build.sbt
+  s_596d5af88db0aa::t_02d03ba6076647 3
+wrapper/nodejs/packages/chennai/package.json
+  s_596d5af88db0aa::t_af3950517bac55 37-44
+  s_596d5af88db0aa::t_a68290428ec48e 3
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "b8c670ee960532dfc99e8f245134e2cd57143a8c",
+  "prompts": {},
+  "sessions": {
+    "s_596d5af88db0aa": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_0a2a941f6ffepWBJiBM6oEvbxj",
+        "model": "glm-4.7"
+      },
+      "human_author": "Prabhu Subramanian <prabhu@appthreat.com>"
+    }
+  }
+}
