@@ -1,0 +1,41 @@
+tui/docs/CUSTOM_ROLES.md
+  s_71455b5c56af45::t_6065bdbdb9b1e5 73-75,77,80-82
+tui/src/config.rs
+  s_71455b5c56af45::t_7efe561dc6d62c 457-479
+  s_71455b5c56af45::t_2fdae931e3de99 156-164
+tui/src/agent/roles.rs
+  s_71455b5c56af45::t_4242662e574161 173-174,178
+  s_71455b5c56af45::t_cd7ffaf3116434 476,478-479,483-487,489,493-494,497-498,501
+  s_71455b5c56af45::t_e5b96efe491ce7 107-112,121-122
+  s_71455b5c56af45::t_6a19eefa26214f 189-190
+  s_71455b5c56af45::t_2c9404c79744fd 375-380,382
+  s_71455b5c56af45::t_fcc28bd7dcdb56 156-160
+  s_71455b5c56af45::t_8c8e5150a31d8c 77-79
+  s_71455b5c56af45::t_abc9dedc3b7c0c 406-411,421
+tui/src/app.rs
+  s_71455b5c56af45::t_0b1142ff964815 605-609,612-614
+tui/src/agent/orchestrator.rs
+  s_71455b5c56af45::t_7ac30a27d5f174 780
+  s_71455b5c56af45::t_b00fe97e05fa4a 762,767
+  s_71455b5c56af45::t_1651893db96df1 747-748
+  s_71455b5c56af45::t_89b78e2bfd77ac 1221-1261
+  s_71455b5c56af45::t_9ffd3af6b29b1e 867,872-873,878
+  s_71455b5c56af45::t_d1916f2603111c 63-89
+  s_71455b5c56af45::t_678bdffa22ee0f 41-43,45-54
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "5afdea89d55d470136250341a729e1311ca1bc07",
+  "prompts": {},
+  "sessions": {
+    "s_71455b5c56af45": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3e04e57a-eed8-4811-b54f-96381c9ddd59",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Prabhu Subramanian <prabhu@appthreat.com>"
+    }
+  }
+}
