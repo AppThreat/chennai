@@ -226,8 +226,8 @@ pub const ROLE_TURN_DEFAULTS: &[(&str, u32)] = &[
     ("sink-hunter", 20),
     ("taint-prover", 20),
     ("auth-boundary", 15),
-    ("supply-chain", 12),
-    ("reporter", 8),
+    ("supply-chain", 15),
+    ("reporter", 15),
 ];
 
 // ---------------------------------------------------------------------------
@@ -2437,8 +2437,8 @@ mod tests {
         assert_eq!(resolve_turn_budget(None, "sink-hunter", None), 20);
         assert_eq!(resolve_turn_budget(None, "taint-prover", None), 20);
         assert_eq!(resolve_turn_budget(None, "auth-boundary", None), 15);
-        assert_eq!(resolve_turn_budget(None, "supply-chain", None), 12);
-        assert_eq!(resolve_turn_budget(None, "reporter", None), 8);
+        assert_eq!(resolve_turn_budget(None, "supply-chain", None), 15);
+        assert_eq!(resolve_turn_budget(None, "reporter", None), 15);
         // Unknown role → fallback 10.
         assert_eq!(resolve_turn_budget(None, "custom-role", None), 10);
     }
