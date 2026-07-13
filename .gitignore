@@ -8,7 +8,7 @@ engine/project/project/
 .bsp/
 .metals/
 .bloop/
-
+target/
 # npm / node
 wrapper/nodejs/node_modules/
 wrapper/nodejs/packages/chennai/LICENSE

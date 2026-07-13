@@ -105,6 +105,10 @@ struct Args {
     /// the orchestrator but sub-agents are still spawned (default 256,000).
     #[arg(long)]
     token_budget: Option<u64>,
+    /// Emit structured JSON on stdout (schema: chennai.audit.v1).
+    /// Applies to --ask (headless) and --orchestrate (headless) modes.
+    #[arg(long, default_value_t = false)]
+    json: bool,
     /// Subcommand to run instead of launching the TUI.
     #[command(subcommand)]
     command: Option<CliCommand>,
@@ -112,6 +116,7 @@ struct Args {
 
 /// Subcommands for auxiliary operations.
 #[derive(Parser, Debug)]
+#[allow(clippy::large_enum_variant)]
 enum CliCommand {
     /// Install or reinstall the analysis tools (cdxgen, atom, atom-parsetools) via npm.
     Setup,
@@ -130,6 +135,79 @@ enum CliCommand {
         /// Output file path (defaults to stdout).
         #[arg(short = 'o', long)]
         output: Option<PathBuf>,
+    },
+    /// Deterministic audit: run a fixed pipeline of sub-agents in a fixed order.
+    ///
+    /// Unlike `--orchestrate` (which lets an LLM decide which roles to spawn),
+    /// `audit` runs a code-driven pipeline so the orchestration shape is
+    /// deterministic and the run is scriptable in CI.
+    ///
+    /// Default fixed pipeline: recon → sink-hunter → taint-prover → auth-boundary → supply-chain → reporter
+    ///
+    /// Only the pipeline shape and cost envelope are deterministic; the LLM's
+    /// per-stage text is not. Recommend `--effort high` (or `--effort max`) and
+    /// temperature 0 where supported for maximum reproducibility.
+    Audit {
+        /// Project path (directory or .atom file) to analyse.
+        #[arg()]
+        path: Option<PathBuf>,
+        /// Source root directory.
+        #[arg(long)]
+        source: Option<String>,
+        /// Override engine binary path.
+        #[arg(long)]
+        engine: Option<String>,
+        /// Analysis objective (free text). Defaults to a full security audit.
+        #[arg(long)]
+        objective: Option<String>,
+        /// Override the default pipeline with a comma-separated list of role names.
+        /// Reporter must be last. Example: --pipeline recon,sink-hunter,reporter
+        #[arg(long, value_delimiter = ',')]
+        pipeline: Option<Vec<String>>,
+        /// Directory to write markdown/JSON reports into.
+        #[arg(long)]
+        reports_dir: Option<PathBuf>,
+        /// Advisory per-stage turn budget (default: role-dependent).
+        #[arg(long)]
+        turn_budget: Option<u64>,
+        /// Advisory global token budget (default 256,000).
+        #[arg(long)]
+        token_budget: Option<u64>,
+        /// LLM provider (anthropic|openai).
+        #[arg(long)]
+        provider: Option<String>,
+        /// LLM model name.
+        #[arg(long)]
+        model: Option<String>,
+        /// API key for the LLM provider.
+        #[arg(long)]
+        api_key: Option<String>,
+        /// Base URL for the LLM API.
+        #[arg(long)]
+        base_url: Option<String>,
+        /// Reasoning/output effort for Anthropic models (low|medium|high|xhigh|max).
+        #[arg(long)]
+        effort: Option<String>,
+        /// Omit the thinking block from the LLM request body.
+        #[arg(long, default_value_t = false)]
+        no_thinking: bool,
+        /// Emit structured JSON on stdout (schema: chennai.audit.v1).
+        #[arg(long, default_value_t = false)]
+        json: bool,
+        /// Enable debug logging of tool calls.
+        #[arg(long, default_value_t = false)]
+        debug: bool,
+        /// Skip unknown roles in the pipeline instead of erroring.
+        #[arg(long, default_value_t = false)]
+        skip_missing_roles: bool,
+        /// Resume a previously interrupted audit: skip stages that already completed
+        /// and restore prior findings/notes from .chen/agent-state/.
+        #[arg(long, default_value_t = false)]
+        resume: bool,
+        /// Include low-confidence and unreachable findings in the human Markdown
+        /// report. By default report.md hides these (report.json always includes all).
+        #[arg(long, default_value_t = false)]
+        include_low_value: bool,
     },
 }
 
@@ -260,7 +338,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 });
                 PathBuf::from(base).join(".chen").join("chennai-reports")
             });
-            return run_headless_agent(config, eng, agent_source_root, summary, question, reports_dir);
+            return run_headless_agent(config, eng, agent_source_root, summary, question, reports_dir, args.json);
         }
 
         let engine_arc = Arc::new(Mutex::new(eng));
@@ -1331,6 +1409,7 @@ fn run_headless_agent(
     summary: Summary,
     question: String,
     reports_dir: PathBuf,
+    json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if !config.enabled {
         eprintln!("AI agent is not enabled. Set ANTHROPIC_API_KEY or OPENAI_API_KEY to enable.");
@@ -1368,7 +1447,49 @@ fn run_headless_agent(
     };
     debug_eprintln!(config.debug, "Asking: {question}");
     let result = agent::run_headless(&ctx, &question, Some(&reports_dir))?;
-    println!("\n{}", result);
+
+    // Emit chennai.audit.v1 JSON on stdout when --json is set.
+    if json {
+        let findings = ctx.findings.lock().unwrap();
+        let total = findings.findings.len();
+        let confirmed = findings.confirmed_count();
+        let profile = ctx.run_profile.lock().unwrap();
+        let mode = if config.orchestrate { "orchestrate" } else { "single" };
+        // Synthetic driver segments capture coordinator/flat-loop overhead and are
+        // not real pipeline stages, so exclude them from `pipeline` and `stages`.
+        let is_driver = |label: &str| matches!(label, "orchestrator" | "audit-driver" | "single");
+        let pipeline: Vec<String> = profile.segments.iter()
+            .filter(|s| !is_driver(&s.label))
+            .map(|s| s.label.clone())
+            .collect();
+        let json_obj = serde_json::json!({
+            "schema": "chennai.audit.v1",
+            "mode": mode,
+            "pipeline": pipeline,
+            "findings": findings.render_json(),
+            "totals": {
+                "findings": total,
+                "confirmed": confirmed,
+            },
+            "stages": profile.segments.iter()
+                .filter(|s| !is_driver(&s.label))
+                .map(|s| serde_json::json!({
+                    "role": s.label,
+                    "summary": "",
+                    "findings_delta": s.findings_delta,
+                    "completed": s.completed,
+                    "tokens": s.tokens.total_tokens(),
+                    "elapsed_secs": s.elapsed.as_secs_f64(),
+                })).collect::<Vec<_>>(),
+            "profile": profile.to_json(),
+        });
+        drop(findings);
+        let output = serde_json::to_string_pretty(&json_obj)
+            .map_err(|e| format!("serialize JSON: {e}"))?;
+        println!("{output}");
+    } else {
+        println!("\n{}", result);
+    }
     Ok(())
 }
 
@@ -2214,6 +2335,168 @@ fn resolve_or_generate_atom(
     Ok(generated_atom)
 }
 
+/// Wire the `chennai audit` subcommand: build Config, open the engine + atom,
+/// construct AgentCtx, call audit::run_audit, emit JSON if requested, and exit.
+#[allow(clippy::too_many_arguments)]
+fn run_audit_subcommand(
+    path: Option<&Path>,
+    source: Option<&str>,
+    engine_cmd: Option<&str>,
+    objective: Option<&str>,
+    pipeline: Option<&Vec<String>>,
+    reports_dir: Option<&Path>,
+    turn_budget: Option<u64>,
+    token_budget: Option<u64>,
+    provider: Option<&str>,
+    model: Option<&str>,
+    api_key: Option<&str>,
+    base_url: Option<&str>,
+    effort: Option<&str>,
+    no_thinking: bool,
+    json: bool,
+    debug: bool,
+    skip_missing_roles: bool,
+    resume: bool,
+    include_low_value: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Resolve path (default: cwd).
+    let path_buf = match path {
+        Some(p) => p.to_path_buf(),
+        None => std::env::current_dir()?,
+    };
+    let path_buf = std::fs::canonicalize(&path_buf).unwrap_or(path_buf);
+    let path = &path_buf;
+
+    // Load config (orchestrate=false — the audit driver is code-driven, not LLM-driven).
+    let config = Config::load_with_base_url(provider, model, api_key, base_url, no_thinking, effort, false, None, turn_budget, token_budget);
+    if !config.enabled {
+        return Err("AI agent is not enabled. Set ANTHROPIC_API_KEY or OPENAI_API_KEY to enable.".into());
+    }
+    let mut config = config;
+    config.debug = debug;
+
+    let provider = agent::create_provider(&config).map_err(|e| format!("provider: {e}"))?;
+
+    // Resolve the atom file.
+    let atom_path = resolve_or_generate_atom(path, &source.map(|s| s.to_string()), true)?;
+    let atom_str = atom_path.to_string_lossy().to_string();
+
+    let command = Engine::resolve_command(engine_cmd).ok_or(
+        "engine binary not found; build it with `sbt stage` in engine/, or set CHENNAI_ENGINE",
+    )?;
+    debug_eprintln!(debug, "Spawning engine: {}", command.display());
+    let mut eng = Engine::spawn(&command)?;
+
+    let open_args = match source {
+        Some(src) => json!({ "path": atom_str, "sourceRoot": src }),
+        None      => json!({ "path": atom_str }),
+    };
+    let _open: OpenInfo = eng.request("open", open_args)?;
+    let summary: Summary = eng.request("summary", json!({}))?;
+    let atom_tags = fetch_atom_tags(&mut eng);
+
+    let source_root = source.map(|s| s.to_string()).or_else(|| {
+        atom_path.parent().map(|p| p.to_string_lossy().to_string())
+    });
+
+    let memory_index = agent::memory::FactStore::open(source_root.as_deref())
+        .map(|s| s.index_markdown());
+    let memory_section = memory_index.as_deref().filter(|s| *s != "none yet").map(|idx| {
+        format!(
+            "\n## Project memory (facts learned in previous sessions — HINTS, re-verify before reporting)\n\
+             {idx}\n\
+             Use the project_memory tool (action:\"recall\"/\"search\") to read a fact's full body.\n"
+        )
+    }).unwrap_or_default();
+    let system_prompt = AgentCtx::build_system_prompt(
+        &summary.language, &summary.version, &summary.rows,
+        None, None, None, memory_index.as_deref(), atom_tags.as_deref(),
+    );
+    let system_prompt = format!("{system_prompt}{memory_section}");
+
+    let debug_logger = if config.debug { DebugLogger::new(source_root.as_deref()) } else { None };
+
+    let ctx = AgentCtx {
+        provider,
+        engine: Some(Arc::new(Mutex::new(eng))),
+        backend: None,
+        source_root,
+        system_prompt,
+        max_tokens: 8192,
+        no_thinking: config.no_thinking,
+        effort: config.effort.clone(),
+        allowed_tools: None,
+        orchestrate: false,
+        cancel: Arc::new(AtomicBool::new(false)),
+        debug_logger,
+        findings: Arc::new(Mutex::new(FindingSet::new())),
+        token_ledger: Arc::new(Mutex::new(TokenLedger::default())),
+        process_note: Arc::new(Mutex::new(ProcessNote::default())),
+        run_profile: Arc::new(Mutex::new(RunProfile::new())),
+        max_subagents: config.max_subagents,
+        turn_budget: config.turn_budget,
+        token_budget: config.token_budget,
+    };
+
+    let resolved_reports_dir = match reports_dir {
+        Some(d) => d.to_path_buf(),
+        None => {
+            let base = source.map(PathBuf::from).unwrap_or_else(|| {
+                atom_path.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| ".".into())
+            });
+            base.join(".chen").join("chennai-reports")
+        }
+    };
+
+    debug_eprintln!(debug, "Starting deterministic audit pipeline...");
+    eprintln!("[audit] Path: {}", path.display());
+    if let Some(ref sr) = ctx.source_root {
+        eprintln!("[audit] Source root: {sr}");
+    }
+    if let Some(ref obj) = objective {
+        eprintln!("[audit] Objective: {obj}");
+    }
+
+    // `--turn-budget` on the audit subcommand is a per-stage override, applied to
+    // every role in the pipeline (falling back to per-role defaults when unset).
+    let stage_turn_budget = turn_budget.map(|t| t.min(u64::from(agent::HARD_TURN_CEILING)) as u32);
+    let outcome = if skip_missing_roles {
+        agent::audit::run_audit_skip_missing(
+            &ctx, objective, pipeline.map(|v| v.as_ref()), Some(&resolved_reports_dir), stage_turn_budget,
+            include_low_value, resume,
+        )
+    } else {
+        agent::audit::run_audit(
+            &ctx, objective, pipeline.map(|v| v.as_ref()), Some(&resolved_reports_dir), stage_turn_budget,
+            include_low_value, resume,
+        )
+    };
+
+    match outcome {
+        Ok(outcome) => {
+            if json {
+                // Emit chennai.audit.v1 JSON on stdout.
+                let findings = ctx.findings.lock().unwrap();
+                let mut json_obj = agent::audit::render_audit_json(
+                    &outcome,
+                    Some(&path.to_string_lossy()),
+                );
+                json_obj["findings"] = findings.render_json();
+                drop(findings); // Release before serializing (not strictly needed here but good practice).
+                let output = serde_json::to_string_pretty(&json_obj)
+                    .map_err(|e| format!("serialize audit JSON: {e}"))?;
+                println!("{output}");
+            }
+            eprintln!("[audit] Done. {} findings ({} confirmed).", outcome.total_findings, outcome.confirmed_findings);
+            Ok(())
+        }
+        Err(e) => {
+            eprintln!("[audit] Error: {e}");
+            Err(e)
+        }
+    }
+}
+
 /// Dispatch a subcommand and exit.
 fn run_subcommand(cmd: &CliCommand) -> Result<(), Box<dyn std::error::Error>> {
     match cmd {
@@ -2251,6 +2534,47 @@ fn run_subcommand(cmd: &CliCommand) -> Result<(), Box<dyn std::error::Error>> {
             }
             Ok(())
         }
+        CliCommand::Audit {
+            path,
+            source,
+            engine,
+            objective,
+            pipeline,
+            reports_dir,
+            turn_budget,
+            token_budget,
+            provider,
+            model,
+            api_key,
+            base_url,
+            effort,
+            no_thinking,
+            json,
+            debug,
+            skip_missing_roles,
+            resume,
+            include_low_value,
+        } => run_audit_subcommand(
+            path.as_deref(),
+            source.as_deref(),
+            engine.as_deref(),
+            objective.as_deref(),
+            pipeline.as_ref(),
+            reports_dir.as_deref(),
+            *turn_budget,
+            *token_budget,
+            provider.as_deref(),
+            model.as_deref(),
+            api_key.as_deref(),
+            base_url.as_deref(),
+            effort.as_deref(),
+            *no_thinking,
+            *json,
+            *debug,
+            *skip_missing_roles,
+            *resume,
+            *include_low_value,
+        ),
     }
 }
 

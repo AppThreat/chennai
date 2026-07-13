@@ -17,6 +17,7 @@ pub mod shell;
 pub mod tools;
 pub mod finding;
 pub mod memory;
+pub mod audit;
 pub mod orchestrator;
 pub mod transcript;
 pub mod roles;
@@ -1650,6 +1651,7 @@ pub fn run_headless(ctx: &AgentCtx, input: &str, reports_dir: Option<&Path>) -> 
     let mut final_text = String::new();
     let mut sink = HeadlessSink { ledger: ctx.token_ledger.clone() };
     let cancel: &AtomicBool = &ctx.cancel;
+    let run_start = std::time::Instant::now();
 
     loop {
         // Compact the transcript when it exceeds the soft budget.
@@ -1702,36 +1704,13 @@ pub fn run_headless(ctx: &AgentCtx, input: &str, reports_dir: Option<&Path>) -> 
         }
     }
 
-    // --- Post-run: write reports and print ledger summary ---
-    let findings = ctx.findings.lock().unwrap();
-    let total = findings.findings.len();
-    let confirmed = findings.confirmed_count();
-
-    if let Some(dir) = reports_dir
-        && !findings.findings.is_empty()
-    {
-        let _ = std::fs::create_dir_all(dir);
-        let md = findings.render_markdown();
-        let _ = std::fs::write(dir.join("report.md"), &md);
-        let jv = findings.render_json();
-        if let Ok(json_str) = serde_json::to_string_pretty(&jv) {
-            let _ = std::fs::write(dir.join("report.json"), &json_str);
-        }
-    }
-    drop(findings);
-
-    // --- Persist agent state for resumability ---
-    {
-        let note = ctx.process_note.lock().unwrap();
-        let _ = note.save(ctx.source_root.as_deref());
-        // Drop the lock before saving findings (which takes a different lock).
-    }
-    let findings = ctx.findings.lock().unwrap();
-    let _ = ProcessNote::save_findings(ctx.source_root.as_deref(), &findings);
-    drop(findings);
-
-    let ledger = ctx.token_ledger.lock().unwrap();
-    eprintln!("\n[{} | {} findings: {} confirmed]", ledger.summary(), total, confirmed);
+    // --- Post-run bookkeeping ---
+    // Shared with run_orchestrator / run_audit: write reports, persist state,
+    // print the ledger summary, and reconcile + save the run profile. The flat
+    // loop records no per-turn segments, so the synthetic "single" segment
+    // captures the whole run and profile.totals equals the ledger total — which
+    // is what the benchmark harness reads for the single-agent mode.
+    orchestrator::finalize_run(ctx, run_start, reports_dir, Some("single"));
 
     Ok(final_text)
 }

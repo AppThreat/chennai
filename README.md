@@ -299,6 +299,51 @@ and leave the reporter too little room to record anything. If a run ends with an
 report despite the coordinator describing vulnerabilities, raise these limits (the defaults are
 tuned for a full audit) or spawn the reporter earlier.
 
+### Deterministic audits (`chennai audit`)
+
+`--orchestrate` lets the LLM coordinator decide which roles to spawn, in what order, and how
+often — great for open-ended exploration, but the run shape (and its token cost) varies from run
+to run. The `chennai audit` subcommand instead runs the **same specialist roles in a fixed,
+code-driven pipeline**, so the orchestration shape is reproducible and the run is easy to script
+in CI:
+
+```
+recon → sink-hunter → taint-prover → auth-boundary → supply-chain → reporter
+```
+
+```bash
+chennai audit ./app --json --objective "Audit for command injection and path traversal"
+```
+
+Each stage runs as an isolated sub-agent that shares one findings pool, working note, and token
+ledger with the others (exactly like `--orchestrate`), and `reporter` runs last because it owns
+the finding-recording tool. Only the *pipeline shape* and *cost envelope* are deterministic; the
+LLM's per-stage text is not — pass `--effort high` (or `max`) and a temperature-0 provider where
+supported for the most stable output.
+
+- `--pipeline recon,sink-hunter,reporter` overrides the default sequence (names must be discovered
+  roles; `reporter` should stay last or you get a warning).
+- `--skip-missing-roles` drops unknown role names with a warning instead of erroring.
+- `--resume` skips stages that already completed in a prior run and restores findings/notes
+  from `.chen/agent-state/`, so interrupted or truncated audits can pick up where they left off.
+  Stage progress is saved incrementally after each completed stage.
+- `--include-low-value` includes low-confidence (`Confidence::Low`) and unreachable findings in
+  the human Markdown report (`report.md`). By default these are hidden (with a count footer);
+  `report.json` always includes all findings regardless.
+- `--json` emits a `chennai.audit.v1` object on **stdout** (all progress stays on stderr), which is
+  the stable contract the benchmark harness in `bench/` consumes. The same `--json` flag on the
+  top-level `--ask` (single-agent) and `--orchestrate` paths emits the same schema with
+  `"mode": "single"` / `"mode": "orchestrate"`, so all three run modes are directly comparable.
+
+The recon stage records candidate dangerous sink call sites in the Process Note's `candidate_sinks`
+field (structured as `"file:line sink_api"`), and sink-hunter starts from that list instead of
+re-discovering sinks from scratch.
+
+Reports (`report.md`/`report.json`), the working note, and the reconciling run profile
+(`.chen/agent-state/profile.json`) are written just as with `--orchestrate`. Note that
+`report.md` hides low-confidence and unreachable findings by default (see `--include-low-value`);
+`report.json` always contains the complete set.
+
 ### Options
 
 | Option                 | Default               | Description                                                         |
@@ -307,6 +352,7 @@ tuned for a full audit) or spawn the reporter earlier.
 | `--theme dark/light`   | dark                  | Color theme                                                         |
 | `--source PATH`        | project dir           | Project source root for file resolution                             |
 | `--ask TEXT`           | --                    | Headless mode: ask a question and print the answer                  |
+| `--json`               | false                 | Emit a `chennai.audit.v1` JSON object on stdout (with `--ask`/`--orchestrate`) |
 | `--orchestrate`        | false                 | Coordinate focused sub-agents for a broad audit (see above)         |
 | `--max-subagents N`    | 8                     | Hard cap on sub-agents per orchestrated run (guarantees termination) |
 | `--turn-budget N`      | 80                    | Advisory total turn budget; warns the coordinator, never blocks     |
@@ -319,6 +365,8 @@ tuned for a full audit) or spawn the reporter earlier.
 | `--system-prompt PATH` | --                    | Path to a custom system prompt file (overrides the built-in prompt) |
 | `--no-thinking`        | false                 | Omit thinking blocks from the LLM request                           |
 | `--effort STR`         | high                  | Reasoning effort (low, medium, high, xhigh, max)                    |
+| `--resume`             | false                 | Resume interrupted audit: skip completed stages, restore findings     |
+| `--include-low-value`  | false                 | Include low-confidence/unreachable findings in report.md            |
 
 ### Environment variables
 

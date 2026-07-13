@@ -680,13 +680,20 @@ fn process_note_tool() -> Value {
     json!({
         "name": "process_note",
         "description": "Manage the Process Note — durable working memory for this analysis session. \
-Use this to record confirmed findings, ruled-out leads, open questions, entrypoints, and next \
-steps as you progress. The note is re-injected before every turn so you always see your own \
-progress. Ruling something out here prevents re-investigation.\n\
+Use this to record confirmed findings, ruled-out leads, open questions, entrypoints, candidate \
+dangerous sink call sites, and next steps as you progress. The note is re-injected before every \
+turn so you always see your own progress. Ruling something out here prevents re-investigation.\n\
   - action: 'get' → return the current note\n\
   - action: 'append' → add items to a field (no duplicates)\n\
   - action: 'replace' → overwrite a field entirely\n\
-Fields: confirmed, ruled_out, open_questions, entrypoints, next_steps",
+Fields:\n\
+  - confirmed: verified findings\n\
+  - ruled_out: leads ruled out\n\
+  - open_questions: still investigating\n\
+  - entrypoints: actual program entrypoints/tags\n\
+  - candidate_sinks: candidate dangerous sink call sites (structured: \"file:line sink_api\", e.g. \
+\"commoncode/command.py:42 subprocess.Popen(shell=True)\") — NOT general entrypoints\n\
+  - next_steps: planned next actions",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -696,7 +703,7 @@ Fields: confirmed, ruled_out, open_questions, entrypoints, next_steps",
                 },
                 "field": {
                     "type": "string",
-                    "enum": ["confirmed", "ruled_out", "open_questions", "entrypoints", "next_steps"],
+                    "enum": ["confirmed", "ruled_out", "open_questions", "entrypoints", "candidate_sinks", "next_steps"],
                     "description": "Required for append and replace."
                 },
                 "items": {

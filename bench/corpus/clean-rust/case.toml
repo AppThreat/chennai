@@ -1,0 +1,10 @@
+# Clean (Negative) Case — Rust
+
+A small Rust program with no intentional vulnerabilities. This case is used
+as a negative control: the expected result is zero true positives and zero
+ground-truth entries.
+
+name = "clean-rust"
+lang = "rust"
+source = "vendored"
+description = "Negative control: no intentional vulnerabilities. Expected: 0 findings."

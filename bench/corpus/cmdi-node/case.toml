@@ -1,0 +1,20 @@
+# OS Command Injection — Node.js Express
+
+A Node.js Express route that executes a system command using user input without
+sanitization. The `child_process.exec` call is vulnerable to command injection.
+
+Ground truth: one command injection sink at `src/routes/ping.js:12`.
+
+name = "cmdi-node"
+lang = "javascript"
+source = "vendored"
+description = "OS command injection via unsanitized user input in exec()."
+
+[[ground_truth]]
+id = "GT-001"
+cwe = "CWE-78"
+severity = "High"
+sink_file = "src/routes/ping.js"
+sink_line = 12
+line_window = 5
+must_be_reachable = true

@@ -1,0 +1,20 @@
+# Reflected XSS — Python Flask
+
+A Python Flask application that renders user input in an HTML template without
+escaping, resulting in a reflected cross-site scripting vulnerability.
+
+Ground truth: one XSS sink at `src/app/views.py:15`.
+
+name = "xss-python"
+lang = "python"
+source = "vendored"
+description = "Reflected XSS via unescaped user input in Jinja2 template."
+
+[[ground_truth]]
+id = "GT-001"
+cwe = "CWE-79"
+severity = "Medium"
+sink_file = "src/app/views.py"
+sink_line = 15
+line_window = 5
+must_be_reachable = true

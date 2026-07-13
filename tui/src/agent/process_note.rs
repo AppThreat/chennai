@@ -17,6 +17,10 @@ pub struct ProcessNote {
     pub ruled_out: Vec<String>,
     pub open_questions: Vec<String>,
     pub entrypoints: Vec<String>,
+    /// Candidate dangerous sink call sites discovered during recon, structured
+    /// as `"file:line sink_api"`. Consumed by sink-hunter to avoid re-discovery.
+    #[serde(default)]
+    pub candidate_sinks: Vec<String>,
     pub next_steps: Vec<String>,
 }
 
@@ -40,6 +44,7 @@ impl ProcessNote {
             field("Ruled out", &self.ruled_out),
             field("Open questions", &self.open_questions),
             field("Entrypoints identified", &self.entrypoints),
+            field("Candidate sinks", &self.candidate_sinks),
             field("Next steps", &self.next_steps),
         ];
         let body: String = sections.iter().filter(|s| !s.is_empty()).cloned().collect();
@@ -55,6 +60,7 @@ impl ProcessNote {
             && self.ruled_out.is_empty()
             && self.open_questions.is_empty()
             && self.entrypoints.is_empty()
+            && self.candidate_sinks.is_empty()
             && self.next_steps.is_empty()
     }
 
@@ -65,6 +71,7 @@ impl ProcessNote {
             "ruled_out" => &mut self.ruled_out,
             "open_questions" => &mut self.open_questions,
             "entrypoints" => &mut self.entrypoints,
+            "candidate_sinks" => &mut self.candidate_sinks,
             "next_steps" => &mut self.next_steps,
             other => return Err(format!("unknown process_note field: {other}")),
         };
@@ -83,6 +90,7 @@ impl ProcessNote {
             "ruled_out" => &mut self.ruled_out,
             "open_questions" => &mut self.open_questions,
             "entrypoints" => &mut self.entrypoints,
+            "candidate_sinks" => &mut self.candidate_sinks,
             "next_steps" => &mut self.next_steps,
             other => return Err(format!("unknown process_note field: {other}")),
         };
@@ -153,6 +161,7 @@ mod tests {
         // Fields not populated should not appear.
         assert!(!rendered.contains("Open questions"));
         assert!(!rendered.contains("Entrypoints identified"));
+        assert!(!rendered.contains("Candidate sinks"));
     }
 
     #[test]
@@ -213,5 +222,49 @@ mod tests {
     fn load_without_source_root_returns_empty() {
         let note = ProcessNote::load(None);
         assert!(note.is_empty());
+    }
+
+    #[test]
+    fn candidate_sinks_roundtrip_save_load_and_render() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut note = ProcessNote::default();
+        note.candidate_sinks.push("commoncode/command.py:42 subprocess.Popen(shell=True)".into());
+        note.candidate_sinks.push("lib/exec.py:10 os.system(cmd)".into());
+        note.entrypoints.push("main".into());
+        note.save(Some(dir.path().to_str().unwrap())).unwrap();
+
+        let loaded = ProcessNote::load(Some(dir.path().to_str().unwrap()));
+        assert_eq!(loaded.candidate_sinks.len(), 2);
+        assert_eq!(loaded.candidate_sinks[0], "commoncode/command.py:42 subprocess.Popen(shell=True)");
+        assert_eq!(loaded.candidate_sinks[1], "lib/exec.py:10 os.system(cmd)");
+
+        // Renders only when non-empty.
+        let rendered = loaded.render();
+        assert!(rendered.contains("Candidate sinks"));
+        assert!(rendered.contains("subprocess.Popen"));
+        assert!(rendered.contains("os.system"));
+    }
+
+    #[test]
+    fn candidate_sinks_not_rendered_when_empty() {
+        let mut note = ProcessNote::default();
+        note.confirmed.push("something".into());
+        let rendered = note.render();
+        assert!(!rendered.contains("Candidate sinks"));
+    }
+
+    #[test]
+    fn load_missing_candidate_sinks_field_backward_compat() {
+        // Older process_note.json without `candidate_sinks` must still load (serde default).
+        let json = serde_json::json!({
+            "confirmed": ["test"],
+            "ruled_out": [],
+            "open_questions": [],
+            "entrypoints": [],
+            "next_steps": []
+        });
+        let note: ProcessNote = serde_json::from_value(json).unwrap();
+        assert_eq!(note.confirmed, vec!["test"]);
+        assert!(note.candidate_sinks.is_empty());
     }
 }

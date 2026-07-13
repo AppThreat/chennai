@@ -1,0 +1,21 @@
+# Path Traversal — Go HTTP Handler
+
+A Go HTTP handler that reads files based on a user-supplied `path` query parameter
+without sanitizing directory traversal sequences. The handler constructs a file
+path using `filepath.Join` but the user input is not validated against a base directory.
+
+Ground truth: one path traversal sink at `src/handler/view.go:28`.
+
+name = "path-traversal-go"
+lang = "go"
+source = "vendored"
+description = "Path traversal via unsanitized user input in file read."
+
+[[ground_truth]]
+id = "GT-001"
+cwe = "CWE-22"
+severity = "High"
+sink_file = "src/handler/view.go"
+sink_line = 28
+line_window = 5
+must_be_reachable = true

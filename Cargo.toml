@@ -1,0 +1,3 @@
+[workspace]
+members = ["tui", "bench"]
+resolver = "2"

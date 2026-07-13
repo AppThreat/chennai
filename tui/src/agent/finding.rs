@@ -144,12 +144,50 @@ impl FindingSet {
     }
 
     /// Render all findings as a Markdown string.
+    #[allow(dead_code)]
     pub fn render_markdown(&self) -> String {
+        self.render_markdown_filtered(true)
+    }
+
+    /// Render findings as Markdown, optionally hiding low-value noise.
+    ///
+    /// A finding is "low-value noise" iff `reachable == false` OR
+    /// `confidence == Confidence::Low`. When `include_low_value` is `false`,
+    /// noise findings are omitted from the body and a one-line footer
+    /// reports the hidden count.
+    ///
+    /// `render_json()` always includes ALL findings — only the Markdown
+    /// report filters.
+    pub fn render_markdown_filtered(&self, include_low_value: bool) -> String {
         if self.findings.is_empty() {
             return "# Security Findings\n\n_No findings submitted._\n".to_string();
         }
+
+        // Partition into visible vs hidden.
+        let visible: Vec<&Finding> = if include_low_value {
+            self.findings.iter().collect()
+        } else {
+            self.findings
+                .iter()
+                .filter(|f| f.reachable && f.confidence != Confidence::Low)
+                .collect()
+        };
+
+        let hidden_count = self.findings.len() - visible.len();
+
+        if visible.is_empty() {
+            return if hidden_count > 0 {
+                format!(
+                    "# Security Findings\n\n_No high-confidence reachable findings._\n\n\
+                     _{hidden_count} low-confidence/unreachable finding(s) hidden; see report.json._\n"
+                )
+            } else {
+                "# Security Findings\n\n_No findings submitted._\n".to_string()
+            };
+        }
+
         let mut out = String::from("# Security Findings\n\n");
-        for f in &self.findings {
+        for f in &visible {
             let sev = format!("{:?}", f.severity);
             let conf = format!("{:?}", f.confidence);
             let cwe = f.cwe.as_deref().map(|c| format!(" | **CWE:** {}", c)).unwrap_or_default();
@@ -182,16 +220,50 @@ impl FindingSet {
                 sanitizers, grounded, remediation,
             ));
         }
+
+        if !include_low_value && hidden_count > 0 {
+            out.push_str(&format!(
+                "\n_{hidden_count} low-confidence/unreachable finding(s) hidden; see report.json._\n"
+            ));
+        }
+
         out
     }
 
     /// Render all findings as a JSON value.
+    /// Always includes ALL findings (including reachable:false demotions).
+    /// The benchmark and chennai.audit.v1 stdout depend on the full set.
     pub fn render_json(&self) -> serde_json::Value {
         serde_json::json!({
             "findings": self.findings,
             "total": self.findings.len(),
             "confirmed": self.confirmed_count(),
         })
+    }
+
+    /// Load a FindingSet from `<source_root>/.chen/agent-state/findings.json`.
+    /// Rebuilds the `findings` vec from the persisted list; leaves `proof_cache` empty.
+    /// Returns an empty set when the file is missing or unparseable.
+    pub fn load(source_root: Option<&str>) -> Self {
+        let path = match source_root {
+            Some(s) => std::path::Path::new(s)
+                .join(".chen")
+                .join("agent-state")
+                .join("findings.json"),
+            None => return Self::new(),
+        };
+        let content = match std::fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(_) => return Self::new(),
+        };
+        let findings: Vec<Finding> = match serde_json::from_str(&content) {
+            Ok(f) => f,
+            Err(_) => return Self::new(),
+        };
+        FindingSet {
+            findings,
+            proof_cache: HashMap::new(),
+        }
     }
 }
 
@@ -490,6 +562,68 @@ pub fn format_duration(dur: Duration) -> String {
 // Helpers
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// AuditProgress — persisted stage-completion tracking for --resume
+// ---------------------------------------------------------------------------
+
+/// Records which audit stages have completed, persisted to
+/// `<source_root>/.chen/agent-state/audit-progress.json` so a killed or
+/// interrupted run can be resumed from the last successful stage.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AuditProgress {
+    /// Names of stages that completed normally (end_turn), NOT merely truncated.
+    pub completed_stages: Vec<String>,
+}
+
+impl AuditProgress {
+    /// Create a new empty progress record.
+    #[allow(dead_code)]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Mark a stage as completed and persist immediately.
+    pub fn mark_completed(&mut self, stage_name: &str, source_root: Option<&str>) -> Result<(), String> {
+        if !self.completed_stages.contains(&stage_name.to_string()) {
+            self.completed_stages.push(stage_name.to_string());
+        }
+        self.save(source_root)
+    }
+
+    /// Check whether a stage has already been completed.
+    pub fn is_completed(&self, stage_name: &str) -> bool {
+        self.completed_stages.iter().any(|s| s == stage_name)
+    }
+
+    /// Persist to `<source_root>/.chen/agent-state/audit-progress.json`.
+    pub fn save(&self, source_root: Option<&str>) -> Result<(), String> {
+        let base = source_root.ok_or("no source root configured")?;
+        let dir = std::path::Path::new(base).join(".chen").join("agent-state");
+        std::fs::create_dir_all(&dir).map_err(|e| format!("create agent-state dir: {e}"))?;
+        let path = dir.join("audit-progress.json");
+        let json = serde_json::to_string_pretty(self).map_err(|e| format!("serialize audit progress: {e}"))?;
+        std::fs::write(&path, json).map_err(|e| format!("write audit progress: {e}"))?;
+        Ok(())
+    }
+
+    /// Load from `<source_root>/.chen/agent-state/audit-progress.json`.
+    /// Returns an empty record when the file is missing or unparseable.
+    pub fn load(source_root: Option<&str>) -> Self {
+        let path = match source_root {
+            Some(s) => std::path::Path::new(s)
+                .join(".chen")
+                .join("agent-state")
+                .join("audit-progress.json"),
+            None => return Self::default(),
+        };
+        let content = match std::fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(_) => return Self::default(),
+        };
+        serde_json::from_str(&content).unwrap_or_default()
+    }
+}
+
 /// Count flow paths in an engine `flows` response. The FlowHandler reports the full
 /// pre-pagination count under `"total"` (the accurate number of proof paths); the
 /// `"flows"` array is only the current page window, so it undercounts when the result
@@ -561,6 +695,7 @@ pub fn finding_id(title: &str, source: &Location, sink: &Location) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::process_note::ProcessNote;
 
     fn sample_finding(id: &str, severity: Severity, confidence: Confidence, tag: &str, sink_file: &str, sink_line: Option<u32>) -> Finding {
         Finding {
@@ -969,5 +1104,149 @@ mod tests {
         let mut ledger = TokenLedger::default();
         ledger.record_usage(100, 50, Some(10));
         assert_eq!(ledger.total_tokens(), 160);
+    }
+
+    // -----------------------------------------------------------------------
+    // render_markdown_filtered
+    // -----------------------------------------------------------------------
+
+    fn make_finding_with(id: &str, severity: Severity, confidence: Confidence, reachable: bool) -> Finding {
+        Finding {
+            id: id.into(),
+            title: format!("Finding {}", id),
+            severity,
+            cwe: None,
+            confidence,
+            source: Location { file: "src/input.rs".into(), line: Some(1), tag: Some("cli".into()) },
+            sink: Location { file: "src/exec.rs".into(), line: Some(10), tag: None },
+            proof: Proof { expr: "sink.reachableByFlows(source)".into(), path_count: 1, verified: reachable },
+            reachable,
+            sanitizers_checked: vec![],
+            grounded_by: None,
+            remediation: None,
+        }
+    }
+
+    #[test]
+    fn render_markdown_filtered_hides_unreachable() {
+        let mut set = FindingSet::new();
+        set.findings.push(make_finding_with("F-1", Severity::Critical, Confidence::Confirmed, true));
+        set.findings.push(make_finding_with("F-2", Severity::High, Confidence::Confirmed, false));
+        let md = set.render_markdown_filtered(false);
+        assert!(md.contains("F-1"), "reachable finding must be present");
+        assert!(!md.contains("F-2"), "unreachable finding must be hidden");
+        assert!(md.contains("1 low-confidence/unreachable finding(s) hidden"));
+    }
+
+    #[test]
+    fn render_markdown_filtered_hides_low_confidence() {
+        let mut set = FindingSet::new();
+        set.findings.push(make_finding_with("F-1", Severity::Critical, Confidence::Confirmed, true));
+        set.findings.push(make_finding_with("F-2", Severity::High, Confidence::Low, true));
+        let md = set.render_markdown_filtered(false);
+        assert!(md.contains("F-1"), "confirmed finding must be present");
+        assert!(!md.contains("F-2"), "low-confidence finding must be hidden");
+        assert!(md.contains("1 low-confidence/unreachable finding(s) hidden"));
+    }
+
+    #[test]
+    fn render_markdown_filtered_keeps_all_when_include_low_value() {
+        let mut set = FindingSet::new();
+        set.findings.push(make_finding_with("F-1", Severity::Critical, Confidence::Confirmed, true));
+        set.findings.push(make_finding_with("F-2", Severity::High, Confidence::Low, true));
+        set.findings.push(make_finding_with("F-3", Severity::Medium, Confidence::Plausible, false));
+        let md = set.render_markdown_filtered(true);
+        assert!(md.contains("F-1"));
+        assert!(md.contains("F-2"));
+        assert!(md.contains("F-3"));
+        assert!(!md.contains("hidden"), "no hidden footer when include_low_value is true");
+    }
+
+    #[test]
+    fn render_markdown_filtered_no_footer_when_none_hidden() {
+        let mut set = FindingSet::new();
+        set.findings.push(make_finding_with("F-1", Severity::Critical, Confidence::Confirmed, true));
+        let md = set.render_markdown_filtered(false);
+        assert!(md.contains("F-1"));
+        assert!(!md.contains("hidden"), "no hidden footer when nothing is hidden");
+    }
+
+    #[test]
+    fn render_json_always_includes_all() {
+        let mut set = FindingSet::new();
+        set.findings.push(make_finding_with("F-1", Severity::Critical, Confidence::Confirmed, true));
+        set.findings.push(make_finding_with("F-2", Severity::High, Confidence::Low, false));
+        let json = set.render_json();
+        assert_eq!(json["total"].as_i64().unwrap(), 2);
+    }
+
+    #[test]
+    fn render_markdown_delegates_to_filtered() {
+        // render_markdown() should behave the same as render_markdown_filtered(true).
+        let mut set = FindingSet::new();
+        set.findings.push(make_finding_with("F-1", Severity::High, Confidence::Low, false));
+        let unfiltered = set.render_markdown();
+        let with_true = set.render_markdown_filtered(true);
+        assert_eq!(unfiltered, with_true);
+        assert!(unfiltered.contains("F-1"));
+    }
+
+    // -----------------------------------------------------------------------
+    // FindingSet::load roundtrip
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn findingset_load_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut set = FindingSet::new();
+        set.add(sample_finding("F-1", Severity::Critical, Confidence::Confirmed, "cli", "exec.rs", Some(42)));
+        set.add(sample_finding("F-2", Severity::Medium, Confidence::Plausible, "web", "render.rs", Some(15)));
+        ProcessNote::save_findings(Some(dir.path().to_str().unwrap()), &set).unwrap();
+
+        let loaded = FindingSet::load(Some(dir.path().to_str().unwrap()));
+        assert_eq!(loaded.findings.len(), 2);
+        assert_eq!(loaded.findings[0].id, "F-1");
+        assert_eq!(loaded.findings[1].id, "F-2");
+        assert!(loaded.proof_cache.is_empty());
+    }
+
+    #[test]
+    fn findingset_load_missing_file_returns_empty() {
+        let loaded = FindingSet::load(Some("/tmp/nonexistent-load-test"));
+        assert!(loaded.findings.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // AuditProgress
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn audit_progress_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut progress = AuditProgress::new();
+        progress.mark_completed("recon", Some(dir.path().to_str().unwrap())).unwrap();
+        progress.mark_completed("sink-hunter", Some(dir.path().to_str().unwrap())).unwrap();
+
+        let loaded = AuditProgress::load(Some(dir.path().to_str().unwrap()));
+        assert!(loaded.is_completed("recon"));
+        assert!(loaded.is_completed("sink-hunter"));
+        assert!(!loaded.is_completed("taint-prover"));
+        assert_eq!(loaded.completed_stages.len(), 2);
+    }
+
+    #[test]
+    fn audit_progress_load_missing_returns_empty() {
+        let progress = AuditProgress::load(Some("/tmp/nonexistent-progress-test"));
+        assert!(progress.completed_stages.is_empty());
+    }
+
+    #[test]
+    fn audit_progress_mark_completed_idempotent() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut progress = AuditProgress::new();
+        progress.mark_completed("recon", Some(dir.path().to_str().unwrap())).unwrap();
+        progress.mark_completed("recon", Some(dir.path().to_str().unwrap())).unwrap();
+        let loaded = AuditProgress::load(Some(dir.path().to_str().unwrap()));
+        assert_eq!(loaded.completed_stages.len(), 1);
     }
 }

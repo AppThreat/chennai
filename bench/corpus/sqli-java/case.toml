@@ -1,0 +1,21 @@
+# SQL Injection — Java Servlet
+
+A minimal Java web application with an SQL injection vulnerability in a
+user-facing search endpoint. The `doGet` method concatenates user input directly
+into a SQL query string without parameterization.
+
+Ground truth: one injectable sink at `src/db/QueryExecutor.java:42`.
+
+name = "sqli-java"
+lang = "java"
+source = "vendored"
+description = "SQL injection via string concatenation in JDBC query."
+
+[[ground_truth]]
+id = "GT-001"
+cwe = "CWE-89"
+severity = "High"
+sink_file = "src/db/QueryExecutor.java"
+sink_line = 42
+line_window = 5
+must_be_reachable = true

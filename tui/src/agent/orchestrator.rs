@@ -254,12 +254,15 @@ pub fn run_subagent(
     }
 }
 
-/// Record a synthetic "orchestrator" segment capturing the coordinator's own
-/// token and wall-clock usage: the whole-run totals minus the sum of the sub-agent
-/// segments already recorded. This reconciles the profile's TOTAL row with the token
-/// ledger summary — without it, the orchestrator's own planning/synthesis turns
-/// would be invisible in the profile. No-op when the orchestrator consumed nothing.
-fn record_orchestrator_segment(ctx: &AgentCtx, run_start: Instant) {
+/// Record a synthetic driver segment capturing the coordinator's own token
+/// and wall-clock usage: the whole-run totals minus the sum of the sub-agent
+/// segments already recorded. This reconciles the profile's TOTAL row with the
+/// token ledger summary — without it, the orchestrator's own planning/synthesis
+/// turns would be invisible in the profile. No-op when the coordinator consumed
+/// nothing.
+///
+/// `label` names the segment (e.g. `"orchestrator"`, `"audit-driver"`).
+fn record_orchestrator_segment(ctx: &AgentCtx, run_start: Instant, label: &str) {
     let (total_input, total_output, total_cache, total_turns) = {
         let l = ctx.token_ledger.lock().unwrap();
         (l.input, l.output, l.cache_read, l.turns)
@@ -284,7 +287,7 @@ fn record_orchestrator_segment(ctx: &AgentCtx, run_start: Instant) {
     // wall-clock time is the run duration minus time spent inside sub-agents.
     let elapsed = run_start.elapsed().saturating_sub(sub_elapsed);
     profile.push_segment(ProfileSegment {
-        label: "orchestrator".into(),
+        label: label.into(),
         tokens,
         elapsed,
         turns: tokens.turns,
@@ -487,33 +490,82 @@ pub fn run_orchestrator(
         }
     }
 
-    // --- Post-run: write reports and print ledger summary ---
-    let findings = ctx.findings.lock().unwrap();
-    let total = findings.findings.len();
-    let confirmed = findings.confirmed_count();
+    // --- Post-run: write reports, persist state, reconcile profile ---
+    // (Extracted into finalize_run so the headless single-agent path and the
+    // audit subcommand share the same deadlock-safe bookkeeping sequence.)
+    finalize_run(ctx, run_start, reports_dir, Some("orchestrator"));
 
-    if let Some(dir) = reports_dir
-        && !findings.findings.is_empty()
-    {
-        let _ = std::fs::create_dir_all(dir);
-        let md = findings.render_markdown();
-        let _ = std::fs::write(dir.join("report.md"), &md);
-        let jv = findings.render_json();
-        if let Ok(json_str) = serde_json::to_string_pretty(&jv) {
-            let _ = std::fs::write(dir.join("report.json"), &json_str);
-        }
+    // Surface a mid-run error only after state has been persisted above.
+    if let Some(e) = run_error {
+        return Err(e);
     }
-    drop(findings);
+    Ok(final_text)
+}
 
-    // --- Persist agent state for resumability ---
+/// Shared post-run bookkeeping: write reports, persist agent state, print the
+/// ledger summary, record the synthetic driver/orchestrator segment, and save
+/// the run profile. Called from `run_orchestrator`, `run_headless` (single-agent),
+/// and `audit::run_audit`.
+///
+/// `driver_label` is the label for the synthetic segment that captures overhead
+/// not attributable to any sub-agent (e.g. `"orchestrator"`, `"audit-driver"`,
+/// `None` for flat single-agent runs where no segment is needed).
+///
+/// All mutex scopes are kept narrow and released before the next lock is
+/// acquired — std Mutex is not reentrant and a prior version deadlocked the
+/// headless path exactly this way.
+pub fn finalize_run(
+    ctx: &AgentCtx,
+    run_start: Instant,
+    reports_dir: Option<&Path>,
+    driver_label: Option<&str>,
+) {
+    finalize_run_with_options(ctx, run_start, reports_dir, driver_label, false)
+}
+
+/// Like [`finalize_run`] but exposes the `include_low_value` toggle that
+/// controls whether low-confidence/unreachable findings appear in report.md.
+/// `report.json` always includes ALL findings regardless.
+pub fn finalize_run_with_options(
+    ctx: &AgentCtx,
+    run_start: Instant,
+    reports_dir: Option<&Path>,
+    driver_label: Option<&str>,
+    include_low_value: bool,
+) {
+    // --- Write reports ---
+    let (total, confirmed) = {
+        let findings = ctx.findings.lock().unwrap();
+        let t = findings.findings.len();
+        let c = findings.confirmed_count();
+
+        if let Some(dir) = reports_dir
+            && !findings.findings.is_empty()
+        {
+            let _ = std::fs::create_dir_all(dir);
+            let md = findings.render_markdown_filtered(include_low_value);
+            let _ = std::fs::write(dir.join("report.md"), &md);
+            let jv = findings.render_json();
+            if let Ok(json_str) = serde_json::to_string_pretty(&jv) {
+                let _ = std::fs::write(dir.join("report.json"), &json_str);
+            }
+        }
+        (t, c)
+    }; // findings lock released here
+
+    // --- Persist Process Note ---
     {
         let note = ctx.process_note.lock().unwrap();
         let _ = note.save(ctx.source_root.as_deref());
-    }
-    let findings = ctx.findings.lock().unwrap();
-    let _ = ProcessNote::save_findings(ctx.source_root.as_deref(), &findings);
-    drop(findings);
+    } // note lock released here
 
+    // --- Persist findings ---
+    {
+        let findings = ctx.findings.lock().unwrap();
+        let _ = ProcessNote::save_findings(ctx.source_root.as_deref(), &findings);
+    } // findings lock released here
+
+    // --- Print ledger summary ---
     {
         let ledger = ctx.token_ledger.lock().unwrap();
         eprintln!(
@@ -522,12 +574,15 @@ pub fn run_orchestrator(
             total,
             confirmed
         );
+    } // ledger lock released here
+
+    // --- Record synthetic driver segment + persist profile ---
+    // (The ledger lock above MUST be released first: the segment recorder
+    // re-locks the ledger, and std Mutex is not reentrant.)
+    if let Some(label) = driver_label {
+        record_orchestrator_segment(ctx, run_start, label);
     }
 
-    // --- Print and persist the run profile ---
-    // (The ledger lock above must be released first: record_orchestrator_segment
-    // re-locks the ledger, and std Mutex is not reentrant.)
-    record_orchestrator_segment(ctx, run_start);
     {
         let profile = ctx.run_profile.lock().unwrap();
         let report = profile.render_report();
@@ -535,13 +590,7 @@ pub fn run_orchestrator(
             eprintln!("{report}");
         }
         let _ = profile.save(ctx.source_root.as_deref());
-    }
-
-    // Surface a mid-run error only after state has been persisted above.
-    if let Some(e) = run_error {
-        return Err(e);
-    }
-    Ok(final_text)
+    } // profile lock released here
 }
 
 // ---------------------------------------------------------------------------
@@ -706,7 +755,7 @@ pub fn run_orchestrator_async(
         let findings = ctx.findings.lock().unwrap();
         let _ = ProcessNote::save_findings(ctx.source_root.as_deref(), &findings);
     }
-    record_orchestrator_segment(ctx, run_start);
+    record_orchestrator_segment(ctx, run_start, "orchestrator");
     {
         let profile = ctx.run_profile.lock().unwrap();
         let _ = profile.save(ctx.source_root.as_deref());
