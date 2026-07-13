@@ -6,7 +6,7 @@
 
 [package]
 name = "chennai"
-version = "1.0.2"
+version = "1.0.3"
 edition = "2024"
 description = "Interactive terminal UI for exploring AppThreat atom files"
 license = "MIT"
