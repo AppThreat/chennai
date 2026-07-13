@@ -1,0 +1,23 @@
+bench/Cargo.toml
+  s_528ca4e8d0e939::t_f6a7db2da8979e 1-3
+tui/Cargo.toml
+  s_528ca4e8d0e939::t_7e8fdfa778afef 1-6
+bench/Cargo.lock
+  s_528ca4e8d0e939::t_ea6f9ca6c94f43 50,61,189,282,392-393,490,492-493
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "4a53e10f956abf30f4050b93edb02ea0216102ac",
+  "prompts": {},
+  "sessions": {
+    "s_528ca4e8d0e939": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "329e0a5b-2fa1-4d37-8a29-b769b980f30b",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Prabhu Subramanian <prabhu@appthreat.com>"
+    }
+  }
+}
