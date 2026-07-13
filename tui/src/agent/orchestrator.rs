@@ -40,9 +40,6 @@ const VALID_ROLES: &[&str] = &[
     "reporter",
 ];
 
-/// Hard cap on the number of sub-agents the orchestrator may spawn in a single run.
-/// Configurable via `--max-subagents` or `CHENNAI_MAX_SUBAGENTS`.
-
 /// The outcome of a single sub-agent run.
 pub struct SubAgentResult {
     /// The sub-agent's closing text (its final synthesis), or its last words if truncated.
@@ -207,6 +204,45 @@ pub fn run_subagent(
     }
 }
 
+/// Record a synthetic "orchestrator" segment capturing the coordinator's own
+/// token and wall-clock usage: the whole-run totals minus the sum of the sub-agent
+/// segments already recorded. This reconciles the profile's TOTAL row with the token
+/// ledger summary — without it, the orchestrator's own planning/synthesis turns
+/// would be invisible in the profile. No-op when the orchestrator consumed nothing.
+fn record_orchestrator_segment(ctx: &AgentCtx, run_start: Instant) {
+    let (total_input, total_output, total_cache, total_turns) = {
+        let l = ctx.token_ledger.lock().unwrap();
+        (l.input, l.output, l.cache_read, l.turns)
+    };
+    let mut profile = ctx.run_profile.lock().unwrap();
+    let sub_input: u64 = profile.segments.iter().map(|s| s.tokens.input).sum();
+    let sub_output: u64 = profile.segments.iter().map(|s| s.tokens.output).sum();
+    let sub_cache: u64 = profile.segments.iter().map(|s| s.tokens.cache_read).sum();
+    let sub_turns: u64 = profile.segments.iter().map(|s| s.turns).sum();
+    let sub_elapsed = profile.total_elapsed();
+
+    let tokens = LedgerDelta {
+        input: total_input.saturating_sub(sub_input),
+        output: total_output.saturating_sub(sub_output),
+        cache_read: total_cache.saturating_sub(sub_cache),
+        turns: total_turns.saturating_sub(sub_turns),
+    };
+    if tokens.turns == 0 && tokens.total_tokens() == 0 {
+        return;
+    }
+    // Sub-agents run sequentially while the orchestrator blocks, so its own
+    // wall-clock time is the run duration minus time spent inside sub-agents.
+    let elapsed = run_start.elapsed().saturating_sub(sub_elapsed);
+    profile.push_segment(ProfileSegment {
+        label: "orchestrator".into(),
+        tokens,
+        elapsed,
+        turns: tokens.turns,
+        findings_delta: 0,
+        completed: true,
+    });
+}
+
 /// Build the orchestrator's tool definitions: scoped set plus spawn_subagent.
 fn orchestrator_tool_definitions() -> Vec<Value> {
     let all = tools::all_tool_definitions();
@@ -306,6 +342,11 @@ pub fn run_orchestrator(
     };
     let cancel: &AtomicBool = &ctx.cancel;
     let mut subagent_count = 0;
+    let run_start = Instant::now();
+    // On a mid-run provider error we still persist whatever was gathered (Process
+    // Note, findings, profile) so an interrupted run stays resumable, then surface
+    // the error to the caller after the post-run bookkeeping below.
+    let mut run_error: Option<Box<dyn std::error::Error>> = None;
 
     loop {
         if cancel.load(Ordering::Relaxed) {
@@ -339,7 +380,8 @@ pub fn run_orchestrator(
             Ok(r) => r,
             Err(e) => {
                 eprintln!("\n[Error: {e}]");
-                return Err(e.into());
+                run_error = Some(e.into());
+                break;
             }
         };
 
@@ -410,15 +452,20 @@ pub fn run_orchestrator(
     let _ = ProcessNote::save_findings(ctx.source_root.as_deref(), &findings);
     drop(findings);
 
-    let ledger = ctx.token_ledger.lock().unwrap();
-    eprintln!(
-        "\n[{} | {} findings: {} confirmed]",
-        ledger.summary(),
-        total,
-        confirmed
-    );
+    {
+        let ledger = ctx.token_ledger.lock().unwrap();
+        eprintln!(
+            "\n[{} | {} findings: {} confirmed]",
+            ledger.summary(),
+            total,
+            confirmed
+        );
+    }
 
     // --- Print and persist the run profile ---
+    // (The ledger lock above must be released first: record_orchestrator_segment
+    // re-locks the ledger, and std Mutex is not reentrant.)
+    record_orchestrator_segment(ctx, run_start);
     {
         let profile = ctx.run_profile.lock().unwrap();
         let report = profile.render_report();
@@ -428,6 +475,10 @@ pub fn run_orchestrator(
         let _ = profile.save(ctx.source_root.as_deref());
     }
 
+    // Surface a mid-run error only after state has been persisted above.
+    if let Some(e) = run_error {
+        return Err(e);
+    }
     Ok(final_text)
 }
 
@@ -457,6 +508,7 @@ pub fn run_orchestrator_async(
     transcript.push_user(user_input);
     let mut final_text = String::new();
     let mut subagent_count = 0;
+    let run_start = Instant::now();
 
     loop {
         if ctx.cancel.load(Ordering::Relaxed) {
@@ -580,6 +632,7 @@ pub fn run_orchestrator_async(
         let findings = ctx.findings.lock().unwrap();
         let _ = ProcessNote::save_findings(ctx.source_root.as_deref(), &findings);
     }
+    record_orchestrator_segment(ctx, run_start);
     {
         let profile = ctx.run_profile.lock().unwrap();
         let _ = profile.save(ctx.source_root.as_deref());
@@ -1166,6 +1219,71 @@ mod tests {
             assert!(line.contains("[profile]"));
             assert!(line.contains("recon"));
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Orchestrator's own usage is captured so the profile reconciles with the ledger
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn profile_total_reconciles_with_ledger() {
+        // Orchestrator: one turn spawning a sub-agent, then one turn ending.
+        // Both orchestrator turns AND the sub-agent turn emit usage into the shared
+        // ledger; the profile's TOTAL (sub-agents + synthetic orchestrator segment)
+        // must equal the ledger total.
+        let provider = MockProvider::new(vec![
+            ("tool_use", vec![ContentBlock::ToolUse {
+                id: "tu_spawn".into(),
+                name: "spawn_subagent".into(),
+                input: serde_json::json!({"role": "recon", "objective": "map it"}),
+            }]),
+            ("end_turn", vec![ContentBlock::Text("done".into())]),
+        ]);
+        let ctx = make_ctx(Box::new(provider));
+        let (tx, _rx) = mpsc::channel();
+        run_orchestrator_async(&ctx, "Audit", vec![], tx);
+
+        let ledger_total = {
+            let l = ctx.token_ledger.lock().unwrap();
+            l.total_tokens()
+        };
+        let profile = ctx.run_profile.lock().unwrap();
+        assert_eq!(
+            profile.total_tokens(),
+            ledger_total,
+            "profile TOTAL must reconcile with the ledger total"
+        );
+        // There should be an orchestrator segment in addition to the recon sub-agent.
+        assert!(profile.segments.iter().any(|s| s.label == "orchestrator"));
+        assert!(profile.segments.iter().any(|s| s.label == "recon"));
+    }
+
+    // -----------------------------------------------------------------------
+    // Headless path runs to completion (regression guard against a ledger
+    // double-lock deadlock) and persists profile.json.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn headless_orchestrator_completes_and_writes_profile() {
+        let provider = MockProvider::new(vec![
+            ("tool_use", vec![ContentBlock::ToolUse {
+                id: "tu_spawn".into(),
+                name: "spawn_subagent".into(),
+                input: serde_json::json!({"role": "recon", "objective": "map it"}),
+            }]),
+            ("end_turn", vec![ContentBlock::Text("Done.".into())]),
+        ]);
+        let mut ctx = make_ctx(Box::new(provider));
+        let dir = tempfile::tempdir().unwrap();
+        ctx.source_root = Some(dir.path().to_str().unwrap().to_string());
+
+        // Must return (not hang): the post-run ledger summary and the profile
+        // finalizer both touch the token ledger, so a held lock would deadlock here.
+        // Returning at all is the assertion (a held ledger lock would deadlock here).
+        run_orchestrator(&ctx, "Audit", None).expect("headless run should succeed");
+
+        let profile_path = dir.path().join(".chen").join("agent-state").join("profile.json");
+        assert!(profile_path.exists(), "profile.json should be written on the headless path");
     }
 
     // -----------------------------------------------------------------------

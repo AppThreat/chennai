@@ -80,13 +80,22 @@ impl Config {
         Self::load_with_base_url(cli_provider, cli_model, cli_api_key, None, false, None, false, None, None, None)
     }
 
+    // One CLI parameter per user-facing flag; precedence resolution keeps them
+    // separate rather than bundling into a struct that would just be unpacked here.
+    #[allow(clippy::too_many_arguments)]
     pub fn load_with_base_url(cli_provider: Option<&str>, cli_model: Option<&str>, cli_api_key: Option<&str>, cli_base_url: Option<&str>, cli_no_thinking: bool, cli_effort: Option<&str>, cli_orchestrate: bool, cli_max_subagents: Option<usize>, cli_turn_budget: Option<u64>, cli_token_budget: Option<u64>) -> Self {
         let file_cfg = Self::load_file();
 
-        // Precedence for each setting: CLI flag > environment variable > config file > default.
+        // Precedence for the provider: explicit choice (CLI flag or CHENNAI_PROVIDER) >
+        // inferred from Anthropic env vars > config file > default. An Anthropic auth
+        // token or base URL in the environment (as set by Claude Code and Anthropic
+        // gateways) implies the anthropic provider unless the user chose one explicitly.
+        let anthropic_env_present =
+            env_var("ANTHROPIC_AUTH_TOKEN").is_some() || env_var("ANTHROPIC_BASE_URL").is_some();
         let provider = cli_provider
             .map(|s| s.to_string())
             .or_else(|| env_var("CHENNAI_PROVIDER"))
+            .or_else(|| anthropic_env_present.then(|| "anthropic".to_string()))
             .or(file_cfg.provider)
             .unwrap_or_else(|| "anthropic".to_string());
         let provider: ProviderKind = provider.parse().unwrap_or(ProviderKind::Anthropic);
@@ -100,6 +109,14 @@ impl Config {
         let base_url = cli_base_url
             .map(|s| s.to_string())
             .or_else(|| env_var("CHENNAI_BASE_URL"))
+            .or_else(|| {
+                // Honor Claude Code's `ANTHROPIC_BASE_URL` when targeting Anthropic.
+                if provider == ProviderKind::Anthropic {
+                    env_var("ANTHROPIC_BASE_URL")
+                } else {
+                    None
+                }
+            })
             .or(file_cfg.base_url);
 
         let api_key = cli_api_key
@@ -145,13 +162,15 @@ impl Config {
         PathBuf::from(home).join(".config").join("chennai").join("config.toml")
     }
 
-    /// Read the provider-specific API key from the expected environment variable.
+    /// Read the provider-specific API key from the expected environment variables.
+    /// For Anthropic, `ANTHROPIC_API_KEY` takes precedence over `ANTHROPIC_AUTH_TOKEN`
+    /// (the latter is the variable Claude Code and Anthropic-compatible gateways set).
     fn key_from_env(provider: &ProviderKind) -> Option<String> {
-        let var = match provider {
-            ProviderKind::Anthropic => "ANTHROPIC_API_KEY",
-            ProviderKind::OpenAI => "OPENAI_API_KEY",
+        let vars: &[&str] = match provider {
+            ProviderKind::Anthropic => &["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"],
+            ProviderKind::OpenAI => &["OPENAI_API_KEY"],
         };
-        std::env::var(var).ok().filter(|s| !s.is_empty())
+        vars.iter().find_map(|v| env_var(v))
     }
 }
 
@@ -277,6 +296,69 @@ mod tests {
                 Some(val) => std::env::set_var("ANTHROPIC_API_KEY", val),
                 None => std::env::remove_var("ANTHROPIC_API_KEY"),
             }
+        }
+    }
+
+    #[test]
+    fn key_from_env_falls_back_to_auth_token() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        let prev_key = std::env::var("ANTHROPIC_API_KEY").ok();
+        let prev_tok = std::env::var("ANTHROPIC_AUTH_TOKEN").ok();
+        unsafe {
+            std::env::remove_var("ANTHROPIC_API_KEY");
+            std::env::set_var("ANTHROPIC_AUTH_TOKEN", "tok-xyz");
+        }
+        // With no ANTHROPIC_API_KEY, the auth-token variable is used.
+        assert_eq!(Config::key_from_env(&ProviderKind::Anthropic).as_deref(), Some("tok-xyz"));
+        // ANTHROPIC_API_KEY, when present, wins over ANTHROPIC_AUTH_TOKEN.
+        unsafe { std::env::set_var("ANTHROPIC_API_KEY", "sk-primary"); }
+        assert_eq!(Config::key_from_env(&ProviderKind::Anthropic).as_deref(), Some("sk-primary"));
+        unsafe {
+            match prev_key { Some(v) => std::env::set_var("ANTHROPIC_API_KEY", v), None => std::env::remove_var("ANTHROPIC_API_KEY") }
+            match prev_tok { Some(v) => std::env::set_var("ANTHROPIC_AUTH_TOKEN", v), None => std::env::remove_var("ANTHROPIC_AUTH_TOKEN") }
+        }
+    }
+
+    #[test]
+    fn anthropic_base_url_env_used_for_anthropic_provider() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        let prev_chennai = std::env::var("CHENNAI_BASE_URL").ok();
+        let prev_anthropic = std::env::var("ANTHROPIC_BASE_URL").ok();
+        unsafe {
+            std::env::remove_var("CHENNAI_BASE_URL");
+            std::env::set_var("ANTHROPIC_BASE_URL", "https://gateway.test/anthropic");
+        }
+        // Anthropic provider honors ANTHROPIC_BASE_URL when CHENNAI_BASE_URL is unset.
+        let cfg = Config::load_with_base_url(Some("anthropic"), None, None, None, false, None, false, None, None, None);
+        assert_eq!(cfg.base_url.as_deref(), Some("https://gateway.test/anthropic"));
+        // CHENNAI_BASE_URL takes precedence when both are set.
+        unsafe { std::env::set_var("CHENNAI_BASE_URL", "https://primary.test/v1"); }
+        let cfg = Config::load_with_base_url(Some("anthropic"), None, None, None, false, None, false, None, None, None);
+        assert_eq!(cfg.base_url.as_deref(), Some("https://primary.test/v1"));
+        unsafe {
+            match prev_chennai { Some(v) => std::env::set_var("CHENNAI_BASE_URL", v), None => std::env::remove_var("CHENNAI_BASE_URL") }
+            match prev_anthropic { Some(v) => std::env::set_var("ANTHROPIC_BASE_URL", v), None => std::env::remove_var("ANTHROPIC_BASE_URL") }
+        }
+    }
+
+    #[test]
+    fn anthropic_env_infers_provider() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        let prev_prov = std::env::var("CHENNAI_PROVIDER").ok();
+        let prev_tok = std::env::var("ANTHROPIC_AUTH_TOKEN").ok();
+        unsafe {
+            std::env::remove_var("CHENNAI_PROVIDER");
+            std::env::set_var("ANTHROPIC_AUTH_TOKEN", "tok-infer");
+        }
+        // No explicit provider, but an Anthropic auth token is set → anthropic.
+        let cfg = Config::load_with_base_url(None, None, None, None, false, None, false, None, None, None);
+        assert_eq!(cfg.provider, ProviderKind::Anthropic);
+        // An explicit CLI provider still wins over the inference.
+        let cfg = Config::load_with_base_url(Some("openai"), None, None, None, false, None, false, None, None, None);
+        assert_eq!(cfg.provider, ProviderKind::OpenAI);
+        unsafe {
+            match prev_prov { Some(v) => std::env::set_var("CHENNAI_PROVIDER", v), None => std::env::remove_var("CHENNAI_PROVIDER") }
+            match prev_tok { Some(v) => std::env::set_var("ANTHROPIC_AUTH_TOKEN", v), None => std::env::remove_var("ANTHROPIC_AUTH_TOKEN") }
         }
     }
 

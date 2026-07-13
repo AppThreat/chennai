@@ -281,6 +281,24 @@ chennai app.atom --source ./app --orchestrate \
   --ask "Audit for command injection and path traversal"
 ```
 
+**Cost and time visibility.** Each sub-agent is timed and its token use measured. During the
+run you see a compact per-sub-agent line (`[profile] sink-hunter: 18.2k tok · 12 turns · 1m40s |
+run total: …`), and at the end a per-role table with a reconciling total, written to
+`.chen/agent-state/profile.json`.
+
+**Budgets.** Every sub-agent has a per-role turn budget (a role can be cut off and re-spawned
+with a narrower objective; its progress persists in the shared note). The whole run also has two
+*advisory* budgets — `--turn-budget` and `--token-budget` — that surface a warning to the
+coordinator once exceeded but never block a spawn. The single hard stop is `--max-subagents`
+(default 8), which guarantees the run terminates.
+
+Set budgets too tight and you can starve the run: the reporter sub-agent, which crystallizes
+confirmed vulnerabilities into the findings report, usually runs last, so an over-aggressive
+`--turn-budget` or a small `--max-subagents` may exhaust the allowance on recon and taint-proving
+and leave the reporter too little room to record anything. If a run ends with an empty findings
+report despite the coordinator describing vulnerabilities, raise these limits (the defaults are
+tuned for a full audit) or spawn the reporter earlier.
+
 ### Options
 
 | Option                 | Default               | Description                                                         |
@@ -290,6 +308,9 @@ chennai app.atom --source ./app --orchestrate \
 | `--source PATH`        | project dir           | Project source root for file resolution                             |
 | `--ask TEXT`           | --                    | Headless mode: ask a question and print the answer                  |
 | `--orchestrate`        | false                 | Coordinate focused sub-agents for a broad audit (see above)         |
+| `--max-subagents N`    | 8                     | Hard cap on sub-agents per orchestrated run (guarantees termination) |
+| `--turn-budget N`      | 80                    | Advisory total turn budget; warns the coordinator, never blocks     |
+| `--token-budget N`     | 1500000               | Advisory total token budget; warns the coordinator, never blocks    |
 | `--provider STR`       | anthropic             | LLM provider (anthropic or openai)                                  |
 | `--model STR`          | claude-opus-4-8       | LLM model name                                                      |
 | `--api-key STR`        | env var               | API key for the LLM provider                                        |
@@ -303,10 +324,15 @@ chennai app.atom --source ./app --orchestrate \
 
 - `CHENNAI_ENGINE`: Path to the engine binary. Overrides auto-detection.
 - `ANTHROPIC_API_KEY`: API key for Anthropic provider.
+- `ANTHROPIC_AUTH_TOKEN`: Alternate Anthropic key (as set by Claude Code and Anthropic-compatible gateways). Used when `ANTHROPIC_API_KEY` is unset.
+- `ANTHROPIC_BASE_URL`: Anthropic API base URL. Honored for the anthropic provider when `CHENNAI_BASE_URL` is unset.
 - `OPENAI_API_KEY`: API key for OpenAI-compatible providers.
 - `CHENNAI_PROVIDER`: LLM provider (`anthropic` or `openai`). Same as `--provider`.
 - `CHENNAI_MODEL`: LLM model name. Same as `--model`.
 - `CHENNAI_BASE_URL`: Custom API base URL for OpenAI-compatible endpoints. Same as `--base-url`.
+- `CHENNAI_MAX_SUBAGENTS`: Hard cap on sub-agents per orchestrated run. Same as `--max-subagents`.
+- `CHENNAI_TURN_BUDGET`: Advisory total turn budget. Same as `--turn-budget`.
+- `CHENNAI_TOKEN_BUDGET`: Advisory total token budget. Same as `--token-budget`.
 - `CDXGEN_CMD`: Path to the cdxgen binary.
 - `ATOM_CMD`: Path to the atom CLI binary (e.g. `/path/to/atom/atom.sh`).
 - `RUSI_CMD`: Path to the rusi binary. Overrides PATH lookup.
