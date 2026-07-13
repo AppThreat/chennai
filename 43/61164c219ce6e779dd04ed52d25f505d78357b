@@ -1,0 +1,22 @@
+tui/src/agent/audit.rs
+  s_528ca4e8d0e939::t_1169fa98cdd087 852-881
+  s_528ca4e8d0e939::t_05e1e5ce77fa56 166-169,171-175,177-184,196-204
+target/.rustc_info.json
+  s_528ca4e8d0e939::t_776b759d99cffb 1
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "4361164c219ce6e779dd04ed52d25f505d78357b",
+  "prompts": {},
+  "sessions": {
+    "s_528ca4e8d0e939": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "329e0a5b-2fa1-4d37-8a29-b769b980f30b",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Prabhu Subramanian <prabhu@appthreat.com>"
+    }
+  }
+}
