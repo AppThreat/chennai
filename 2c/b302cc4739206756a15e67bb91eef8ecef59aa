@@ -1,0 +1,20 @@
+tui/src/agent/openai.rs
+  s_71455b5c56af45::t_21e4a0dc60a77a 432-435
+  s_71455b5c56af45::t_db066d54de9ce3 45-47
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "2cb302cc4739206756a15e67bb91eef8ecef59aa",
+  "prompts": {},
+  "sessions": {
+    "s_71455b5c56af45": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3e04e57a-eed8-4811-b54f-96381c9ddd59",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Prabhu Subramanian <prabhu@appthreat.com>"
+    }
+  }
+}
