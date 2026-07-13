@@ -62,16 +62,25 @@ pub struct Config {
     /// When true, the agent uses the orchestrator loop which delegates analysis
     /// to focused sub-agents with isolated contexts.
     pub orchestrate: bool,
+    /// Maximum number of sub-agents the orchestrator may spawn in a single run.
+    /// Hard cap — the one guaranteed termination backstop. Default 8.
+    pub max_subagents: usize,
+    /// Advisory global turn budget. When exceeded, a warning is surfaced but
+    /// sub-agents are still spawned. Default 80.
+    pub turn_budget: u64,
+    /// Advisory global token budget. When exceeded, a warning is surfaced but
+    /// sub-agents are still spawned. Default 1,500,000.
+    pub token_budget: u64,
 }
 
 impl Config {
     /// Load from the default config path, then apply env-var and CLI overrides.
     #[allow(dead_code)]
     pub fn load(cli_provider: Option<&str>, cli_model: Option<&str>, cli_api_key: Option<&str>) -> Self {
-        Self::load_with_base_url(cli_provider, cli_model, cli_api_key, None, false, None, false)
+        Self::load_with_base_url(cli_provider, cli_model, cli_api_key, None, false, None, false, None, None, None)
     }
 
-    pub fn load_with_base_url(cli_provider: Option<&str>, cli_model: Option<&str>, cli_api_key: Option<&str>, cli_base_url: Option<&str>, cli_no_thinking: bool, cli_effort: Option<&str>, cli_orchestrate: bool) -> Self {
+    pub fn load_with_base_url(cli_provider: Option<&str>, cli_model: Option<&str>, cli_api_key: Option<&str>, cli_base_url: Option<&str>, cli_no_thinking: bool, cli_effort: Option<&str>, cli_orchestrate: bool, cli_max_subagents: Option<usize>, cli_turn_budget: Option<u64>, cli_token_budget: Option<u64>) -> Self {
         let file_cfg = Self::load_file();
 
         // Precedence for each setting: CLI flag > environment variable > config file > default.
@@ -104,7 +113,19 @@ impl Config {
             .or(file_cfg.effort)
             .unwrap_or_else(|| "high".to_string());
 
-        Config { provider, model, base_url, api_key, enabled, no_thinking: cli_no_thinking, effort, debug: false, orchestrate: cli_orchestrate }
+        let max_subagents = cli_max_subagents
+            .or_else(|| env_var("CHENNAI_MAX_SUBAGENTS").and_then(|s| s.parse::<usize>().ok()))
+            .unwrap_or(8);
+
+        let turn_budget = cli_turn_budget
+            .or_else(|| env_var("CHENNAI_TURN_BUDGET").and_then(|s| s.parse::<u64>().ok()))
+            .unwrap_or(80);
+
+        let token_budget = cli_token_budget
+            .or_else(|| env_var("CHENNAI_TOKEN_BUDGET").and_then(|s| s.parse::<u64>().ok()))
+            .unwrap_or(1_500_000);
+
+        Config { provider, model, base_url, api_key, enabled, no_thinking: cli_no_thinking, effort, debug: false, orchestrate: cli_orchestrate, max_subagents, turn_budget, token_budget }
     }
 
     /// Read the config file at `~/.config/chennai/config.toml`.
@@ -176,7 +197,7 @@ mod tests {
     #[test]
     fn cli_effort_overrides_default() {
         let _guard = ENV_MUTEX.lock().unwrap();
-        let cfg = Config::load_with_base_url(None, None, None, None, false, Some("xhigh"), false);
+        let cfg = Config::load_with_base_url(None, None, None, None, false, Some("xhigh"), false, None, None, None);
         assert_eq!(cfg.effort, "xhigh");
     }
 
@@ -216,14 +237,14 @@ mod tests {
         }
 
         // Env vars apply when no CLI flags are given.
-        let cfg = Config::load_with_base_url(None, None, None, None, false, None, false);
+        let cfg = Config::load_with_base_url(None, None, None, None, false, None, false, None, None, None);
         assert_eq!(cfg.provider, ProviderKind::OpenAI);
         assert_eq!(cfg.model, "gpt-4o");
         assert_eq!(cfg.base_url.as_deref(), Some("https://example.test/v1"));
 
         // CLI flags take precedence over env vars.
         let cfg = Config::load_with_base_url(
-            Some("anthropic"), Some("claude-x"), None, Some("https://cli.test"), false, None, false,
+            Some("anthropic"), Some("claude-x"), None, Some("https://cli.test"), false, None, false, None, None, None,
         );
         assert_eq!(cfg.provider, ProviderKind::Anthropic);
         assert_eq!(cfg.model, "claude-x");
@@ -256,6 +277,73 @@ mod tests {
                 Some(val) => std::env::set_var("ANTHROPIC_API_KEY", val),
                 None => std::env::remove_var("ANTHROPIC_API_KEY"),
             }
+        }
+    }
+
+    #[test]
+    fn budget_defaults_match_expected() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        let cfg = Config::load_with_base_url(None, None, None, None, false, None, false, None, None, None);
+        assert_eq!(cfg.max_subagents, 8);
+        assert_eq!(cfg.turn_budget, 80);
+        assert_eq!(cfg.token_budget, 1_500_000);
+    }
+
+    #[test]
+    fn cli_max_subagents_overrides_default() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        let cfg = Config::load_with_base_url(None, None, None, None, false, None, false, Some(12), None, None);
+        assert_eq!(cfg.max_subagents, 12);
+    }
+
+    #[test]
+    fn cli_turn_budget_overrides_default() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        let cfg = Config::load_with_base_url(None, None, None, None, false, None, false, None, Some(200), None);
+        assert_eq!(cfg.turn_budget, 200);
+    }
+
+    #[test]
+    fn cli_token_budget_overrides_default() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        let cfg = Config::load_with_base_url(None, None, None, None, false, None, false, None, None, Some(3_000_000));
+        assert_eq!(cfg.token_budget, 3_000_000);
+    }
+
+    #[test]
+    fn env_var_max_subagents_overrides_default() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        let prev = std::env::var("CHENNAI_MAX_SUBAGENTS").ok();
+        unsafe { std::env::set_var("CHENNAI_MAX_SUBAGENTS", "16"); }
+        let cfg = Config::load_with_base_url(None, None, None, None, false, None, false, None, None, None);
+        assert_eq!(cfg.max_subagents, 16);
+        unsafe {
+            match prev { Some(val) => std::env::set_var("CHENNAI_MAX_SUBAGENTS", val), None => std::env::remove_var("CHENNAI_MAX_SUBAGENTS") }
+        }
+    }
+
+    #[test]
+    fn env_var_turn_budget_overrides_default() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        let prev = std::env::var("CHENNAI_TURN_BUDGET").ok();
+        unsafe { std::env::set_var("CHENNAI_TURN_BUDGET", "200"); }
+        let cfg = Config::load_with_base_url(None, None, None, None, false, None, false, None, None, None);
+        assert_eq!(cfg.turn_budget, 200);
+        unsafe {
+            match prev { Some(val) => std::env::set_var("CHENNAI_TURN_BUDGET", val), None => std::env::remove_var("CHENNAI_TURN_BUDGET") }
+        }
+    }
+
+    #[test]
+    fn cli_budget_overrides_env_var() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        let prev = std::env::var("CHENNAI_TOKEN_BUDGET").ok();
+        unsafe { std::env::set_var("CHENNAI_TOKEN_BUDGET", "5_000_000"); }
+        // CLI overrides env var.
+        let cfg = Config::load_with_base_url(None, None, None, None, false, None, false, None, None, Some(2_000_000));
+        assert_eq!(cfg.token_budget, 2_000_000);
+        unsafe {
+            match prev { Some(val) => std::env::set_var("CHENNAI_TOKEN_BUDGET", val), None => std::env::remove_var("CHENNAI_TOKEN_BUDGET") }
         }
     }
 }

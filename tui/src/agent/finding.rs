@@ -4,9 +4,15 @@
 //! source/sink locations, a deterministic engine proof, and confidence. [`FindingSet`]
 //! accumulates, deduplicates, and ranks findings and can render them as Markdown or JSON.
 //! [`TokenLedger`] aggregates per-run token usage for the one-line cost summary.
+//!
+//! [`LedgerSnapshot`] captures a point-in-time copy of the ledger so that
+//! [`LedgerDelta`] can compute token/time differences between two snapshots.
+//! [`RunProfile`] accumulates per-segment timing and token data for orchestrated runs,
+//! giving visibility into each sub-agent's cost and wall-clock duration.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::time::Duration;
 
 // ---------------------------------------------------------------------------
 // Enums
@@ -204,6 +210,8 @@ pub struct TokenLedger {
     pub input: u64,
     pub output: u64,
     pub cache_read: u64,
+    /// Number of provider turns (each `record_usage` call increments this).
+    pub turns: u64,
     #[allow(dead_code)]
     pub per_tool: HashMap<String, u64>,
 }
@@ -215,11 +223,266 @@ impl TokenLedger {
         if let Some(cr) = cache_read_tokens {
             self.cache_read += cr as u64;
         }
+        self.turns += 1;
     }
 
     /// One-line summary like `tokens: 1234 in / 567 out / 89 cache`.
     pub fn summary(&self) -> String {
         format!("tokens: {} in / {} out / {} cache", self.input, self.output, self.cache_read)
+    }
+
+    /// Capture a point-in-time snapshot of the current ledger state. Used to
+    /// compute token deltas between two moments (e.g. before/after a sub-agent run).
+    pub fn snapshot(&self) -> LedgerSnapshot {
+        LedgerSnapshot {
+            input: self.input,
+            output: self.output,
+            cache_read: self.cache_read,
+            turns: self.turns,
+        }
+    }
+
+    /// Compute the token and turn difference between an earlier snapshot and the
+    /// current ledger state.
+    pub fn delta_since(&self, earlier: &LedgerSnapshot) -> LedgerDelta {
+        LedgerDelta {
+            input: self.input.saturating_sub(earlier.input),
+            output: self.output.saturating_sub(earlier.output),
+            cache_read: self.cache_read.saturating_sub(earlier.cache_read),
+            turns: self.turns.saturating_sub(earlier.turns),
+        }
+    }
+
+    /// Total tokens (input + output + cache read).
+    #[allow(dead_code)]
+    pub fn total_tokens(&self) -> u64 {
+        self.input + self.output + self.cache_read
+    }
+}
+
+// ---------------------------------------------------------------------------
+// LedgerSnapshot & LedgerDelta
+// ---------------------------------------------------------------------------
+
+/// A point-in-time copy of [`TokenLedger`] counters. Cheap to create and compare,
+/// used to attribute token usage to specific segments of a run.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LedgerSnapshot {
+    pub input: u64,
+    pub output: u64,
+    pub cache_read: u64,
+    /// Number of `record_usage` calls recorded as of this snapshot.
+    pub turns: u64,
+}
+
+/// The difference between two [`LedgerSnapshot`]s — how many tokens and turns
+/// were consumed during a segment of a run (e.g. one sub-agent invocation).
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LedgerDelta {
+    pub input: u64,
+    pub output: u64,
+    pub cache_read: u64,
+    pub turns: u64,
+}
+
+impl LedgerDelta {
+    /// Total tokens in this delta (input + output + cache read).
+    pub fn total_tokens(&self) -> u64 {
+        self.input + self.output + self.cache_read
+    }
+
+    /// Format a compact human-readable token count (e.g. "18.2k" for 18,200).
+    pub fn format_tokens(total: u64) -> String {
+        if total >= 1_000_000 {
+            format!("{:.1}M", total as f64 / 1_000_000.0)
+        } else if total >= 1_000 {
+            format!("{:.1}k", total as f64 / 1_000.0)
+        } else {
+            total.to_string()
+        }
+    }
+
+    /// Format as compact token summary like "18.2k tok".
+    pub fn token_summary(&self) -> String {
+        format!("{} tok", Self::format_tokens(self.total_tokens()))
+    }
+
+    /// Format as compact turn count like "12 turns".
+    pub fn turn_summary(&self) -> String {
+        format!("{} turns", self.turns)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// RunProfile — per-segment cost accumulator for orchestrated runs
+// ---------------------------------------------------------------------------
+
+/// A single timed segment within an orchestrated run: one sub-agent invocation,
+/// or the orchestrator's own turns.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProfileSegment {
+    /// Human-readable label (e.g. "orchestrator", "recon", "sink-hunter #2").
+    pub label: String,
+    /// Tokens consumed by this segment.
+    pub tokens: LedgerDelta,
+    /// Wall-clock time elapsed during this segment.
+    pub elapsed: Duration,
+    /// Turn count for this segment.
+    pub turns: u64,
+    /// Number of new findings added during this segment.
+    pub findings_delta: usize,
+    /// Whether the segment completed normally (vs. truncated by turn budget).
+    pub completed: bool,
+}
+
+/// Accumulates per-segment timing, token, and finding data for an orchestrated run.
+/// Empty for flat (non-orchestrated) runs — populated only when the orchestrator is active.
+/// Shared across the orchestrator and sub-agents via `Arc<Mutex<RunProfile>>`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct RunProfile {
+    pub segments: Vec<ProfileSegment>,
+    /// Cumulative advisory budget warnings generated during the run.
+    pub budget_warnings: Vec<String>,
+}
+
+impl RunProfile {
+    /// Create a new empty profile.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Record a completed segment (e.g. after a sub-agent finishes).
+    pub fn push_segment(&mut self, segment: ProfileSegment) {
+        self.segments.push(segment);
+    }
+
+    /// Record a budget warning message for the end-of-run summary.
+    pub fn push_budget_warning(&mut self, message: String) {
+        self.budget_warnings.push(message);
+    }
+
+    /// Total tokens across all segments.
+    pub fn total_tokens(&self) -> u64 {
+        self.segments.iter().map(|s| s.tokens.total_tokens()).sum()
+    }
+
+    /// Total turns across all segments.
+    pub fn total_turns(&self) -> u64 {
+        self.segments.iter().map(|s| s.turns).sum()
+    }
+
+    /// Total wall-clock time across all segments.
+    pub fn total_elapsed(&self) -> Duration {
+        self.segments.iter().fold(Duration::ZERO, |acc, s| acc + s.elapsed)
+    }
+
+    /// Total findings across all segments.
+    pub fn total_findings(&self) -> usize {
+        self.segments.iter().map(|s| s.findings_delta).sum()
+    }
+
+    /// Render a compact per-segment table for the end-of-run summary.
+    /// Returns an empty string if there are no segments and no budget warnings.
+    pub fn render_report(&self) -> String {
+        if self.segments.is_empty() && self.budget_warnings.is_empty() {
+            return String::new();
+        }
+        let mut out = String::from("\n─── Run Profile ───\n");
+        out.push_str(&format!(
+            "{:<20} {:>10} {:>8} {:>8}  {:>9}  {}\n",
+            "Role", "Tokens", "Turns", "Findings", "Duration", "Done?"
+        ));
+        out.push_str(&format!(
+            "{:<20} {:>10} {:>8} {:>8}  {:>9}  {}\n",
+            "────", "──────", "────", "───────", "─────────", "─────"
+        ));
+        for seg in &self.segments {
+            let dur = format_duration(seg.elapsed);
+            let status = if seg.completed { "✓" } else { "✗" };
+            out.push_str(&format!(
+                "{:<20} {:>10} {:>8} {:>8}  {:>9}  {}\n",
+                seg.label,
+                seg.tokens.token_summary(),
+                seg.turns,
+                seg.findings_delta,
+                dur,
+                status,
+            ));
+        }
+        out.push_str(&format!(
+            "{:<20} {:>10} {:>8} {:>8}  {:>9}\n",
+            "────", "──────", "────", "───────", "─────────"
+        ));
+        out.push_str(&format!(
+            "{:<20} {:>10} {:>8} {:>8}  {:>9}\n",
+            "TOTAL",
+            LedgerDelta::format_tokens(self.total_tokens()) + " tok",
+            self.total_turns(),
+            self.total_findings(),
+            format_duration(self.total_elapsed()),
+        ));
+        if !self.budget_warnings.is_empty() {
+            out.push_str("\nBudget advisories:\n");
+            for w in &self.budget_warnings {
+                out.push_str(&format!("  ⚠ {w}\n"));
+            }
+        }
+        out
+    }
+
+    /// Render as a JSON value for persistence.
+    pub fn to_json(&self) -> serde_json::Value {
+        let segments: Vec<serde_json::Value> = self.segments.iter().map(|s| {
+            serde_json::json!({
+                "label": s.label,
+                "tokens": {
+                    "input": s.tokens.input,
+                    "output": s.tokens.output,
+                    "cache_read": s.tokens.cache_read,
+                    "total": s.tokens.total_tokens(),
+                },
+                "turns": s.turns,
+                "findings_delta": s.findings_delta,
+                "elapsed_secs": s.elapsed.as_secs_f64(),
+                "completed": s.completed,
+            })
+        }).collect();
+        serde_json::json!({
+            "segments": segments,
+            "totals": {
+                "tokens": self.total_tokens(),
+                "turns": self.total_turns(),
+                "findings": self.total_findings(),
+                "elapsed_secs": self.total_elapsed().as_secs_f64(),
+            },
+            "budget_warnings": self.budget_warnings,
+        })
+    }
+
+    /// Persist to `<source_root>/.chen/agent-state/profile.json`.
+    pub fn save(&self, source_root: Option<&str>) -> Result<(), String> {
+        let base = source_root.ok_or("no source root configured")?;
+        let dir = std::path::Path::new(base)
+            .join(".chen")
+            .join("agent-state");
+        std::fs::create_dir_all(&dir).map_err(|e| format!("create agent-state dir: {e}"))?;
+        let json = serde_json::to_string_pretty(&self.to_json())
+            .map_err(|e| format!("serialize profile: {e}"))?;
+        std::fs::write(dir.join("profile.json"), json)
+            .map_err(|e| format!("write profile: {e}"))?;
+        Ok(())
+    }
+}
+
+/// Format a [`Duration`] as a compact human-readable string (e.g. "1m40s", "45s").
+pub fn format_duration(dur: Duration) -> String {
+    let total_secs = dur.as_secs();
+    let mins = total_secs / 60;
+    let secs = total_secs % 60;
+    if mins > 0 {
+        format!("{}m{}s", mins, secs)
+    } else {
+        format!("{}s", secs)
     }
 }
 
@@ -493,5 +756,218 @@ mod tests {
         let set = FindingSet::new();
         let md = set.render_markdown();
         assert!(md.contains("No findings"));
+    }
+
+    // -----------------------------------------------------------------------
+    // LedgerSnapshot / LedgerDelta
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn snapshot_captures_ledger_state() {
+        let mut ledger = TokenLedger::default();
+        ledger.record_usage(100, 50, Some(10));
+        ledger.record_usage(200, 100, None);
+        let snap = ledger.snapshot();
+        assert_eq!(snap.input, 300);
+        assert_eq!(snap.output, 150);
+        assert_eq!(snap.cache_read, 10);
+        assert_eq!(snap.turns, 2);
+    }
+
+    #[test]
+    fn delta_since_computes_difference() {
+        let mut ledger = TokenLedger::default();
+        ledger.record_usage(100, 50, Some(10));
+        let before = ledger.snapshot();
+        ledger.record_usage(200, 100, Some(20));
+        let delta = ledger.delta_since(&before);
+        assert_eq!(delta.input, 200);
+        assert_eq!(delta.output, 100);
+        assert_eq!(delta.cache_read, 20);
+        assert_eq!(delta.turns, 1);
+    }
+
+    #[test]
+    fn delta_since_with_no_activity_is_zero() {
+        let ledger = TokenLedger::default();
+        let snap = ledger.snapshot();
+        let delta = ledger.delta_since(&snap);
+        assert_eq!(delta.input, 0);
+        assert_eq!(delta.output, 0);
+        assert_eq!(delta.cache_read, 0);
+        assert_eq!(delta.turns, 0);
+    }
+
+    #[test]
+    fn delta_saturates_on_underflow() {
+        // If a snapshot somehow has higher values than the current ledger, delta saturates at 0.
+        let later = LedgerSnapshot { input: 50, output: 30, cache_read: 10, turns: 1 };
+        let earlier = LedgerSnapshot { input: 200, output: 100, cache_read: 50, turns: 5 };
+        let ledger = TokenLedger { input: later.input, output: later.output, cache_read: later.cache_read, turns: later.turns, per_tool: HashMap::new() };
+        let delta = ledger.delta_since(&earlier);
+        assert_eq!(delta.input, 0);
+        assert_eq!(delta.output, 0);
+        assert_eq!(delta.cache_read, 0);
+        assert_eq!(delta.turns, 0);
+    }
+
+    #[test]
+    fn total_tokens_aggregates_all() {
+        let delta = LedgerDelta { input: 100, output: 50, cache_read: 25, turns: 3 };
+        assert_eq!(delta.total_tokens(), 175);
+    }
+
+    // -----------------------------------------------------------------------
+    // LedgerDelta formatting
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn format_tokens_compact() {
+        assert_eq!(LedgerDelta::format_tokens(500), "500");
+        assert_eq!(LedgerDelta::format_tokens(1_200), "1.2k");
+        assert_eq!(LedgerDelta::format_tokens(18_200), "18.2k");
+        assert_eq!(LedgerDelta::format_tokens(1_500_000), "1.5M");
+    }
+
+    // -----------------------------------------------------------------------
+    // RunProfile
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn profile_accumulates_segments() {
+        let mut profile = RunProfile::new();
+        profile.push_segment(ProfileSegment {
+            label: "recon".into(),
+            tokens: LedgerDelta { input: 1000, output: 500, cache_read: 200, turns: 3 },
+            elapsed: Duration::from_secs(60),
+            turns: 3,
+            findings_delta: 2,
+            completed: true,
+        });
+        profile.push_segment(ProfileSegment {
+            label: "sink-hunter".into(),
+            tokens: LedgerDelta { input: 2000, output: 800, cache_read: 300, turns: 5 },
+            elapsed: Duration::from_secs(100),
+            turns: 5,
+            findings_delta: 4,
+            completed: false,
+        });
+        assert_eq!(profile.segments.len(), 2);
+        assert_eq!(profile.total_tokens(), 4800);
+        assert_eq!(profile.total_turns(), 8);
+        assert_eq!(profile.total_findings(), 6);
+        assert_eq!(profile.total_elapsed(), Duration::from_secs(160));
+    }
+
+    #[test]
+    fn profile_empty_has_zero_totals() {
+        let profile = RunProfile::new();
+        assert_eq!(profile.total_tokens(), 0);
+        assert_eq!(profile.total_turns(), 0);
+        assert_eq!(profile.total_findings(), 0);
+        assert_eq!(profile.total_elapsed(), Duration::ZERO);
+    }
+
+    #[test]
+    fn profile_render_report_includes_all_segments() {
+        let mut profile = RunProfile::new();
+        profile.push_segment(ProfileSegment {
+            label: "recon".into(),
+            tokens: LedgerDelta { input: 1000, output: 500, cache_read: 200, turns: 3 },
+            elapsed: Duration::from_secs(100),
+            turns: 3,
+            findings_delta: 2,
+            completed: true,
+        });
+        let report = profile.render_report();
+        assert!(report.contains("Run Profile"));
+        assert!(report.contains("recon"));
+        assert!(report.contains("TOTAL"));
+        assert!(report.contains("✓"));
+    }
+
+    #[test]
+    fn profile_budget_warnings_rendered() {
+        let mut profile = RunProfile::new();
+        profile.push_budget_warning("Turn budget exceeded: 82/80".into());
+        let report = profile.render_report();
+        assert!(report.contains("Budget advisories"));
+        assert!(report.contains("Turn budget exceeded"));
+    }
+
+    #[test]
+    fn profile_json_roundtrip() {
+        let mut profile = RunProfile::new();
+        profile.push_segment(ProfileSegment {
+            label: "recon".into(),
+            tokens: LedgerDelta { input: 1000, output: 500, cache_read: 200, turns: 3 },
+            elapsed: Duration::from_secs(60),
+            turns: 3,
+            findings_delta: 1,
+            completed: true,
+        });
+        let json = profile.to_json();
+        assert_eq!(json["segments"].as_array().unwrap().len(), 1);
+        assert_eq!(json["totals"]["tokens"].as_u64().unwrap(), 1700);
+        assert_eq!(json["totals"]["turns"].as_u64().unwrap(), 3);
+
+        // Verify serialization/deserialization roundtrip.
+        let json_str = serde_json::to_string_pretty(&json).unwrap();
+        let deser: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+        assert_eq!(json, deser);
+    }
+
+    #[test]
+    fn profile_save_and_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut profile = RunProfile::new();
+        profile.push_segment(ProfileSegment {
+            label: "recon".into(),
+            tokens: LedgerDelta { input: 500, output: 200, cache_read: 100, turns: 2 },
+            elapsed: Duration::from_secs(30),
+            turns: 2,
+            findings_delta: 1,
+            completed: true,
+        });
+        profile.save(Some(dir.path().to_str().unwrap())).unwrap();
+
+        let path = dir.path().join(".chen").join("agent-state").join("profile.json");
+        let content = std::fs::read_to_string(path).unwrap();
+        let loaded: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(loaded["segments"][0]["label"].as_str().unwrap(), "recon");
+        assert_eq!(loaded["totals"]["tokens"].as_u64().unwrap(), 800);
+    }
+
+    // -----------------------------------------------------------------------
+    // format_duration
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn format_duration_compact() {
+        assert_eq!(format_duration(Duration::from_secs(0)), "0s");
+        assert_eq!(format_duration(Duration::from_secs(5)), "5s");
+        assert_eq!(format_duration(Duration::from_secs(90)), "1m30s");
+        assert_eq!(format_duration(Duration::from_secs(600)), "10m0s");
+    }
+
+    // -----------------------------------------------------------------------
+    // TokenLedger turns counter
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn ledger_turns_counter_increments_per_record() {
+        let mut ledger = TokenLedger::default();
+        assert_eq!(ledger.turns, 0);
+        ledger.record_usage(100, 50, Some(10));
+        assert_eq!(ledger.turns, 1);
+        ledger.record_usage(200, 100, None);
+        assert_eq!(ledger.turns, 2);
+    }
+
+    #[test]
+    fn ledger_total_tokens() {
+        let mut ledger = TokenLedger::default();
+        ledger.record_usage(100, 50, Some(10));
+        assert_eq!(ledger.total_tokens(), 160);
     }
 }

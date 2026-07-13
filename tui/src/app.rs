@@ -1922,6 +1922,11 @@ impl App {
                     self.flow_detail_scroll = 0;
                 }
             }
+            AgentEvent::Profile(line) => {
+                // Live profile updates from the orchestrator (per-sub-agent cost/timing).
+                // Display in the REPL transcript as informational entries.
+                self.agent_transcript.push(AgentEntry::Text(format!("\n{line}\n")));
+            }
         }
         // When auto-scroll is on, the renderer pins the view to the bottom; the
         // exact line offset depends on the rendered line count so it is computed

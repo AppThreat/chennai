@@ -13,7 +13,7 @@ mod rusi;
 mod shared;
 mod ui;
 
-use agent::{finding::FindingSet, finding::TokenLedger, process_note::ProcessNote, AgentCtx, DebugLogger};
+use agent::{finding::FindingSet, finding::RunProfile, finding::TokenLedger, process_note::ProcessNote, AgentCtx, DebugLogger};
 use app::{App, BgStatus, BgTaskInfo, InitPhase, Panel};
 use bom::{find_existing_boms, BomStore};
 use config::Config;
@@ -93,6 +93,18 @@ struct Args {
     /// sub-agents with isolated contexts, then synthesizes their results.
     #[arg(long, default_value_t = false)]
     orchestrate: bool,
+    /// Maximum number of sub-agents the orchestrator may spawn (default 8).
+    /// This is a hard cap — the one guaranteed termination backstop.
+    #[arg(long)]
+    max_subagents: Option<usize>,
+    /// Advisory global turn budget. When exceeded, a warning is surfaced to
+    /// the orchestrator but sub-agents are still spawned (default 80).
+    #[arg(long)]
+    turn_budget: Option<u64>,
+    /// Advisory global token budget. When exceeded, a warning is surfaced to
+    /// the orchestrator but sub-agents are still spawned (default 1,500,000).
+    #[arg(long)]
+    token_budget: Option<u64>,
     /// Subcommand to run instead of launching the TUI.
     #[command(subcommand)]
     command: Option<CliCommand>,
@@ -193,7 +205,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let path_buf = std::fs::canonicalize(&path_buf).unwrap_or(path_buf);
     let path = &path_buf;
 
-    let mut config = Config::load_with_base_url(args.provider.as_deref(), args.model.as_deref(), args.api_key.as_deref(), args.base_url.as_deref(), args.no_thinking, args.effort.as_deref(), args.orchestrate);
+    let mut config = Config::load_with_base_url(args.provider.as_deref(), args.model.as_deref(), args.api_key.as_deref(), args.base_url.as_deref(), args.no_thinking, args.effort.as_deref(), args.orchestrate, args.max_subagents, args.turn_budget, args.token_budget);
     config.debug = args.debug;
     let theme = match args.theme.as_str() { "light" => Theme::light(), _ => Theme::dark() };
     let source_root = args.source.clone();
@@ -371,6 +383,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         findings: Arc::new(Mutex::new(FindingSet::new())),
             token_ledger: Arc::new(Mutex::new(TokenLedger::default())),
             process_note: Arc::new(Mutex::new(ProcessNote::default())),
+            run_profile: Arc::new(Mutex::new(RunProfile::new())),
+            max_subagents: config.max_subagents,
+            turn_budget: config.turn_budget,
+            token_budget: config.token_budget,
         })
                 }
                 Err(e) => {
@@ -587,6 +603,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         findings: Arc::new(Mutex::new(FindingSet::new())),
             token_ledger: Arc::new(Mutex::new(TokenLedger::default())),
             process_note: Arc::new(Mutex::new(ProcessNote::default())),
+            run_profile: Arc::new(Mutex::new(RunProfile::new())),
+            max_subagents: config.max_subagents,
+            turn_budget: config.turn_budget,
+            token_budget: config.token_budget,
         })
                 }
                 Err(e) => {
@@ -864,6 +884,10 @@ fn run_non_atom_mode(
                     findings: Arc::new(Mutex::new(FindingSet::new())),
                     token_ledger: Arc::new(Mutex::new(TokenLedger::default())),
                     process_note: Arc::new(Mutex::new(ProcessNote::default())),
+                    run_profile: Arc::new(Mutex::new(RunProfile::new())),
+                    max_subagents: config.max_subagents,
+                    turn_budget: config.turn_budget,
+                    token_budget: config.token_budget,
                 })
             }
             Err(e) => {
@@ -1004,6 +1028,10 @@ fn finish_non_atom_startup(
                     findings: Arc::new(Mutex::new(FindingSet::new())),
                     token_ledger: Arc::new(Mutex::new(TokenLedger::default())),
                     process_note: Arc::new(Mutex::new(ProcessNote::default())),
+                    run_profile: Arc::new(Mutex::new(RunProfile::new())),
+                    max_subagents: config.max_subagents,
+                    turn_budget: config.turn_budget,
+                    token_budget: config.token_budget,
                 })
             }
             Err(e) => {
@@ -1333,6 +1361,10 @@ fn run_headless_agent(
         findings: Arc::new(Mutex::new(FindingSet::new())),
         token_ledger: Arc::new(Mutex::new(TokenLedger::default())),
         process_note: Arc::new(Mutex::new(ProcessNote::default())),
+        run_profile: Arc::new(Mutex::new(RunProfile::new())),
+        max_subagents: config.max_subagents,
+        turn_budget: config.turn_budget,
+        token_budget: config.token_budget,
     };
     debug_eprintln!(config.debug, "Asking: {question}");
     let result = agent::run_headless(&ctx, &question, Some(&reports_dir))?;
@@ -1371,6 +1403,10 @@ fn run_headless_agent_non_atom(
         findings: Arc::new(Mutex::new(FindingSet::new())),
         token_ledger: Arc::new(Mutex::new(TokenLedger::default())),
         process_note: Arc::new(Mutex::new(ProcessNote::default())),
+        run_profile: Arc::new(Mutex::new(RunProfile::new())),
+        max_subagents: config.max_subagents,
+        turn_budget: config.turn_budget,
+        token_budget: config.token_budget,
     };
     debug_eprintln!(config.debug, "Asking: {question}");
     let result = agent::run_headless(&ctx, &question, Some(&reports_dir))?;
@@ -1529,6 +1565,10 @@ fn run_app<B: ratatui::backend::Backend>(
                         findings: Arc::new(Mutex::new(FindingSet::new())),
             token_ledger: Arc::new(Mutex::new(TokenLedger::default())),
             process_note: Arc::new(Mutex::new(ProcessNote::default())),
+            run_profile: Arc::new(Mutex::new(RunProfile::new())),
+            max_subagents: config.max_subagents,
+            turn_budget: config.turn_budget,
+            token_budget: config.token_budget,
         });
                 }
             if let Some(ctx) = agent_ctx.take() {
@@ -1553,6 +1593,10 @@ fn run_app<B: ratatui::backend::Backend>(
                 let findings = ctx.findings.clone();
                 let token_ledger = ctx.token_ledger.clone();
                 let process_note = ctx.process_note.clone();
+                let run_profile = ctx.run_profile.clone();
+                let max_subagents = ctx.max_subagents;
+                let turn_budget = ctx.turn_budget;
+                let token_budget = ctx.token_budget;
                 let orchestrate = ctx.orchestrate;
 
                 thread::spawn(move || {
@@ -1572,6 +1616,10 @@ fn run_app<B: ratatui::backend::Backend>(
                         findings,
                         token_ledger,
                         process_note,
+                        run_profile,
+                        max_subagents,
+                        turn_budget,
+                        token_budget,
                     };
                     agent::run_agent(&thread_ctx, &question, history, tx);
                 });

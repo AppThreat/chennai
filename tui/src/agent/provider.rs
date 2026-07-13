@@ -56,6 +56,9 @@ pub enum AgentEvent {
     /// A flow result from the engine that the UI should display in the flow master/detail view.
     #[allow(dead_code)]
     FlowResult(Value),
+    /// A live profile update from the orchestrator showing per-segment cost and timing.
+    /// Emitted after each sub-agent completes so the TUI can display a progress line.
+    Profile(String),
 }
 
 // ---------------------------------------------------------------------------

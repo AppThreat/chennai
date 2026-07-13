@@ -24,7 +24,7 @@ pub use debug_log::DebugLogger;
 use crate::config::{Config, ProviderKind};
 use crate::engine::Engine;
 use crate::shared::backend::Backend;
-use finding::{Finding, FindingSet, TokenLedger};
+use finding::{Finding, FindingSet, RunProfile, TokenLedger};
 use process_note::ProcessNote;
 use provider::{
     AgentEvent, ChannelSink, ContentBlock, EventSink, LlmProvider, ProviderError, TurnRequest,
@@ -70,6 +70,9 @@ pub struct SlashCommand {
     pub tools: Option<Vec<String>>,
     /// Effort override (`effort:` frontmatter), or `None` to inherit the default.
     pub effort: Option<String>,
+    /// Per-role maximum turn budget (`max_turns:` frontmatter), or `None` to use
+    /// the role's built-in default. Clamped by `HARD_TURN_CEILING` (40).
+    pub max_turns: Option<u32>,
 }
 
 /// Built-in (compiled-in) prompt text for a known slash command.
@@ -137,13 +140,13 @@ fn user_override_prompt(cmd: &str) -> Option<String> {
 fn parse_frontmatter(raw: &str) -> SlashCommand {
     let trimmed = raw.trim_start_matches('\u{feff}');
     let Some(rest) = trimmed.strip_prefix("---\n").or_else(|| trimmed.strip_prefix("---\r\n")) else {
-        return SlashCommand { body: raw.trim().to_string(), tools: None, effort: None };
+        return SlashCommand { body: raw.trim().to_string(), tools: None, effort: None, max_turns: None };
     };
 
     // Find the closing `---` delimiter line.
     let closing = rest.find("\n---").or_else(|| rest.find("\r\n---"));
     let Some(end) = closing else {
-        return SlashCommand { body: raw.trim().to_string(), tools: None, effort: None };
+        return SlashCommand { body: raw.trim().to_string(), tools: None, effort: None, max_turns: None };
     };
     let yaml_str = &rest[..end];
     let body_start = end + 4; // skip past "\n---" (or "\r\n---")
@@ -151,11 +154,11 @@ fn parse_frontmatter(raw: &str) -> SlashCommand {
 
     // Parse the YAML header with serde_yaml.
     let Ok(yaml) = serde_yaml::from_str::<serde_yaml::Value>(yaml_str) else {
-        return SlashCommand { body, tools: None, effort: None };
+        return SlashCommand { body, tools: None, effort: None, max_turns: None };
     };
     let mapping = match yaml {
         serde_yaml::Value::Mapping(ref m) => m,
-        _ => return SlashCommand { body, tools: None, effort: None },
+        _ => return SlashCommand { body, tools: None, effort: None, max_turns: None },
     };
 
     let tools = mapping.get(serde_yaml::Value::String("tools".into())).and_then(|v| {
@@ -177,8 +180,55 @@ fn parse_frontmatter(raw: &str) -> SlashCommand {
         v.as_str().map(|s| s.to_string()).filter(|s| !s.is_empty())
     });
 
-    SlashCommand { body, tools, effort }
+    let max_turns = mapping.get(serde_yaml::Value::String("max_turns".into())).and_then(|v| {
+        v.as_i64().and_then(|n| u32::try_from(n).ok()).filter(|&n| n > 0)
+    });
+
+    SlashCommand { body, tools, effort, max_turns }
 }
+
+/// Resolve the effective turn budget for a sub-agent role. The priority is:
+///
+/// 1. Explicit `max_turns` from the model's tool-call argument (overrides everything).
+/// 2. `max_turns` from the role's frontmatter (e.g. `max_turns: 25` in `roles/recon.md`).
+/// 3. Built-in role default (e.g. 15 for recon, 20 for sink-hunter).
+///
+/// In all cases, the result is clamped by `HARD_TURN_CEILING` (40) to prevent a
+/// single sub-agent from consuming unlimited turns.
+pub fn resolve_turn_budget(
+    requested: Option<u32>,
+    role_name: &str,
+    frontmatter_max_turns: Option<u32>,
+) -> u32 {
+    let effective = requested
+        .or(frontmatter_max_turns)
+        .unwrap_or_else(|| default_turns_for_role(role_name));
+    effective.min(HARD_TURN_CEILING)
+}
+
+/// Built-in per-role turn defaults.
+fn default_turns_for_role(role_name: &str) -> u32 {
+    for (role, turns) in ROLE_TURN_DEFAULTS {
+        if *role == role_name {
+            return *turns;
+        }
+    }
+    10 // Fallback for unknown roles
+}
+
+/// Absolute hard ceiling for per-sub-agent turn budgets. No role or override can
+/// exceed this value — it guarantees that every sub-agent terminates.
+pub const HARD_TURN_CEILING: u32 = 40;
+
+/// Per-role default turn budgets (re-exported for use in `orchestrator.rs`).
+pub const ROLE_TURN_DEFAULTS: &[(&str, u32)] = &[
+    ("recon", 15),
+    ("sink-hunter", 20),
+    ("taint-prover", 20),
+    ("auth-boundary", 15),
+    ("supply-chain", 12),
+    ("reporter", 8),
+];
 
 // ---------------------------------------------------------------------------
 // Provider factory
@@ -237,6 +287,21 @@ pub struct AgentCtx {
     /// Process Note — durable working memory for the current analysis session.
     /// Re-injected before every turn so the model always sees its own progress.
     pub process_note: Arc<Mutex<ProcessNote>>,
+    /// Per-run profile accumulator for orchestrated mode. Records per-segment
+    /// token usage, timing, and findings. Empty for flat (non-orchestrated) runs.
+    pub run_profile: Arc<Mutex<RunProfile>>,
+    /// Maximum number of sub-agents the orchestrator may spawn. Hard cap — the
+    /// one guaranteed termination backstop. Default 8, configurable via
+    /// `--max-subagents` or `CHENNAI_MAX_SUBAGENTS`.
+    pub max_subagents: usize,
+    /// Advisory global turn budget. When exceeded, a warning is surfaced to the
+    /// orchestrator but sub-agents are still spawned. Default 80, configurable
+    /// via `--turn-budget` or `CHENNAI_TURN_BUDGET`.
+    pub turn_budget: u64,
+    /// Advisory global token budget. When exceeded, a warning is surfaced to the
+    /// orchestrator but sub-agents are still spawned. Default 1.5M, configurable
+    /// via `--token-budget` or `CHENNAI_TOKEN_BUDGET`.
+    pub token_budget: u64,
 }
 
 /// The execution resources a tool needs, independent of any LLM provider.
@@ -1934,6 +1999,10 @@ mod tests {
             findings: Arc::new(Mutex::new(finding::FindingSet::new())),
             token_ledger: Arc::new(Mutex::new(finding::TokenLedger::default())),
             process_note: Arc::new(Mutex::new(ProcessNote::default())),
+            run_profile: Arc::new(Mutex::new(RunProfile::new())),
+            max_subagents: 8,
+            turn_budget: 80,
+            token_budget: 1_500_000,
         };
         let result = dispatch_tool(&ctx.tool_env(), "id1", "nonexistent_tool", &serde_json::json!({}));
         assert!(result.is_error);
@@ -2023,6 +2092,10 @@ mod tests {
             findings: Arc::new(Mutex::new(finding::FindingSet::new())),
             token_ledger: Arc::new(Mutex::new(finding::TokenLedger::default())),
             process_note: Arc::new(Mutex::new(ProcessNote::default())),
+            run_profile: Arc::new(Mutex::new(RunProfile::new())),
+            max_subagents: 8,
+            turn_budget: 80,
+            token_budget: 1_500_000,
         };
         let result = dispatch_tool(&ctx.tool_env(), "id1", "bom_query", &serde_json::json!({"query": "express"}));
         assert!(!result.is_error);
@@ -2296,5 +2369,104 @@ mod tests {
         assert_eq!(fs.findings.len(), 1);
         assert!(fs.findings[0].proof.verified);
         assert_eq!(fs.findings[0].confidence, finding::Confidence::Confirmed);
+    }
+
+    // -----------------------------------------------------------------------
+    // Frontmatter max_turns parsing
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn frontmatter_parses_max_turns() {
+        let raw = "---\ntools: [atom_query]\nmax_turns: 25\n---\n\nBody.";
+        let sc = parse_frontmatter(raw);
+        assert_eq!(sc.max_turns, Some(25));
+        assert!(sc.body.starts_with("Body"));
+    }
+
+    #[test]
+    fn frontmatter_absent_max_turns_is_none() {
+        let raw = "---\ntools: [atom_query]\n---\n\nBody.";
+        let sc = parse_frontmatter(raw);
+        assert!(sc.max_turns.is_none());
+    }
+
+    #[test]
+    fn frontmatter_zero_max_turns_treated_as_absent() {
+        let raw = "---\ntools: [atom_query]\nmax_turns: 0\n---\n\nBody.";
+        let sc = parse_frontmatter(raw);
+        // Zero is filtered out (must be > 0).
+        assert!(sc.max_turns.is_none());
+    }
+
+    #[test]
+    fn frontmatter_negative_max_turns_treated_as_absent() {
+        let raw = "---\ntools: [atom_query]\nmax_turns: -5\n---\n\nBody.";
+        let sc = parse_frontmatter(raw);
+        // Negative values don't parse as positive u32 → None.
+        assert!(sc.max_turns.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // resolve_turn_budget
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn resolve_budget_model_request_overrides_frontmatter_and_default() {
+        // Model explicitly requests 30 turns.
+        let budget = resolve_turn_budget(Some(30), "recon", Some(20));
+        assert_eq!(budget, 30);
+    }
+
+    #[test]
+    fn resolve_budget_frontmatter_used_when_no_model_request() {
+        // Frontmatter says 25, no model request → 25.
+        let budget = resolve_turn_budget(None, "sink-hunter", Some(25));
+        assert_eq!(budget, 25);
+    }
+
+    #[test]
+    fn resolve_budget_role_default_when_no_override() {
+        // No model request, no frontmatter → role default (recon = 15).
+        let budget = resolve_turn_budget(None, "recon", None);
+        assert_eq!(budget, 15);
+    }
+
+    #[test]
+    fn resolve_budget_role_defaults_per_role() {
+        assert_eq!(resolve_turn_budget(None, "recon", None), 15);
+        assert_eq!(resolve_turn_budget(None, "sink-hunter", None), 20);
+        assert_eq!(resolve_turn_budget(None, "taint-prover", None), 20);
+        assert_eq!(resolve_turn_budget(None, "auth-boundary", None), 15);
+        assert_eq!(resolve_turn_budget(None, "supply-chain", None), 12);
+        assert_eq!(resolve_turn_budget(None, "reporter", None), 8);
+        // Unknown role → fallback 10.
+        assert_eq!(resolve_turn_budget(None, "custom-role", None), 10);
+    }
+
+    #[test]
+    fn resolve_budget_hard_ceiling_clamps_high_values() {
+        // Even if frontmatter says 100 and model requests 50, cap at HARD_TURN_CEILING (40).
+        let budget = resolve_turn_budget(Some(50), "recon", Some(100));
+        assert_eq!(budget, HARD_TURN_CEILING);
+    }
+
+    #[test]
+    fn resolve_budget_hard_ceiling_clamps_model_request() {
+        let budget = resolve_turn_budget(Some(100), "recon", None);
+        assert_eq!(budget, HARD_TURN_CEILING);
+    }
+
+    #[test]
+    fn resolve_budget_within_ceiling_unchanged() {
+        let budget = resolve_turn_budget(Some(25), "recon", None);
+        assert_eq!(budget, 25);
+    }
+
+    #[test]
+    fn flat_run_leaves_profile_empty() {
+        // Non-orchestrated runs don't populate the profile.
+        let profile = RunProfile::new();
+        assert!(profile.segments.is_empty());
+        assert_eq!(profile.total_tokens(), 0);
     }
 }

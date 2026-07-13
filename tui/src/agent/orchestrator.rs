@@ -4,8 +4,11 @@
 //! instead of running the normal monolithic agent loop. The orchestrator spawns
 //! focused sub-agents (each with its own transcript and scoped toolset) and
 //! synthesizes their results.
+//!
+//! Each sub-agent run is timed and profiled: token deltas and wall-clock durations
+//! are recorded in the shared [`RunProfile`] for visibility during and after the run.
 
-use super::finding::TokenLedger;
+use super::finding::{format_duration, LedgerDelta, ProfileSegment, TokenLedger};
 use super::process_note::ProcessNote;
 use super::provider::{
     AgentEvent, ChannelSink, ContentBlock, EventSink, TurnRequest,
@@ -13,14 +16,15 @@ use super::provider::{
 use super::tools::{self, spawn_subagent_tool};
 use super::transcript::Transcript;
 use super::{
-    dispatch_tool, filter_tools, friendly_provider_error, role, AgentCtx, ToolExecResult,
-    TokenLedgerSink,
+    dispatch_tool, filter_tools, friendly_provider_error, resolve_turn_budget, role, AgentCtx,
+    ToolExecResult, TokenLedgerSink,
 };
 use serde_json::Value;
 use std::path::Path;
 use std::sync::mpsc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 /// The orchestrator system prompt — instructs the meta-controller to plan,
 /// delegate to sub-agents, and synthesize results.
@@ -37,7 +41,7 @@ const VALID_ROLES: &[&str] = &[
 ];
 
 /// Hard cap on the number of sub-agents the orchestrator may spawn in a single run.
-const MAX_SUBAGENTS: usize = 8;
+/// Configurable via `--max-subagents` or `CHENNAI_MAX_SUBAGENTS`.
 
 /// The outcome of a single sub-agent run.
 pub struct SubAgentResult {
@@ -48,6 +52,10 @@ pub struct SubAgentResult {
     /// True if the sub-agent finished on its own (reached end_turn); false if it was
     /// cut off by the `max_turns` budget or a provider error.
     pub completed: bool,
+    /// Token and turn difference consumed by this sub-agent.
+    pub tokens: LedgerDelta,
+    /// Wall-clock time spent on this sub-agent.
+    pub elapsed: std::time::Duration,
 }
 
 /// Run a single sub-agent to completion. The sub-agent shares the same `findings`,
@@ -64,12 +72,23 @@ pub fn run_subagent(
         f.findings.len()
     };
 
+    // Snapshot the shared token ledger before this sub-agent runs so we can
+    // attribute the token consumption to this segment.
+    let ledger_before = {
+        let ledger = ctx.token_ledger.lock().unwrap();
+        ledger.snapshot()
+    };
+
+    let start = Instant::now();
+
     let role_def = match role(role_name) {
         Some(r) => r,
         None => return SubAgentResult {
             summary: format!("Unknown role: {role_name}"),
             findings_delta: 0,
             completed: false,
+            tokens: LedgerDelta::default(),
+            elapsed: start.elapsed(),
         },
     };
 
@@ -171,10 +190,20 @@ pub fn run_subagent(
         f.findings.len()
     };
 
+    let elapsed = start.elapsed();
+
+    // Compute the token delta for this sub-agent segment.
+    let tokens = {
+        let ledger = ctx.token_ledger.lock().unwrap();
+        ledger.delta_since(&ledger_before)
+    };
+
     SubAgentResult {
         summary: final_text,
         findings_delta: findings_after.saturating_sub(findings_before),
         completed,
+        tokens,
+        elapsed,
     }
 }
 
@@ -332,7 +361,7 @@ pub fn run_orchestrator(
                 for (call_id, name, input) in &calls {
                     if name == "spawn_subagent" {
                         let result = handle_spawn_subagent(
-                            ctx, call_id, input, &mut subagent_count,
+                            ctx, call_id, input, &mut subagent_count, None,
                         );
                         transcript.push_tool_result(&result.call_id, &result.content, result.is_error);
                         let preview: String = result.content.chars().take(200).collect();
@@ -388,6 +417,16 @@ pub fn run_orchestrator(
         total,
         confirmed
     );
+
+    // --- Print and persist the run profile ---
+    {
+        let profile = ctx.run_profile.lock().unwrap();
+        let report = profile.render_report();
+        if !report.is_empty() {
+            eprintln!("{report}");
+        }
+        let _ = profile.save(ctx.source_root.as_deref());
+    }
 
     Ok(final_text)
 }
@@ -503,7 +542,7 @@ pub fn run_orchestrator_async(
                         })
                         .ok();
                         let result = handle_spawn_subagent(
-                            ctx, call_id, input, &mut subagent_count,
+                            ctx, call_id, input, &mut subagent_count, Some(&tx),
                         );
                         tx.send(AgentEvent::ToolResult {
                             id: result.call_id.clone(),
@@ -541,6 +580,10 @@ pub fn run_orchestrator_async(
         let findings = ctx.findings.lock().unwrap();
         let _ = ProcessNote::save_findings(ctx.source_root.as_deref(), &findings);
     }
+    {
+        let profile = ctx.run_profile.lock().unwrap();
+        let _ = profile.save(ctx.source_root.as_deref());
+    }
 
     tx.send(AgentEvent::History(transcript.messages().to_vec())).ok();
     tx.send(AgentEvent::Done).ok();
@@ -551,64 +594,132 @@ pub fn run_orchestrator_async(
 // ---------------------------------------------------------------------------
 
 /// Handle a `spawn_subagent` tool call. Validates the role, enforces the
-/// sub-agent cap, calls `run_subagent`, and returns a `ToolExecResult` with
-/// the summary and findings delta.
+/// sub-agent cap, resolves the effective turn budget, calls `run_subagent`,
+/// records the segment in the shared `RunProfile`, checks global advisory budgets,
+/// and returns a `ToolExecResult` with the summary, findings delta, and any
+/// budget advisories.
+///
+/// `profile_tx` is an optional event sender for live profile updates in the
+/// interactive TUI path. In headless mode, pass `None` (profile lines are
+/// returned in the `ToolExecResult` for the caller to print).
 fn handle_spawn_subagent(
     ctx: &AgentCtx,
     call_id: &str,
     input: &Value,
     subagent_count: &mut usize,
+    profile_tx: Option<&mpsc::Sender<AgentEvent>>,
 ) -> ToolExecResult {
-    let role = input.get("role").and_then(Value::as_str).unwrap_or("");
+    let role_name = input.get("role").and_then(Value::as_str).unwrap_or("");
     let objective = input.get("objective").and_then(Value::as_str).unwrap_or("");
-    let max_turns = input
-        .get("max_turns")
-        .and_then(Value::as_u64)
-        .unwrap_or(10) as u32;
+    let requested_turns = input.get("max_turns").and_then(Value::as_u64).map(|n| n as u32);
 
     // Validate role.
-    if !VALID_ROLES.contains(&role) {
+    if !VALID_ROLES.contains(&role_name) {
         let valid = VALID_ROLES.join(", ");
         return ToolExecResult {
             call_id: call_id.into(),
             content: format!(
-                "Unknown role '{role}'. Valid roles: {valid}. Use a recognized role name."
+                "Unknown role '{role_name}'. Valid roles: {valid}. Use a recognized role name."
             ),
             is_error: true,
         };
     }
 
-    // Enforce sub-agent cap.
-    if *subagent_count >= MAX_SUBAGENTS {
+    // Enforce hard sub-agent cap.
+    if *subagent_count >= ctx.max_subagents {
         return ToolExecResult {
             call_id: call_id.into(),
             content: format!(
-                "Sub-agent cap ({MAX_SUBAGENTS}) reached. Cannot spawn another."
+                "Sub-agent cap ({}) reached. Cannot spawn another.",
+                ctx.max_subagents
             ),
             is_error: true,
         };
     }
 
+    // Resolve the effective turn budget: model request → frontmatter → role default,
+    // clamped by HARD_TURN_CEILING.
+    let frontmatter_max_turns = super::role(role_name).and_then(|r| r.max_turns);
+    let effective_turns = resolve_turn_budget(requested_turns, role_name, frontmatter_max_turns);
+
+    // Check global advisory budgets BEFORE spawning. If either soft budget is already
+    // exceeded, the sub-agent is still spawned but the orchestrator receives a warning.
+    let budget_notice = check_advisory_budgets(ctx, role_name, *subagent_count);
+
     *subagent_count += 1;
-    let SubAgentResult { summary, findings_delta, completed } =
-        run_subagent(ctx, role, objective, max_turns);
-    // Tell the orchestrator whether this was a real conclusion or a truncated run, so it does
-    // not mistake a dangling mid-investigation sentence for a finished summary. Either way the
-    // sub-agent's work is preserved in the shared Process Note and findings pool.
+
+    let SubAgentResult {
+        summary,
+        findings_delta,
+        completed,
+        tokens,
+        elapsed,
+    } = run_subagent(ctx, role_name, objective, effective_turns);
+
+    // Build a label with the sub-agent index for disambiguation when the same
+    // role is spawned multiple times.
+    let label = if *subagent_count > 1 {
+        format!("{role_name} #{subagent_count}")
+    } else {
+        role_name.to_string()
+    };
+
+    // Record this segment in the shared RunProfile.
+    let profile_line = {
+        let mut profile = ctx.run_profile.lock().unwrap();
+        profile.push_segment(ProfileSegment {
+            label: label.clone(),
+            tokens,
+            elapsed,
+            turns: tokens.turns,
+            findings_delta,
+            completed,
+        });
+
+        // Format a compact live profile line for the console.
+        let totals_tok = profile.total_tokens();
+        let totals_turns = profile.total_turns();
+        let totals_time = profile.total_elapsed();
+        format!(
+            "[profile] {}: {} · {} · {} | run total: {} tok · {} turns · {}",
+            label,
+            tokens.token_summary(),
+            tokens.turn_summary(),
+            format_duration(elapsed),
+            LedgerDelta::format_tokens(totals_tok),
+            totals_turns,
+            format_duration(totals_time),
+        )
+    };
+
+    // Emit the profile line via AgentEvent::Profile for the interactive TUI path.
+    // The headless path prints this directly to stderr below.
+    if let Some(tx) = profile_tx {
+        let _ = tx.send(AgentEvent::Profile(profile_line.clone()));
+    }
+
+    // Tell the orchestrator whether this was a real conclusion or a truncated run.
     let status = if completed {
-        format!("[Sub-agent '{role}' completed — {findings_delta} findings added]")
+        format!("[Sub-agent '{role_name}' completed — {findings_delta} findings added]")
     } else {
         format!(
-            "[Sub-agent '{role}' ran out of its {max_turns}-turn budget before concluding — \
+            "[Sub-agent '{role_name}' ran out of its {effective_turns}-turn budget before concluding — \
              {findings_delta} findings added. Its progress is in the shared Process Note; \
              spawn it again with a narrower objective to continue.]"
         )
     };
-    let content = if summary.trim().is_empty() {
+
+    // Assemble the result content, appending budget notice if applicable.
+    let mut content = if summary.trim().is_empty() {
         status
     } else {
         format!("{summary}\n\n{status}")
     };
+    if let Some(notice) = &budget_notice {
+        content.push_str("\n\n");
+        content.push_str(notice);
+    }
+
     ToolExecResult {
         call_id: call_id.into(),
         content,
@@ -616,10 +727,49 @@ fn handle_spawn_subagent(
     }
 }
 
+/// Check global advisory (soft) budgets against the shared token ledger totals.
+/// Returns a warning message if either the turn budget or token budget has been
+/// exceeded, or `None` if both are within limits. The sub-agent is always spawned
+/// regardless — these budgets are advisory only.
+fn check_advisory_budgets(ctx: &AgentCtx, role_name: &str, subagent_count: usize) -> Option<String> {
+    let (turns, tokens) = {
+        let ledger = ctx.token_ledger.lock().unwrap();
+        (ledger.turns, ledger.total_tokens())
+    };
+    let turn_exceeded = turns >= ctx.turn_budget;
+    let token_exceeded = tokens >= ctx.token_budget;
+
+    if turn_exceeded || token_exceeded {
+        let mut parts = Vec::new();
+        if turn_exceeded {
+            parts.push(format!("{}/{} turns", turns, ctx.turn_budget));
+        }
+        if token_exceeded {
+            parts.push(format!(
+                "{} tokens",
+                LedgerDelta::format_tokens(tokens)
+            ));
+        }
+        let message = format!(
+            "[budget notice: run has used {} and is over the advisory budget — \
+             consider spawning the reporter to wrap up]",
+            parts.join(" and "),
+        );
+        // Record the warning in the profile for the end-of-run summary.
+        {
+            let mut profile = ctx.run_profile.lock().unwrap();
+            profile.push_budget_warning(format!("before spawning '{}' (sub-agent #{}): {}", role_name, subagent_count + 1, message.trim_start_matches('[').trim_end_matches(']')));
+        }
+        Some(message)
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::finding::{FindingSet, TokenLedger};
+    use crate::agent::finding::{FindingSet, RunProfile, TokenLedger};
     use crate::agent::process_note::ProcessNote;
     use crate::agent::provider::{LlmProvider, TurnResult};
     use std::sync::atomic::AtomicBool;
@@ -663,7 +813,7 @@ mod tests {
             }
             let (stop_reason, blocks) = self.turns[*idx].clone();
             *idx += 1;
-            // Emit text delta events for text blocks.
+            // Emit text delta and tool call events.
             for block in &blocks {
                 if let ContentBlock::Text(t) = block {
                     sink.emit(AgentEvent::TextDelta(t.clone()));
@@ -676,6 +826,12 @@ mod tests {
                     });
                 }
             }
+            // Emit a Usage event so TokenLedgerSink records the token count.
+            sink.emit(AgentEvent::Usage {
+                input_tokens: 100,
+                output_tokens: 50,
+                cache_read_tokens: Some(10),
+            });
             Ok(TurnResult {
                 content: blocks,
                 stop_reason,
@@ -701,6 +857,10 @@ mod tests {
             findings: Arc::new(Mutex::new(FindingSet::new())),
             token_ledger: Arc::new(Mutex::new(TokenLedger::default())),
             process_note: Arc::new(Mutex::new(ProcessNote::default())),
+            run_profile: Arc::new(Mutex::new(RunProfile::new())),
+            max_subagents: 8,
+            turn_budget: 80,
+            token_budget: 1_500_000,
         }
     }
 
@@ -755,7 +915,7 @@ mod tests {
         let input = serde_json::json!({"role": "nonexistent", "objective": "test"});
         let ctx = make_ctx(Box::new(MockProvider::new(vec![])));
         let mut count = 0;
-        let result = handle_spawn_subagent(&ctx, "call_1", &input, &mut count);
+        let result = handle_spawn_subagent(&ctx, "call_1", &input, &mut count, None);
         assert!(result.is_error);
         assert!(result.content.contains("Unknown role"));
         assert!(result.content.contains("Valid roles"));
@@ -770,7 +930,7 @@ mod tests {
         ])));
         let mut count = 8; // already at cap
         let input = serde_json::json!({"role": "recon", "objective": "test"});
-        let result = handle_spawn_subagent(&ctx, "call_1", &input, &mut count);
+        let result = handle_spawn_subagent(&ctx, "call_1", &input, &mut count, None);
         assert!(result.is_error);
         assert!(result.content.contains("cap"));
         assert_eq!(count, 8); // unchanged
@@ -878,5 +1038,156 @@ mod tests {
         );
         // The orchestrator must never see sub-agent tool-call plumbing in its result.
         assert!(!content.contains("atom_query"), "sub-agent transcript leaked into result");
+    }
+
+    // -----------------------------------------------------------------------
+    // SubAgentResult includes timing and token delta
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn subagent_result_includes_token_delta_and_elapsed() {
+        let provider = MockProvider::new(vec![
+            ("end_turn", vec![ContentBlock::Text("Done.".into())]),
+        ]);
+        let ctx = make_ctx(Box::new(provider));
+        let res = run_subagent(&ctx, "recon", "Recon", 10);
+        assert!(res.completed);
+        // MockProvider emits usage (100, 50) per turn, so we expect 1 turn recorded.
+        assert_eq!(res.tokens.input, 100);
+        assert_eq!(res.tokens.output, 50);
+        assert_eq!(res.tokens.turns, 1);
+        assert!(!res.elapsed.is_zero(), "elapsed time should be non-zero after a run");
+    }
+
+    // -----------------------------------------------------------------------
+    // Profile segment recording
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn handle_spawn_records_profile_segment() {
+        let provider = MockProvider::new(vec![
+            ("end_turn", vec![ContentBlock::Text("Recon done.".into())]),
+        ]);
+        let ctx = make_ctx(Box::new(provider));
+        let mut count = 0;
+        let input = serde_json::json!({"role": "recon", "objective": "map it"});
+        let result = handle_spawn_subagent(&ctx, "call_1", &input, &mut count, None);
+        assert!(!result.is_error);
+        assert_eq!(count, 1);
+
+        // Profile should have one segment for the recon sub-agent.
+        let profile = ctx.run_profile.lock().unwrap();
+        assert_eq!(profile.segments.len(), 1);
+        assert_eq!(profile.segments[0].label, "recon");
+        assert_eq!(profile.segments[0].findings_delta, 0);
+        assert!(profile.segments[0].completed);
+        assert_eq!(profile.segments[0].tokens.total_tokens(), 160);
+        assert!(profile.segments[0].tokens.turns > 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // Advisory budget warnings
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn budget_warning_emitted_when_turn_budget_exceeded_but_still_spawns() {
+        let provider = MockProvider::new(vec![
+            ("end_turn", vec![ContentBlock::Text("done".into())]),
+        ]);
+        let mut ctx = make_ctx(Box::new(provider));
+        // Set a very low turn budget so the first sub-agent triggers the warning.
+        ctx.turn_budget = 0;
+        let mut count = 0;
+        let input = serde_json::json!({"role": "recon", "objective": "test"});
+
+        let result = handle_spawn_subagent(&ctx, "call_1", &input, &mut count, None);
+        // The sub-agent should STILL be spawned (advisory only).
+        assert!(!result.is_error);
+        assert_eq!(count, 1);
+        // The result should contain the budget notice.
+        assert!(result.content.contains("budget notice"), "should include advisory budget warning, got: {}", result.content);
+
+        // The profile should record the budget warning.
+        let profile = ctx.run_profile.lock().unwrap();
+        assert!(!profile.budget_warnings.is_empty());
+    }
+
+    #[test]
+    fn budget_warning_emitted_when_token_budget_exceeded() {
+        let provider = MockProvider::new(vec![
+            ("end_turn", vec![ContentBlock::Text("done".into())]),
+        ]);
+        let mut ctx = make_ctx(Box::new(provider));
+        ctx.token_budget = 0;
+        let mut count = 0;
+        let input = serde_json::json!({"role": "recon", "objective": "test"});
+
+        let result = handle_spawn_subagent(&ctx, "call_1", &input, &mut count, None);
+        assert!(!result.is_error, "advisory budget must not block spawning");
+        assert!(result.content.contains("budget notice"));
+    }
+
+    #[test]
+    fn no_budget_warning_within_limits() {
+        let provider = MockProvider::new(vec![
+            ("end_turn", vec![ContentBlock::Text("done".into())]),
+        ]);
+        let ctx = make_ctx(Box::new(provider));
+        // Defaults: turn_budget=80, token_budget=1.5M — well above a single sub-agent.
+        let mut count = 0;
+        let input = serde_json::json!({"role": "recon", "objective": "test"});
+
+        let result = handle_spawn_subagent(&ctx, "call_1", &input, &mut count, None);
+        assert!(!result.is_error);
+        assert!(!result.content.contains("budget notice"));
+    }
+
+    // -----------------------------------------------------------------------
+    // Profile event emission via profile_tx
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn profile_event_emitted_via_sender() {
+        let provider = MockProvider::new(vec![
+            ("end_turn", vec![ContentBlock::Text("done".into())]),
+        ]);
+        let ctx = make_ctx(Box::new(provider));
+        let (tx, rx) = mpsc::channel();
+        let mut count = 0;
+        let input = serde_json::json!({"role": "recon", "objective": "test"});
+
+        handle_spawn_subagent(&ctx, "call_1", &input, &mut count, Some(&tx));
+
+        // A Profile event should have been sent.
+        let events: Vec<AgentEvent> = rx.try_iter().collect();
+        let profile_event = events.iter().find(|e| matches!(e, AgentEvent::Profile(_)));
+        assert!(profile_event.is_some(), "should emit a Profile event for interactive path");
+        if let Some(AgentEvent::Profile(line)) = profile_event {
+            assert!(line.contains("[profile]"));
+            assert!(line.contains("recon"));
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Second sub-agent gets disambiguated label (#2)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn second_subagent_gets_indexed_label() {
+        let provider = MockProvider::new(vec![
+            ("end_turn", vec![ContentBlock::Text("done".into())]),
+        ]);
+        let ctx = make_ctx(Box::new(provider));
+        let mut count = 0;
+        let input1 = serde_json::json!({"role": "recon", "objective": "map it"});
+        let input2 = serde_json::json!({"role": "recon", "objective": "map deeper"});
+
+        handle_spawn_subagent(&ctx, "c1", &input1, &mut count, None);
+        handle_spawn_subagent(&ctx, "c2", &input2, &mut count, None);
+
+        let profile = ctx.run_profile.lock().unwrap();
+        assert_eq!(profile.segments.len(), 2);
+        assert_eq!(profile.segments[0].label, "recon");
+        assert_eq!(profile.segments[1].label, "recon #2");
     }
 }
