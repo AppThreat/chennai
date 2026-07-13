@@ -1,0 +1,20 @@
+tui/src/agent/mod.rs
+  s_c6e2ea51d33dcc::t_c05169ba36d7a7 2440-2441
+  s_c6e2ea51d33dcc::t_78eaf40e410761 229-230
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "3a8257e32f114e544c23c475d758dfd8b88608e9",
+  "prompts": {},
+  "sessions": {
+    "s_c6e2ea51d33dcc": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a86a5d48-7c4a-4ef2-8f12-f983a288cae5",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Prabhu Subramanian <prabhu@appthreat.com>"
+    }
+  }
+}
