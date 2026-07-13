@@ -19,6 +19,7 @@ pub mod finding;
 pub mod memory;
 pub mod orchestrator;
 pub mod transcript;
+pub mod roles;
 pub use debug_log::DebugLogger;
 
 use crate::config::{Config, ProviderKind};
@@ -59,9 +60,9 @@ const TRAVERSAL_DOCS: &str = include_str!("../../docs/TRAVERSAL.md");
 /// that can be chained on any traversal.
 const DSL_OPERATIONS: &str = include_str!("../../docs/DSL_OPERATIONS.md");
 
-/// A parsed slash-command template: a prompt body plus an optional toolset
-/// allowlist and effort override, sourced from the markdown-with-frontmatter
-/// files in `tui/agents/` (or a user override).
+/// A parsed slash-command or role template: a prompt body plus optional
+/// metadata from YAML frontmatter — tool allowlist, effort override, turn
+/// budget, and a short description for the orchestrator's role menu.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct SlashCommand {
     /// The prompt body with the YAML frontmatter stripped.
@@ -73,6 +74,9 @@ pub struct SlashCommand {
     /// Per-role maximum turn budget (`max_turns:` frontmatter), or `None` to use
     /// the role's built-in default. Clamped by `HARD_TURN_CEILING` (40).
     pub max_turns: Option<u32>,
+    /// Short description for the orchestrator's dynamic role menu
+    /// (`description:` frontmatter). Falls back to the first body line if absent.
+    pub description: Option<String>,
 }
 
 /// Built-in (compiled-in) prompt text for a known slash command.
@@ -82,6 +86,7 @@ fn builtin_prompt(cmd: &str) -> Option<&'static str> {
         "explain" => Some(PROMPT_EXPLAIN),
         "trace" => Some(PROMPT_TRACE),
         "code-review" | "code_review" => Some(PROMPT_CODE_REVIEW),
+        "orchestrate" | "audit" => Some(""), // Special-cased in app.rs dispatch — no template needed.
         _ => None,
     }
 }
@@ -97,13 +102,17 @@ pub fn slash_command(cmd: &str) -> Option<SlashCommand> {
 /// Resolve a role template to a parsed [`SlashCommand`], preferring a user
 /// override at `~/.config/chennai/agents/roles/<name>.md` over the built-in.
 /// Returns `None` for unknown roles with no override file.
+///
+/// Prefer [`roles::resolve_role`] for new code — it also checks the
+/// project-local directory and provides strict name validation.
+#[cfg(test)]
 pub fn role(name: &str) -> Option<SlashCommand> {
     let raw = user_override_role(name).or_else(|| builtin_role(name).map(str::to_string))?;
     Some(parse_frontmatter(&raw))
 }
 
 /// Built-in (compiled-in) role template for a known role name.
-fn builtin_role(name: &str) -> Option<&'static str> {
+pub fn builtin_role(name: &str) -> Option<&'static str> {
     match name {
         "recon" => Some(ROLE_RECON),
         "sink-hunter" => Some(ROLE_SINK_HUNTER),
@@ -116,6 +125,7 @@ fn builtin_role(name: &str) -> Option<&'static str> {
 }
 
 /// Read a user override role template if present.
+#[cfg(test)]
 fn user_override_role(name: &str) -> Option<String> {
     let home = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")).ok()?;
     let path = std::path::Path::new(&home)
@@ -137,16 +147,18 @@ fn user_override_prompt(cmd: &str) -> Option<String> {
 /// `serde_yaml`. Supports both single-line (`tools: [a, b]`) and multi-line
 /// (`tools:\n  - a\n  - b`) YAML lists. Unknown keys are ignored; a malformed or
 /// absent header leaves the whole input as the body.
-fn parse_frontmatter(raw: &str) -> SlashCommand {
+///
+/// Parsed frontmatter fields: `tools`, `effort`, `max_turns`, `description`.
+pub fn parse_frontmatter(raw: &str) -> SlashCommand {
     let trimmed = raw.trim_start_matches('\u{feff}');
     let Some(rest) = trimmed.strip_prefix("---\n").or_else(|| trimmed.strip_prefix("---\r\n")) else {
-        return SlashCommand { body: raw.trim().to_string(), tools: None, effort: None, max_turns: None };
+        return SlashCommand { body: raw.trim().to_string(), tools: None, effort: None, max_turns: None, description: None };
     };
 
     // Find the closing `---` delimiter line.
     let closing = rest.find("\n---").or_else(|| rest.find("\r\n---"));
     let Some(end) = closing else {
-        return SlashCommand { body: raw.trim().to_string(), tools: None, effort: None, max_turns: None };
+        return SlashCommand { body: raw.trim().to_string(), tools: None, effort: None, max_turns: None, description: None };
     };
     let yaml_str = &rest[..end];
     let body_start = end + 4; // skip past "\n---" (or "\r\n---")
@@ -154,11 +166,11 @@ fn parse_frontmatter(raw: &str) -> SlashCommand {
 
     // Parse the YAML header with serde_yaml.
     let Ok(yaml) = serde_yaml::from_str::<serde_yaml::Value>(yaml_str) else {
-        return SlashCommand { body, tools: None, effort: None, max_turns: None };
+        return SlashCommand { body, tools: None, effort: None, max_turns: None, description: None };
     };
     let mapping = match yaml {
         serde_yaml::Value::Mapping(ref m) => m,
-        _ => return SlashCommand { body, tools: None, effort: None, max_turns: None },
+        _ => return SlashCommand { body, tools: None, effort: None, max_turns: None, description: None },
     };
 
     let tools = mapping.get(serde_yaml::Value::String("tools".into())).and_then(|v| {
@@ -184,7 +196,11 @@ fn parse_frontmatter(raw: &str) -> SlashCommand {
         v.as_i64().and_then(|n| u32::try_from(n).ok()).filter(|&n| n > 0)
     });
 
-    SlashCommand { body, tools, effort, max_turns }
+    let description = mapping.get(serde_yaml::Value::String("description".into())).and_then(|v| {
+        v.as_str().map(|s| s.to_string()).filter(|s| !s.is_empty())
+    });
+
+    SlashCommand { body, tools, effort, max_turns, description }
 }
 
 /// Resolve the effective turn budget for a sub-agent role. The priority is:
@@ -2002,7 +2018,7 @@ mod tests {
             run_profile: Arc::new(Mutex::new(RunProfile::new())),
             max_subagents: 8,
             turn_budget: 80,
-            token_budget: 1_500_000,
+            token_budget: 256_000,
         };
         let result = dispatch_tool(&ctx.tool_env(), "id1", "nonexistent_tool", &serde_json::json!({}));
         assert!(result.is_error);
@@ -2095,7 +2111,7 @@ mod tests {
             run_profile: Arc::new(Mutex::new(RunProfile::new())),
             max_subagents: 8,
             turn_budget: 80,
-            token_budget: 1_500_000,
+            token_budget: 256_000,
         };
         let result = dispatch_tool(&ctx.tool_env(), "id1", "bom_query", &serde_json::json!({"query": "express"}));
         assert!(!result.is_error);

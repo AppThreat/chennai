@@ -42,12 +42,12 @@ impl OpenAIProvider {
 /// Ensure the base URL ends with `/v1/chat/completions`.
 fn normalize_base_url(url: &str) -> String {
     let url = url.trim_end_matches('/');
-    if url.ends_with("/v1/chat/completions") {
+    if url.ends_with("/chat/completions") {
+        // Explicit completions endpoint — respect it as-is (covers non-`/v1`
+        // gateways such as z.ai's `.../paas/v4/chat/completions`).
         url.to_string()
     } else if url.ends_with("/v1") {
         format!("{url}/chat/completions")
-    } else if url.ends_with("/chat/completions") && url.contains("/v1/") {
-        url.to_string()
     } else {
         format!("{url}/v1/chat/completions")
     }
@@ -429,6 +429,10 @@ mod tests {
         assert_eq!(normalize_base_url("https://api.openai.com/v1/"), "https://api.openai.com/v1/chat/completions");
         assert_eq!(normalize_base_url("https://api.openai.com/v1/chat/completions"), "https://api.openai.com/v1/chat/completions");
         assert_eq!(normalize_base_url("http://localhost:11434/v1"), "http://localhost:11434/v1/chat/completions");
+        // Non-`/v1` gateways: an explicit completions path is respected as-is.
+        assert_eq!(normalize_base_url("https://api.z.ai/api/coding/paas/v4/chat/completions"), "https://api.z.ai/api/coding/paas/v4/chat/completions");
+        // A versioned base without a completions path still gets `/v1/chat/completions`.
+        assert_eq!(normalize_base_url("https://api.z.ai/api/coding/paas/v4"), "https://api.z.ai/api/coding/paas/v4/v1/chat/completions");
     }
 
     #[test]

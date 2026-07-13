@@ -13,10 +13,11 @@ use super::process_note::ProcessNote;
 use super::provider::{
     AgentEvent, ChannelSink, ContentBlock, EventSink, TurnRequest,
 };
+use super::roles::{self, OrchestrateManifest};
 use super::tools::{self, spawn_subagent_tool};
 use super::transcript::Transcript;
 use super::{
-    dispatch_tool, filter_tools, friendly_provider_error, resolve_turn_budget, role, AgentCtx,
+    dispatch_tool, filter_tools, friendly_provider_error, resolve_turn_budget, AgentCtx,
     ToolExecResult, TokenLedgerSink,
 };
 use serde_json::Value;
@@ -26,19 +27,65 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-/// The orchestrator system prompt — instructs the meta-controller to plan,
-/// delegate to sub-agents, and synthesize results.
-const ORCHESTRATOR_PROMPT: &str = include_str!("../../agents/orchestrator.md");
+/// The built-in orchestrator system prompt (used when no project-local or
+/// manifest override exists). The `{{ROLES_SECTION}}` placeholder is replaced
+/// at runtime with the dynamically discovered role menu.
+const ORCHESTRATOR_PROMPT_TEMPLATE: &str = include_str!("../../agents/orchestrator.md");
 
-/// Valid sub-agent role names.
-const VALID_ROLES: &[&str] = &[
-    "recon",
-    "sink-hunter",
-    "taint-prover",
-    "auth-boundary",
-    "supply-chain",
-    "reporter",
-];
+/// Resolve the effective orchestrator system prompt for a given project.
+///
+/// Precedence: manifest `orchestrator_prompt` file → built-in template with
+/// dynamic role substitution. The `{{ROLES_SECTION}}` placeholder in the
+/// built-in template is replaced with the discovered roles section.
+fn build_orchestrator_prompt(base: &Path, manifest: &OrchestrateManifest, discovered_names: &[String]) -> String {
+    // Check for a project-specific orchestrator prompt override. The path comes
+    // from the repo-local manifest (attacker-influenceable), so it must stay
+    // within the project tree — reject absolute paths and `..` traversal.
+    if let Some(ref prompt_path) = manifest.orchestrator_prompt {
+        let rel = Path::new(prompt_path);
+        let safe = !rel.is_absolute()
+            && !rel.components().any(|c| matches!(c, std::path::Component::ParentDir));
+        if safe {
+            let full_path = base.join(rel);
+            if let Ok(content) = std::fs::read_to_string(&full_path) {
+                // Substitute the roles section even in custom prompts.
+                let roles_section = roles::build_roles_section(base, Some(discovered_names));
+                return content.replace("{{ROLES_SECTION}}", &roles_section);
+            }
+        }
+    }
+
+    // Built-in template with dynamic role substitution.
+    let roles_section = roles::build_roles_section(base, Some(discovered_names));
+    ORCHESTRATOR_PROMPT_TEMPLATE.replace("{{ROLES_SECTION}}", &roles_section)
+}
+
+/// Effective orchestration budgets after applying the project manifest.
+///
+/// The manifest may only *tighten* the caps supplied on the command line / env
+/// (via `min`), never loosen them — a repo-local file must not be able to raise
+/// your sub-agent count or token spend. The token budget is additionally
+/// clamped to [`roles::TOKEN_BUDGET_CEILING`].
+struct EffectiveBudgets {
+    max_subagents: usize,
+    turn_budget: u64,
+    token_budget: u64,
+}
+
+/// Resolve the effective budgets from the ctx (CLI/env) and the project manifest.
+fn effective_budgets(ctx: &AgentCtx, manifest: &OrchestrateManifest) -> EffectiveBudgets {
+    let max_subagents = manifest
+        .max_subagents
+        .map_or(ctx.max_subagents, |m| m.min(ctx.max_subagents));
+    let turn_budget = manifest
+        .turn_budget
+        .map_or(ctx.turn_budget, |m| m.min(ctx.turn_budget));
+    let token_budget = manifest
+        .token_budget
+        .map_or(ctx.token_budget, |m| m.min(ctx.token_budget))
+        .min(roles::TOKEN_BUDGET_CEILING);
+    EffectiveBudgets { max_subagents, turn_budget, token_budget }
+}
 
 /// The outcome of a single sub-agent run.
 pub struct SubAgentResult {
@@ -64,6 +111,9 @@ pub fn run_subagent(
     objective: &str,
     max_turns: u32,
 ) -> SubAgentResult {
+    let base = ctx.source_root.as_ref()
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
     let findings_before = {
         let f = ctx.findings.lock().unwrap();
         f.findings.len()
@@ -78,7 +128,7 @@ pub fn run_subagent(
 
     let start = Instant::now();
 
-    let role_def = match role(role_name) {
+    let role_def = match roles::resolve_role(&base, role_name) {
         Some(r) => r,
         None => return SubAgentResult {
             summary: format!("Unknown role: {role_name}"),
@@ -333,6 +383,18 @@ pub fn run_orchestrator(
         }
     }
 
+    // Build the orchestrator prompt with the dynamically discovered role menu.
+    let base = ctx.source_root.as_ref()
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    let manifest = roles::load_manifest(&base);
+    let discovered_names: Vec<String> = if let Some(ref subset) = manifest.roles {
+        subset.clone()
+    } else {
+        roles::discover_roles(&base).keys().cloned().collect()
+    };
+    let system_prompt = build_orchestrator_prompt(&base, &manifest, &discovered_names);
+
     let tool_defs = orchestrator_tool_definitions();
     let mut transcript = Transcript::new();
     transcript.push_user(input);
@@ -367,7 +429,7 @@ pub fn run_orchestrator(
 
         let result = match ctx.provider.stream_turn(
             &TurnRequest {
-                system: ORCHESTRATOR_PROMPT,
+                system: &system_prompt,
                 tools: &tool_defs,
                 messages: transcript.messages(),
                 max_tokens: ctx.max_tokens,
@@ -503,6 +565,18 @@ pub fn run_orchestrator_async(
         }
     }
 
+    // Build the orchestrator prompt with the dynamically discovered role menu.
+    let base = ctx.source_root.as_ref()
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    let manifest = roles::load_manifest(&base);
+    let discovered_names: Vec<String> = if let Some(ref subset) = manifest.roles {
+        subset.clone()
+    } else {
+        roles::discover_roles(&base).keys().cloned().collect()
+    };
+    let system_prompt = build_orchestrator_prompt(&base, &manifest, &discovered_names);
+
     let tool_defs = orchestrator_tool_definitions();
     let mut transcript = Transcript::with_initial(history);
     transcript.push_user(user_input);
@@ -533,7 +607,7 @@ pub fn run_orchestrator_async(
         };
         let result = match ctx.provider.stream_turn(
             &TurnRequest {
-                system: ORCHESTRATOR_PROMPT,
+                system: &system_prompt,
                 tools: &tool_defs,
                 messages: transcript.messages(),
                 max_tokens: ctx.max_tokens,
@@ -666,25 +740,31 @@ fn handle_spawn_subagent(
     let objective = input.get("objective").and_then(Value::as_str).unwrap_or("");
     let requested_turns = input.get("max_turns").and_then(Value::as_u64).map(|n| n as u32);
 
-    // Validate role.
-    if !VALID_ROLES.contains(&role_name) {
-        let valid = VALID_ROLES.join(", ");
+    // Validate role against the dynamically discovered set.
+    let base = ctx.source_root.as_ref()
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    let manifest = roles::load_manifest(&base);
+    let budgets = effective_budgets(ctx, &manifest);
+    let discovered = roles::discover_roles(&base);
+    if !discovered.contains_key(role_name) {
+        let valid_str: String = discovered.keys().map(|s| s.as_str()).collect::<Vec<_>>().join(", ");
         return ToolExecResult {
             call_id: call_id.into(),
             content: format!(
-                "Unknown role '{role_name}'. Valid roles: {valid}. Use a recognized role name."
+                "Unknown role '{role_name}'. Valid roles: {valid_str}. Use a recognized role name."
             ),
             is_error: true,
         };
     }
 
     // Enforce hard sub-agent cap.
-    if *subagent_count >= ctx.max_subagents {
+    if *subagent_count >= budgets.max_subagents {
         return ToolExecResult {
             call_id: call_id.into(),
             content: format!(
                 "Sub-agent cap ({}) reached. Cannot spawn another.",
-                ctx.max_subagents
+                budgets.max_subagents
             ),
             is_error: true,
         };
@@ -692,12 +772,12 @@ fn handle_spawn_subagent(
 
     // Resolve the effective turn budget: model request → frontmatter → role default,
     // clamped by HARD_TURN_CEILING.
-    let frontmatter_max_turns = super::role(role_name).and_then(|r| r.max_turns);
+    let frontmatter_max_turns = roles::resolve_role(&base, role_name).and_then(|r| r.max_turns);
     let effective_turns = resolve_turn_budget(requested_turns, role_name, frontmatter_max_turns);
 
     // Check global advisory budgets BEFORE spawning. If either soft budget is already
     // exceeded, the sub-agent is still spawned but the orchestrator receives a warning.
-    let budget_notice = check_advisory_budgets(ctx, role_name, *subagent_count);
+    let budget_notice = check_advisory_budgets(ctx, &budgets, role_name, *subagent_count);
 
     *subagent_count += 1;
 
@@ -784,18 +864,18 @@ fn handle_spawn_subagent(
 /// Returns a warning message if either the turn budget or token budget has been
 /// exceeded, or `None` if both are within limits. The sub-agent is always spawned
 /// regardless — these budgets are advisory only.
-fn check_advisory_budgets(ctx: &AgentCtx, role_name: &str, subagent_count: usize) -> Option<String> {
+fn check_advisory_budgets(ctx: &AgentCtx, budgets: &EffectiveBudgets, role_name: &str, subagent_count: usize) -> Option<String> {
     let (turns, tokens) = {
         let ledger = ctx.token_ledger.lock().unwrap();
         (ledger.turns, ledger.total_tokens())
     };
-    let turn_exceeded = turns >= ctx.turn_budget;
-    let token_exceeded = tokens >= ctx.token_budget;
+    let turn_exceeded = turns >= budgets.turn_budget;
+    let token_exceeded = tokens >= budgets.token_budget;
 
     if turn_exceeded || token_exceeded {
         let mut parts = Vec::new();
         if turn_exceeded {
-            parts.push(format!("{}/{} turns", turns, ctx.turn_budget));
+            parts.push(format!("{}/{} turns", turns, budgets.turn_budget));
         }
         if token_exceeded {
             parts.push(format!(
@@ -913,7 +993,7 @@ mod tests {
             run_profile: Arc::new(Mutex::new(RunProfile::new())),
             max_subagents: 8,
             turn_budget: 80,
-            token_budget: 1_500_000,
+            token_budget: 256_000,
         }
     }
 
@@ -1136,6 +1216,47 @@ mod tests {
         assert!(profile.segments[0].completed);
         assert_eq!(profile.segments[0].tokens.total_tokens(), 160);
         assert!(profile.segments[0].tokens.turns > 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // Effective budgets (manifest can only tighten, never loosen)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn effective_budgets_default_to_ctx_without_manifest() {
+        let ctx = make_ctx(Box::new(MockProvider::new(vec![])));
+        let b = effective_budgets(&ctx, &OrchestrateManifest::default());
+        assert_eq!(b.max_subagents, ctx.max_subagents);
+        assert_eq!(b.turn_budget, ctx.turn_budget);
+        assert_eq!(b.token_budget, ctx.token_budget);
+    }
+
+    #[test]
+    fn effective_budgets_manifest_can_only_lower() {
+        let ctx = make_ctx(Box::new(MockProvider::new(vec![])));
+        // Manifest asks for MORE than the ctx (CLI/env) caps — must be clamped down.
+        let loosen = OrchestrateManifest {
+            max_subagents: Some(100),
+            turn_budget: Some(9_999),
+            token_budget: Some(10_000_000),
+            ..Default::default()
+        };
+        let b = effective_budgets(&ctx, &loosen);
+        assert_eq!(b.max_subagents, ctx.max_subagents, "cannot exceed ctx cap");
+        assert_eq!(b.turn_budget, ctx.turn_budget, "cannot exceed ctx cap");
+        assert_eq!(b.token_budget, roles::TOKEN_BUDGET_CEILING, "clamped to hard ceiling");
+
+        // Manifest asks for LESS — the tighter value wins.
+        let tighten = OrchestrateManifest {
+            max_subagents: Some(2),
+            turn_budget: Some(10),
+            token_budget: Some(50_000),
+            ..Default::default()
+        };
+        let b = effective_budgets(&ctx, &tighten);
+        assert_eq!(b.max_subagents, 2);
+        assert_eq!(b.turn_budget, 10);
+        assert_eq!(b.token_budget, 50_000);
     }
 
     // -----------------------------------------------------------------------

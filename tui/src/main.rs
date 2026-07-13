@@ -102,7 +102,7 @@ struct Args {
     #[arg(long)]
     turn_budget: Option<u64>,
     /// Advisory global token budget. When exceeded, a warning is surfaced to
-    /// the orchestrator but sub-agents are still spawned (default 1,500,000).
+    /// the orchestrator but sub-agents are still spawned (default 256,000).
     #[arg(long)]
     token_budget: Option<u64>,
     /// Subcommand to run instead of launching the TUI.
@@ -1559,7 +1559,7 @@ fn run_app<B: ratatui::backend::Backend>(
                         no_thinking: config.no_thinking,
                         effort: config.effort.clone(),
                         allowed_tools: None,
-                        orchestrate: config.orchestrate,
+                        orchestrate: config.orchestrate || app.orchestrate_once,
                         cancel,
                         debug_logger: if config.debug { DebugLogger::new(source_root.as_deref()) } else { None },
                         findings: Arc::new(Mutex::new(FindingSet::new())),
@@ -1572,7 +1572,12 @@ fn run_app<B: ratatui::backend::Backend>(
         });
                 }
             if let Some(ctx) = agent_ctx.take() {
-                let question = app.agent_query_text.clone();
+                // For /orchestrate and /audit, use the stashed objective as the
+                // question; otherwise use the raw query text.
+                let question = app.orchestrate_objective.take()
+                    .unwrap_or_else(|| app.agent_query_text.clone());
+                // Clear the one-shot flag now that it's been consumed.
+                app.orchestrate_once = false;
                 let no_thinking = ctx.no_thinking;
                 let system_prompt = match app.agent_slash_prompt.take() {
                     Some(body) => format!("{}\n\n# Task\n{}", ctx.system_prompt, body),

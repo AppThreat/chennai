@@ -315,6 +315,12 @@ pub struct App {
     pub agent_spinner: usize,
     /// Name of the most recently invoked tool (shown in the progress footer).
     pub agent_last_tool: Option<String>,
+    /// When true, the next agent run uses orchestrator mode (triggered by
+    /// `/orchestrate` or `/audit`). Cleared after the run starts.
+    pub orchestrate_once: bool,
+    /// Free-text objective passed after `/orchestrate [objective...]` or
+    /// `/audit [objective...]`. Fed into the orchestrator's seed prompt.
+    pub orchestrate_objective: Option<String>,
 
     // BOM (CycloneDX SBOM) state.
     pub bom_store: Option<BomStore>,
@@ -439,6 +445,8 @@ impl App {
             agent_total_out: 0,
             agent_spinner: 0,
             agent_last_tool: None,
+            orchestrate_once: false,
+            orchestrate_objective: None,
             bom_store: None,
             bom_generated: false,
             backend: None,
@@ -591,8 +599,67 @@ impl App {
             return;
         }
 
-        // Slash commands: /security-review, /code-review, /explain, /trace, /help
+        // Slash commands: /orchestrate, /audit, /security-review, /code-review, /explain, /trace, /help
         if let Some(slash_cmd) = t.strip_prefix('/') {
+            // Special-case: /orchestrate and /audit trigger orchestrated mode.
+            // Split the command word from the free-text objective so that
+            // `/audit find SQLi` is recognized (not just the bare `/audit`).
+            let mut cmd_parts = slash_cmd.splitn(2, char::is_whitespace);
+            let cmd_word = cmd_parts.next().unwrap_or("");
+            if cmd_word == "orchestrate" || cmd_word == "audit" {
+                if self.agent_enabled && !self.agent_active {
+                    // Everything after the command name is the objective.
+                    let objective = cmd_parts.next()
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty());
+                    self.orchestrate_once = true;
+                    self.orchestrate_objective = objective.clone();
+
+                    let label = objective.as_deref().unwrap_or("full audit");
+                    self.status = format!("orchestrating: {label}");
+                    self.agent_query_text = t.clone();
+
+                    // Discover and display the available roles.
+                    let base = self.source_root.as_ref()
+                        .map(std::path::PathBuf::from)
+                        .unwrap_or_else(|| std::path::PathBuf::from("."));
+                    let role_names: Vec<String> = crate::agent::roles::discover_roles(&base)
+                        .keys().cloned().collect();
+                    let roles_display = role_names.join(", ");
+                    self.repl.record(
+                        &t,
+                        format!("Starting orchestrated audit — roles: {}", roles_display),
+                        true,
+                    );
+
+                    // Set up agent state the same way as other slash commands.
+                    self.agent_slash_prompt = None;
+                    self.agent_slash_tools = None;
+                    self.agent_slash_effort = None;
+                    self.agent_active = true;
+                    self.agent_rx = None;
+                    self.agent_transcript.clear();
+                    self.agent_history.clear(); // Orchestrator starts fresh.
+                    self.agent_transcript.push(AgentEntry::UserQuery(t.clone()));
+                    self.agent_total_in = 0;
+                    self.agent_total_out = 0;
+                    self.agent_last_tool = None;
+                    self.agent_scroll = 0;
+                    self.agent_auto_scroll = true;
+                    self.agent_report_saved = false;
+                    self.output = None;
+                    self.flows = None;
+                    self.detail = None;
+                    if let Some(c) = self.agent_cancel.as_ref() { c.store(false, AtomicOrdering::SeqCst) }
+                } else if !self.agent_enabled {
+                    self.repl.record(&t, "AI agent not enabled; set ANTHROPIC_API_KEY or OPENAI_API_KEY".into(), false);
+                } else {
+                    self.repl.record(&t, "agent already running".into(), false);
+                }
+                return;
+            }
+
+            // Known slash commands: /security-review, /code-review, /explain, /trace
             if self.agent_enabled && !self.agent_active {
                 let cmd = slash_cmd.to_string();
                 // The query is shown in the agent transcript, not the REPL scrollback.

@@ -69,7 +69,8 @@ pub struct Config {
     /// sub-agents are still spawned. Default 80.
     pub turn_budget: u64,
     /// Advisory global token budget. When exceeded, a warning is surfaced but
-    /// sub-agents are still spawned. Default 1,500,000.
+    /// sub-agents are still spawned. Default 256,000. Hard ceiling — no
+    /// configuration source can raise it above this value.
     pub token_budget: u64,
 }
 
@@ -140,9 +141,27 @@ impl Config {
 
         let token_budget = cli_token_budget
             .or_else(|| env_var("CHENNAI_TOKEN_BUDGET").and_then(|s| s.parse::<u64>().ok()))
-            .unwrap_or(1_500_000);
+            .unwrap_or(crate::agent::roles::TOKEN_BUDGET_CEILING);
 
-        Config { provider, model, base_url, api_key, enabled, no_thinking: cli_no_thinking, effort, debug: false, orchestrate: cli_orchestrate, max_subagents, turn_budget, token_budget }
+        // Clamp the token budget to the hard ceiling. Configuration sources
+        // (CLI, env, or project manifest) may only *lower* this value.
+        let (token_budget, was_clamped) = crate::agent::roles::clamp_token_budget(token_budget);
+        if was_clamped {
+            eprintln!(
+                "[config] token_budget clamped to {} (requested value exceeded the hard ceiling)",
+                token_budget
+            );
+        }
+
+        // Orchestrated mode is enabled by the `--orchestrate` CLI flag or the
+        // user-controlled `CHENNAI_ORCHESTRATE` env var. A project manifest can
+        // never turn it on — only the shape of a run, not its initiation.
+        let orchestrate = cli_orchestrate
+            || env_var("CHENNAI_ORCHESTRATE")
+                .map(|s| matches!(s.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+                .unwrap_or(false);
+
+        Config { provider, model, base_url, api_key, enabled, no_thinking: cli_no_thinking, effort, debug: false, orchestrate, max_subagents, turn_budget, token_budget }
     }
 
     /// Read the config file at `~/.config/chennai/config.toml`.
@@ -368,7 +387,7 @@ mod tests {
         let cfg = Config::load_with_base_url(None, None, None, None, false, None, false, None, None, None);
         assert_eq!(cfg.max_subagents, 8);
         assert_eq!(cfg.turn_budget, 80);
-        assert_eq!(cfg.token_budget, 1_500_000);
+        assert_eq!(cfg.token_budget, 256_000);
     }
 
     #[test]
@@ -388,8 +407,15 @@ mod tests {
     #[test]
     fn cli_token_budget_overrides_default() {
         let _guard = ENV_MUTEX.lock().unwrap();
+        let cfg = Config::load_with_base_url(None, None, None, None, false, None, false, None, None, Some(200_000));
+        assert_eq!(cfg.token_budget, 200_000);
+    }
+
+    #[test]
+    fn cli_token_budget_clamped_to_ceiling() {
+        let _guard = ENV_MUTEX.lock().unwrap();
         let cfg = Config::load_with_base_url(None, None, None, None, false, None, false, None, None, Some(3_000_000));
-        assert_eq!(cfg.token_budget, 3_000_000);
+        assert_eq!(cfg.token_budget, 256_000, "values above the ceiling must be clamped");
     }
 
     #[test]
@@ -421,11 +447,34 @@ mod tests {
         let _guard = ENV_MUTEX.lock().unwrap();
         let prev = std::env::var("CHENNAI_TOKEN_BUDGET").ok();
         unsafe { std::env::set_var("CHENNAI_TOKEN_BUDGET", "5_000_000"); }
-        // CLI overrides env var.
-        let cfg = Config::load_with_base_url(None, None, None, None, false, None, false, None, None, Some(2_000_000));
-        assert_eq!(cfg.token_budget, 2_000_000);
+        // CLI overrides env var — value is within the ceiling so it passes through.
+        let cfg = Config::load_with_base_url(None, None, None, None, false, None, false, None, None, Some(200_000));
+        assert_eq!(cfg.token_budget, 200_000);
         unsafe {
             match prev { Some(val) => std::env::set_var("CHENNAI_TOKEN_BUDGET", val), None => std::env::remove_var("CHENNAI_TOKEN_BUDGET") }
+        }
+    }
+
+    #[test]
+    fn env_var_enables_orchestrate() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        let prev = std::env::var("CHENNAI_ORCHESTRATE").ok();
+
+        unsafe { std::env::set_var("CHENNAI_ORCHESTRATE", "true"); }
+        let cfg = Config::load_with_base_url(None, None, None, None, false, None, false, None, None, None);
+        assert!(cfg.orchestrate, "CHENNAI_ORCHESTRATE=true should enable orchestration");
+
+        unsafe { std::env::set_var("CHENNAI_ORCHESTRATE", "0"); }
+        let cfg = Config::load_with_base_url(None, None, None, None, false, None, false, None, None, None);
+        assert!(!cfg.orchestrate, "CHENNAI_ORCHESTRATE=0 should not enable orchestration");
+
+        // CLI flag wins regardless of env.
+        unsafe { std::env::set_var("CHENNAI_ORCHESTRATE", "0"); }
+        let cfg = Config::load_with_base_url(None, None, None, None, false, None, true, None, None, None);
+        assert!(cfg.orchestrate, "--orchestrate should enable even when env is off");
+
+        unsafe {
+            match prev { Some(val) => std::env::set_var("CHENNAI_ORCHESTRATE", val), None => std::env::remove_var("CHENNAI_ORCHESTRATE") }
         }
     }
 }
