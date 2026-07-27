@@ -1,0 +1,22 @@
+tui/src/golem/mod.rs
+  s_cdb2fa2bd51788::t_3eb45ea3cc4be4 147-148,359,367
+tui/src/golem/query.rs
+  s_cdb2fa2bd51788::t_fa8b2db49e91f7 883,891,894,1002,1008
+  s_cdb2fa2bd51788::t_91207dbd60bcff 895,982
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "cea9b20476c976958a15ba88c188086ad13b1a97",
+  "prompts": {},
+  "sessions": {
+    "s_cdb2fa2bd51788": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f2cc4c8d-c3f6-40c3-a016-c7a9d7be5d04",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Prabhu Subramanian <prabhu@appthreat.com>"
+    }
+  }
+}
