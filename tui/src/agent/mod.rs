@@ -145,7 +145,7 @@ fn user_override_prompt(cmd: &str) -> Option<String> {
 }
 
 /// Split optional `---`-delimited YAML frontmatter from a markdown prompt using
-/// `serde_yaml`. Supports both single-line (`tools: [a, b]`) and multi-line
+/// `serde_yaml_ng`. Supports both single-line (`tools: [a, b]`) and multi-line
 /// (`tools:\n  - a\n  - b`) YAML lists. Unknown keys are ignored; a malformed or
 /// absent header leaves the whole input as the body.
 ///
@@ -165,21 +165,21 @@ pub fn parse_frontmatter(raw: &str) -> SlashCommand {
     let body_start = end + 4; // skip past "\n---" (or "\r\n---")
     let body = rest[body_start..].trim().to_string();
 
-    // Parse the YAML header with serde_yaml.
-    let Ok(yaml) = serde_yaml::from_str::<serde_yaml::Value>(yaml_str) else {
+    // Parse the YAML header with serde_yaml_ng.
+    let Ok(yaml) = serde_yaml_ng::from_str::<serde_yaml_ng::Value>(yaml_str) else {
         return SlashCommand { body, tools: None, effort: None, max_turns: None, description: None };
     };
     let mapping = match yaml {
-        serde_yaml::Value::Mapping(ref m) => m,
+        serde_yaml_ng::Value::Mapping(ref m) => m,
         _ => return SlashCommand { body, tools: None, effort: None, max_turns: None, description: None },
     };
 
-    let tools = mapping.get(serde_yaml::Value::String("tools".into())).and_then(|v| {
+    let tools = mapping.get(serde_yaml_ng::Value::String("tools".into())).and_then(|v| {
         let list: Vec<String> = match v {
-            serde_yaml::Value::Sequence(seq) => {
+            serde_yaml_ng::Value::Sequence(seq) => {
                 seq.iter().filter_map(|item| item.as_str().map(|s| s.to_string())).collect()
             }
-            serde_yaml::Value::String(s) => {
+            serde_yaml_ng::Value::String(s) => {
                 // Fallback: parse inline YAML array syntax like "[a, b, c]"
                 let inner = s.trim_start_matches('[').trim_end_matches(']');
                 inner.split(',').map(|s| s.trim().trim_matches(['"', '\'']).to_string()).filter(|s| !s.is_empty()).collect()
@@ -189,15 +189,15 @@ pub fn parse_frontmatter(raw: &str) -> SlashCommand {
         if list.is_empty() { None } else { Some(list) }
     });
 
-    let effort = mapping.get(serde_yaml::Value::String("effort".into())).and_then(|v| {
+    let effort = mapping.get(serde_yaml_ng::Value::String("effort".into())).and_then(|v| {
         v.as_str().map(|s| s.to_string()).filter(|s| !s.is_empty())
     });
 
-    let max_turns = mapping.get(serde_yaml::Value::String("max_turns".into())).and_then(|v| {
+    let max_turns = mapping.get(serde_yaml_ng::Value::String("max_turns".into())).and_then(|v| {
         v.as_i64().and_then(|n| u32::try_from(n).ok()).filter(|&n| n > 0)
     });
 
-    let description = mapping.get(serde_yaml::Value::String("description".into())).and_then(|v| {
+    let description = mapping.get(serde_yaml_ng::Value::String("description".into())).and_then(|v| {
         v.as_str().map(|s| s.to_string()).filter(|s| !s.is_empty())
     });
 
@@ -807,7 +807,7 @@ fn get_traversal_docs(root: &str) -> String {
         }
         // Fallback: return a snippet around the match.
         let end = (start + 200).min(DSL_OPERATIONS.len());
-        return format!("…{}\n\nUse `atom_traversal_docs` with a category name (e.g. `filter`, `repeat`) for the full reference.", &DSL_OPERATIONS[start..end].trim());
+        return format!("…{}\n\nUse `atom_traversal_docs` with a category name (e.g. `filter`, `repeat`) for the full reference.", DSL_OPERATIONS[start..end].trim());
     }
 
     format!(
