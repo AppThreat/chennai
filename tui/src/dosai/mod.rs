@@ -28,7 +28,7 @@ pub use runner::{dosai_dataflows_path, dosai_methods_path, run_dosai};
 
 use crate::shared::backend::Backend;
 use crate::shared::{make_tool, pattern_match};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// Context for dosai analysis mode, holding up to three loaded reports.
 #[derive(Clone)]
@@ -65,7 +65,9 @@ impl DosaiCtx {
             "package_reachability" => self.query_package_reachability(pattern, limit),
             "dataflow_nodes" => query::query_dataflow_nodes(&self.dataflows.report, pattern, limit),
             "dataflow_edges" => self.query_dataflow_edges(pattern, limit),
-            "security_signals" => query::query_security_signals(&self.dataflows.report, pattern, limit),
+            "security_signals" => {
+                query::query_security_signals(&self.dataflows.report, pattern, limit)
+            }
             "dataflow" => query::query_slices(&self.dataflows.report, pattern, limit),
             "flows" => query::query_slices(&self.dataflows.report, pattern, limit),
             "trace" => query::query_trace(&self.dataflows.report, pattern, limit),
@@ -75,7 +77,9 @@ impl DosaiCtx {
                 let methods_val = self.methods.as_ref().map(|m| &m.report);
                 query::detail_method(&methods_val.cloned(), name)
             }
-            _ => format!("Unknown query kind '{kind}'. Valid kinds: methods, method_calls, dependencies, api_endpoints, entry_points, package_reachability, dataflow_nodes, dataflow_edges, security_signals, dataflow, flows, trace, callgraph, detail"),
+            _ => format!(
+                "Unknown query kind '{kind}'. Valid kinds: methods, method_calls, dependencies, api_endpoints, entry_points, package_reachability, dataflow_nodes, dataflow_edges, security_signals, dataflow, flows, trace, callgraph, detail"
+            ),
         }
     }
 
@@ -105,7 +109,8 @@ impl DosaiCtx {
     /// whether each package URL is reachable) and falling back to the methods `Dependencies`.
     fn query_dependencies(&self, pattern: Option<&str>) -> Result<String, String> {
         if let Some(arr) = self.dataflows.report["PackageReachability"].as_array() {
-            let mut lines: Vec<String> = vec![format!("# Package Reachability ({} total)", arr.len())];
+            let mut lines: Vec<String> =
+                vec![format!("# Package Reachability ({} total)", arr.len())];
             for dep in arr {
                 let purl = dep["Purl"].as_str().unwrap_or("?");
                 if !pattern_match(purl, pattern) {
@@ -113,13 +118,21 @@ impl DosaiCtx {
                 }
                 let reachable = dep["Reachable"].as_bool().unwrap_or(false);
                 let confidence = dep["Confidence"].as_str().unwrap_or("?");
-                let reach_str = if reachable { "REACHABLE" } else { "not reachable" };
+                let reach_str = if reachable {
+                    "REACHABLE"
+                } else {
+                    "not reachable"
+                };
                 lines.push(format!("  {purl} ({reach_str}, confidence {confidence})"));
             }
             return Ok(lines.join("\n"));
         }
 
-        if let Some(arr) = self.methods.as_ref().and_then(|m| m.report["Dependencies"].as_array()) {
+        if let Some(arr) = self
+            .methods
+            .as_ref()
+            .and_then(|m| m.report["Dependencies"].as_array())
+        {
             let mut lines: Vec<String> = vec![format!("# Dependencies ({} total)", arr.len())];
             for dep in arr {
                 let name = dep["Name"].as_str().unwrap_or("?");
@@ -136,9 +149,11 @@ impl DosaiCtx {
 
     /// List analysis entry points (HTTP routes, `Main`, etc.) from the dataflows report.
     fn query_entry_points(&self, pattern: Option<&str>) -> String {
-        let entries = self.dataflows.report["EntryPoints"]
-            .as_array()
-            .or_else(|| self.methods.as_ref().and_then(|m| m.report["EntryPoints"].as_array()));
+        let entries = self.dataflows.report["EntryPoints"].as_array().or_else(|| {
+            self.methods
+                .as_ref()
+                .and_then(|m| m.report["EntryPoints"].as_array())
+        });
         match entries {
             Some(arr) => {
                 let mut lines: Vec<String> = vec![format!("# Entry Points ({} total)", arr.len())];
@@ -167,7 +182,11 @@ impl DosaiCtx {
     fn query_package_reachability(&self, pattern: Option<&str>, limit: usize) -> String {
         let reach = self.dataflows.report["PackageReachability"]
             .as_array()
-            .or_else(|| self.methods.as_ref().and_then(|m| m.report["PackageReachability"].as_array()));
+            .or_else(|| {
+                self.methods
+                    .as_ref()
+                    .and_then(|m| m.report["PackageReachability"].as_array())
+            });
         match reach {
             Some(arr) => {
                 let mut matched: Vec<&serde_json::Value> = arr.iter().collect();
@@ -184,7 +203,11 @@ impl DosaiCtx {
                 for r in show {
                     let purl = r["Purl"].as_str().unwrap_or("?");
                     let reachable = r["Reachable"].as_bool().unwrap_or(false);
-                    let reach_str = if reachable { "REACHABLE" } else { "not reachable" };
+                    let reach_str = if reachable {
+                        "REACHABLE"
+                    } else {
+                        "not reachable"
+                    };
                     lines.push(format!("  {purl} ({reach_str})"));
                 }
                 lines.join("\n")
@@ -205,8 +228,16 @@ impl DosaiCtx {
             edges
                 .iter()
                 .filter(|e| {
-                    e["Label"].as_str().unwrap_or("").to_lowercase().contains(&pat_lower)
-                        || e["Kind"].as_str().unwrap_or("").to_lowercase().contains(&pat_lower)
+                    e["Label"]
+                        .as_str()
+                        .unwrap_or("")
+                        .to_lowercase()
+                        .contains(&pat_lower)
+                        || e["Kind"]
+                            .as_str()
+                            .unwrap_or("")
+                            .to_lowercase()
+                            .contains(&pat_lower)
                 })
                 .take(limit)
                 .collect()
@@ -214,8 +245,11 @@ impl DosaiCtx {
             edges.iter().take(limit).collect()
         };
 
-        let mut lines: Vec<String> =
-            vec![format!("# Data-Flow Edges ({} total, showing {})", edges.len(), matched.len())];
+        let mut lines: Vec<String> = vec![format!(
+            "# Data-Flow Edges ({} total, showing {})",
+            edges.len(),
+            matched.len()
+        )];
         for e in matched {
             let src = e["SourceId"].as_str().unwrap_or("?");
             let tgt = e["TargetId"].as_str().unwrap_or("?");
@@ -242,9 +276,21 @@ impl DosaiCtx {
             edges
                 .iter()
                 .filter(|e| {
-                    e["SourceId"].as_str().unwrap_or("").to_lowercase().contains(&pat_lower)
-                        || e["TargetId"].as_str().unwrap_or("").to_lowercase().contains(&pat_lower)
-                        || e["CalledMethodName"].as_str().unwrap_or("").to_lowercase().contains(&pat_lower)
+                    e["SourceId"]
+                        .as_str()
+                        .unwrap_or("")
+                        .to_lowercase()
+                        .contains(&pat_lower)
+                        || e["TargetId"]
+                            .as_str()
+                            .unwrap_or("")
+                            .to_lowercase()
+                            .contains(&pat_lower)
+                        || e["CalledMethodName"]
+                            .as_str()
+                            .unwrap_or("")
+                            .to_lowercase()
+                            .contains(&pat_lower)
                 })
                 .take(limit)
                 .collect()
@@ -256,10 +302,18 @@ impl DosaiCtx {
             return String::new();
         }
 
-        let mut lines: Vec<String> = vec![format!("# Call Graph Edges (showing {})", matched.len())];
+        let mut lines: Vec<String> =
+            vec![format!("# Call Graph Edges (showing {})", matched.len())];
         for e in matched {
-            let caller = e["SourceName"].as_str().or_else(|| e["SourceId"].as_str()).unwrap_or("?");
-            let callee = e["TargetName"].as_str().or_else(|| e["TargetId"].as_str()).or_else(|| e["CalledMethodName"].as_str()).unwrap_or("?");
+            let caller = e["SourceName"]
+                .as_str()
+                .or_else(|| e["SourceId"].as_str())
+                .unwrap_or("?");
+            let callee = e["TargetName"]
+                .as_str()
+                .or_else(|| e["TargetId"].as_str())
+                .or_else(|| e["CalledMethodName"].as_str())
+                .unwrap_or("?");
             let call_type = e["CallType"].as_str().unwrap_or("");
             lines.push(format!("  {caller} → {callee} ({call_type})"));
         }
@@ -365,14 +419,30 @@ You are an authorized red-team review of the user's own code. Analyze it adversa
 }
 
 impl Backend for DosaiCtx {
-    fn summary(&self) -> String { self.summary() }
-    fn query(&self, kind: &str, pattern: Option<&str>, limit: usize) -> String { self.query(kind, pattern, limit) }
-    fn backend_name(&self) -> &'static str { "dosai" }
-    fn tool_definitions(&self) -> Vec<Value> { dosai_tool_definitions() }
-    fn system_prompt(&self, summary_text: &str, bom_summary: Option<&str>, bom_components: Option<&str>, console_history: Option<&str>) -> String {
+    fn summary(&self) -> String {
+        self.summary()
+    }
+    fn query(&self, kind: &str, pattern: Option<&str>, limit: usize) -> String {
+        self.query(kind, pattern, limit)
+    }
+    fn backend_name(&self) -> &'static str {
+        "dosai"
+    }
+    fn tool_definitions(&self) -> Vec<Value> {
+        dosai_tool_definitions()
+    }
+    fn system_prompt(
+        &self,
+        summary_text: &str,
+        bom_summary: Option<&str>,
+        bom_components: Option<&str>,
+        console_history: Option<&str>,
+    ) -> String {
         build_dosai_system_prompt(summary_text, bom_summary, bom_components, console_history)
     }
-    fn clone_box(&self) -> Box<dyn Backend> { Box::new(self.clone()) }
+    fn clone_box(&self) -> Box<dyn Backend> {
+        Box::new(self.clone())
+    }
 }
 
 /// Tool definitions for dosai mode.
@@ -556,7 +626,12 @@ mod tests {
             }),
             report_path: "/tmp/dosai-methods.json".to_string(),
         });
-        DosaiCtx { dataflows, methods, crypto: None, source_root: "/tmp/test".to_string() }
+        DosaiCtx {
+            dataflows,
+            methods,
+            crypto: None,
+            source_root: "/tmp/test".to_string(),
+        }
     }
 
     #[test]
@@ -598,7 +673,12 @@ mod tests {
 
     #[test]
     fn test_dosai_system_prompt() {
-        let prompt = build_dosai_system_prompt("Methods: 10", Some("components: 3"), Some("  - lib v1.0"), None);
+        let prompt = build_dosai_system_prompt(
+            "Methods: 10",
+            Some("components: 3"),
+            Some("  - lib v1.0"),
+            None,
+        );
         assert!(prompt.contains("dosai"));
         assert!(prompt.contains("dosai_summary"));
         assert!(prompt.contains("dosai_query"));

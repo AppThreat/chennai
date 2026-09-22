@@ -8,22 +8,20 @@
 //! Each sub-agent run is timed and profiled: token deltas and wall-clock durations
 //! are recorded in the shared [`RunProfile`] for visibility during and after the run.
 
-use super::finding::{format_duration, LedgerDelta, ProfileSegment, TokenLedger};
+use super::finding::{LedgerDelta, ProfileSegment, TokenLedger, format_duration};
 use super::process_note::ProcessNote;
-use super::provider::{
-    AgentEvent, ChannelSink, ContentBlock, EventSink, TurnRequest,
-};
+use super::provider::{AgentEvent, ChannelSink, ContentBlock, EventSink, TurnRequest};
 use super::roles::{self, OrchestrateManifest};
 use super::tools::{self, spawn_subagent_tool};
 use super::transcript::Transcript;
 use super::{
-    dispatch_tool, filter_tools, friendly_provider_error, resolve_turn_budget, AgentCtx,
-    ToolExecResult, TokenLedgerSink,
+    AgentCtx, TokenLedgerSink, ToolExecResult, dispatch_tool, filter_tools,
+    friendly_provider_error, resolve_turn_budget,
 };
 use serde_json::Value;
 use std::path::Path;
-use std::sync::mpsc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -37,14 +35,20 @@ const ORCHESTRATOR_PROMPT_TEMPLATE: &str = include_str!("../../agents/orchestrat
 /// Precedence: manifest `orchestrator_prompt` file → built-in template with
 /// dynamic role substitution. The `{{ROLES_SECTION}}` placeholder in the
 /// built-in template is replaced with the discovered roles section.
-fn build_orchestrator_prompt(base: &Path, manifest: &OrchestrateManifest, discovered_names: &[String]) -> String {
+fn build_orchestrator_prompt(
+    base: &Path,
+    manifest: &OrchestrateManifest,
+    discovered_names: &[String],
+) -> String {
     // Check for a project-specific orchestrator prompt override. The path comes
     // from the repo-local manifest (attacker-influenceable), so it must stay
     // within the project tree — reject absolute paths and `..` traversal.
     if let Some(ref prompt_path) = manifest.orchestrator_prompt {
         let rel = Path::new(prompt_path);
         let safe = !rel.is_absolute()
-            && !rel.components().any(|c| matches!(c, std::path::Component::ParentDir));
+            && !rel
+                .components()
+                .any(|c| matches!(c, std::path::Component::ParentDir));
         if safe {
             let full_path = base.join(rel);
             if let Ok(content) = std::fs::read_to_string(&full_path) {
@@ -84,7 +88,11 @@ fn effective_budgets(ctx: &AgentCtx, manifest: &OrchestrateManifest) -> Effectiv
         .token_budget
         .map_or(ctx.token_budget, |m| m.min(ctx.token_budget))
         .min(roles::TOKEN_BUDGET_CEILING);
-    EffectiveBudgets { max_subagents, turn_budget, token_budget }
+    EffectiveBudgets {
+        max_subagents,
+        turn_budget,
+        token_budget,
+    }
 }
 
 /// The outcome of a single sub-agent run.
@@ -111,7 +119,9 @@ pub fn run_subagent(
     objective: &str,
     max_turns: u32,
 ) -> SubAgentResult {
-    let base = ctx.source_root.as_ref()
+    let base = ctx
+        .source_root
+        .as_ref()
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| std::path::PathBuf::from("."));
     let findings_before = {
@@ -130,13 +140,15 @@ pub fn run_subagent(
 
     let role_def = match roles::resolve_role(&base, role_name) {
         Some(r) => r,
-        None => return SubAgentResult {
-            summary: format!("Unknown role: {role_name}"),
-            findings_delta: 0,
-            completed: false,
-            tokens: LedgerDelta::default(),
-            elapsed: start.elapsed(),
-        },
+        None => {
+            return SubAgentResult {
+                summary: format!("Unknown role: {role_name}"),
+                findings_delta: 0,
+                completed: false,
+                tokens: LedgerDelta::default(),
+                elapsed: start.elapsed(),
+            };
+        }
     };
 
     // Fresh transcript — never shares messages from the orchestrator or other sub-agents.
@@ -387,7 +399,9 @@ pub fn run_orchestrator(
     }
 
     // Build the orchestrator prompt with the dynamically discovered role menu.
-    let base = ctx.source_root.as_ref()
+    let base = ctx
+        .source_root
+        .as_ref()
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| std::path::PathBuf::from("."));
     let manifest = roles::load_manifest(&base);
@@ -467,10 +481,13 @@ pub fn run_orchestrator(
                 let env = ctx.tool_env();
                 for (call_id, name, input) in &calls {
                     if name == "spawn_subagent" {
-                        let result = handle_spawn_subagent(
-                            ctx, call_id, input, &mut subagent_count, None,
+                        let result =
+                            handle_spawn_subagent(ctx, call_id, input, &mut subagent_count, None);
+                        transcript.push_tool_result(
+                            &result.call_id,
+                            &result.content,
+                            result.is_error,
                         );
-                        transcript.push_tool_result(&result.call_id, &result.content, result.is_error);
                         let preview: String = result.content.chars().take(200).collect();
                         eprintln!(
                             "\n  → spawn_subagent result ({} bytes): {}",
@@ -615,7 +632,9 @@ pub fn run_orchestrator_async(
     }
 
     // Build the orchestrator prompt with the dynamically discovered role menu.
-    let base = ctx.source_root.as_ref()
+    let base = ctx
+        .source_root
+        .as_ref()
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| std::path::PathBuf::from("."));
     let manifest = roles::load_manifest(&base);
@@ -696,8 +715,10 @@ pub fn run_orchestrator_async(
             "tool_use" | "tool_calls" => {
                 let tool_calls = transcript.last_tool_calls();
                 if tool_calls.is_empty() {
-                    tx.send(AgentEvent::Error("model requested tools but none found".into()))
-                        .ok();
+                    tx.send(AgentEvent::Error(
+                        "model requested tools but none found".into(),
+                    ))
+                    .ok();
                     break;
                 }
 
@@ -717,7 +738,11 @@ pub fn run_orchestrator_async(
                         })
                         .ok();
                         let result = handle_spawn_subagent(
-                            ctx, call_id, input, &mut subagent_count, Some(&tx),
+                            ctx,
+                            call_id,
+                            input,
+                            &mut subagent_count,
+                            Some(&tx),
                         );
                         tx.send(AgentEvent::ToolResult {
                             id: result.call_id.clone(),
@@ -761,7 +786,8 @@ pub fn run_orchestrator_async(
         let _ = profile.save(ctx.source_root.as_deref());
     }
 
-    tx.send(AgentEvent::History(transcript.messages().to_vec())).ok();
+    tx.send(AgentEvent::History(transcript.messages().to_vec()))
+        .ok();
     tx.send(AgentEvent::Done).ok();
 }
 
@@ -787,17 +813,26 @@ fn handle_spawn_subagent(
 ) -> ToolExecResult {
     let role_name = input.get("role").and_then(Value::as_str).unwrap_or("");
     let objective = input.get("objective").and_then(Value::as_str).unwrap_or("");
-    let requested_turns = input.get("max_turns").and_then(Value::as_u64).map(|n| n as u32);
+    let requested_turns = input
+        .get("max_turns")
+        .and_then(Value::as_u64)
+        .map(|n| n as u32);
 
     // Validate role against the dynamically discovered set.
-    let base = ctx.source_root.as_ref()
+    let base = ctx
+        .source_root
+        .as_ref()
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| std::path::PathBuf::from("."));
     let manifest = roles::load_manifest(&base);
     let budgets = effective_budgets(ctx, &manifest);
     let discovered = roles::discover_roles(&base);
     if !discovered.contains_key(role_name) {
-        let valid_str: String = discovered.keys().map(|s| s.as_str()).collect::<Vec<_>>().join(", ");
+        let valid_str: String = discovered
+            .keys()
+            .map(|s| s.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
         return ToolExecResult {
             call_id: call_id.into(),
             content: format!(
@@ -913,7 +948,12 @@ fn handle_spawn_subagent(
 /// Returns a warning message if either the turn budget or token budget has been
 /// exceeded, or `None` if both are within limits. The sub-agent is always spawned
 /// regardless — these budgets are advisory only.
-fn check_advisory_budgets(ctx: &AgentCtx, budgets: &EffectiveBudgets, role_name: &str, subagent_count: usize) -> Option<String> {
+fn check_advisory_budgets(
+    ctx: &AgentCtx,
+    budgets: &EffectiveBudgets,
+    role_name: &str,
+    subagent_count: usize,
+) -> Option<String> {
     let (turns, tokens) = {
         let ledger = ctx.token_ledger.lock().unwrap();
         (ledger.turns, ledger.total_tokens())
@@ -927,10 +967,7 @@ fn check_advisory_budgets(ctx: &AgentCtx, budgets: &EffectiveBudgets, role_name:
             parts.push(format!("{}/{} turns", turns, budgets.turn_budget));
         }
         if token_exceeded {
-            parts.push(format!(
-                "{} tokens",
-                LedgerDelta::format_tokens(tokens)
-            ));
+            parts.push(format!("{} tokens", LedgerDelta::format_tokens(tokens)));
         }
         let message = format!(
             "[budget notice: run has used {} and is over the advisory budget — \
@@ -940,7 +977,12 @@ fn check_advisory_budgets(ctx: &AgentCtx, budgets: &EffectiveBudgets, role_name:
         // Record the warning in the profile for the end-of-run summary.
         {
             let mut profile = ctx.run_profile.lock().unwrap();
-            profile.push_budget_warning(format!("before spawning '{}' (sub-agent #{}): {}", role_name, subagent_count + 1, message.trim_start_matches('[').trim_end_matches(']')));
+            profile.push_budget_warning(format!(
+                "before spawning '{}' (sub-agent #{}): {}",
+                role_name,
+                subagent_count + 1,
+                message.trim_start_matches('[').trim_end_matches(']')
+            ));
         }
         Some(message)
     } else {
@@ -969,10 +1011,7 @@ mod tests {
     impl MockProvider {
         fn new(turns: Vec<(&str, Vec<crate::agent::provider::ContentBlock>)>) -> Self {
             MockProvider {
-                turns: turns
-                    .into_iter()
-                    .map(|(s, c)| (s.to_string(), c))
-                    .collect(),
+                turns: turns.into_iter().map(|(s, c)| (s.to_string(), c)).collect(),
                 index: std::sync::Mutex::new(0),
             }
         }
@@ -1054,15 +1093,30 @@ mod tests {
     fn subagent_obeys_max_turns() {
         // Each turn returns a tool_use (the sub-agent keeps calling tools).
         let provider = MockProvider::new(vec![
-            ("tool_use", vec![ContentBlock::ToolUse {
-                id: "tu_1".into(), name: "atom_query".into(), input: serde_json::json!({"kind": "files"}),
-            }]),
-            ("tool_use", vec![ContentBlock::ToolUse {
-                id: "tu_2".into(), name: "process_note".into(), input: serde_json::json!({"action": "get"}),
-            }]),
-            ("tool_use", vec![ContentBlock::ToolUse {
-                id: "tu_3".into(), name: "atom_summary".into(), input: serde_json::json!({}),
-            }]),
+            (
+                "tool_use",
+                vec![ContentBlock::ToolUse {
+                    id: "tu_1".into(),
+                    name: "atom_query".into(),
+                    input: serde_json::json!({"kind": "files"}),
+                }],
+            ),
+            (
+                "tool_use",
+                vec![ContentBlock::ToolUse {
+                    id: "tu_2".into(),
+                    name: "process_note".into(),
+                    input: serde_json::json!({"action": "get"}),
+                }],
+            ),
+            (
+                "tool_use",
+                vec![ContentBlock::ToolUse {
+                    id: "tu_3".into(),
+                    name: "atom_summary".into(),
+                    input: serde_json::json!({}),
+                }],
+            ),
         ]);
         let ctx = make_ctx(Box::new(provider));
 
@@ -1073,19 +1127,26 @@ mod tests {
         // The summary should be empty since no end_turn was reached.
         assert!(res.summary.is_empty());
         // It was cut off by the budget, not a natural conclusion.
-        assert!(!res.completed, "hitting max_turns must be reported as not completed");
+        assert!(
+            !res.completed,
+            "hitting max_turns must be reported as not completed"
+        );
     }
 
     #[test]
     fn subagent_stops_on_end_turn() {
-        let provider = MockProvider::new(vec![
-            ("end_turn", vec![ContentBlock::Text("Summary: found 3 entrypoints".into())]),
-        ]);
+        let provider = MockProvider::new(vec![(
+            "end_turn",
+            vec![ContentBlock::Text("Summary: found 3 entrypoints".into())],
+        )]);
         let ctx = make_ctx(Box::new(provider));
         let res = run_subagent(&ctx, "recon", "Recon", 10);
         assert!(res.summary.contains("found 3 entrypoints"));
         assert_eq!(res.findings_delta, 0);
-        assert!(res.completed, "reaching end_turn must be reported as completed");
+        assert!(
+            res.completed,
+            "reaching end_turn must be reported as completed"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1107,9 +1168,10 @@ mod tests {
 
     #[test]
     fn subagent_cap_enforced() {
-        let ctx = make_ctx(Box::new(MockProvider::new(vec![
-            ("end_turn", vec![ContentBlock::Text("done".into())]),
-        ])));
+        let ctx = make_ctx(Box::new(MockProvider::new(vec![(
+            "end_turn",
+            vec![ContentBlock::Text("done".into())],
+        )])));
         let mut count = 8; // already at cap
         let input = serde_json::json!({"role": "recon", "objective": "test"});
         let result = handle_spawn_subagent(&ctx, "call_1", &input, &mut count, None);
@@ -1134,13 +1196,19 @@ mod tests {
         // 3. Ends
         let provider = MockProvider::new(vec![
             // Orchestrator turn: calls spawn_subagent
-            ("tool_use", vec![ContentBlock::ToolUse {
-                id: "tu_1".into(),
-                name: "spawn_subagent".into(),
-                input: serde_json::json!({"role": "recon", "objective": "map it"}),
-            }]),
+            (
+                "tool_use",
+                vec![ContentBlock::ToolUse {
+                    id: "tu_1".into(),
+                    name: "spawn_subagent".into(),
+                    input: serde_json::json!({"role": "recon", "objective": "map it"}),
+                }],
+            ),
             // Orchestrator second turn: ends
-            ("end_turn", vec![ContentBlock::Text("Synthesis: done.".into())]),
+            (
+                "end_turn",
+                vec![ContentBlock::Text("Synthesis: done.".into())],
+            ),
         ]);
         let ctx = make_ctx(Box::new(provider));
 
@@ -1168,10 +1236,14 @@ mod tests {
             for block in &msg.content {
                 match block {
                     ContentBlock::Thinking { .. } => {
-                        panic!("Orchestrator transcript contains a Thinking block from a sub-agent!")
+                        panic!(
+                            "Orchestrator transcript contains a Thinking block from a sub-agent!"
+                        )
                     }
                     ContentBlock::RedactedThinking { .. } => {
-                        panic!("Orchestrator transcript contains a RedactedThinking block from a sub-agent!")
+                        panic!(
+                            "Orchestrator transcript contains a RedactedThinking block from a sub-agent!"
+                        )
                     }
                     _ => {}
                 }
@@ -1190,13 +1262,19 @@ mod tests {
         // never the sub-agent's internal transcript.
         let provider = MockProvider::new(vec![
             // Turn 1: orchestrator calls spawn_subagent with role "recon"
-            ("tool_use", vec![ContentBlock::ToolUse {
-                id: "tu_spawn".into(),
-                name: "spawn_subagent".into(),
-                input: serde_json::json!({"role": "recon", "objective": "map entrypoints"}),
-            }]),
+            (
+                "tool_use",
+                vec![ContentBlock::ToolUse {
+                    id: "tu_spawn".into(),
+                    name: "spawn_subagent".into(),
+                    input: serde_json::json!({"role": "recon", "objective": "map entrypoints"}),
+                }],
+            ),
             // Turn 2: orchestrator ends
-            ("end_turn", vec![ContentBlock::Text("Analysis complete.".into())]),
+            (
+                "end_turn",
+                vec![ContentBlock::Text("Analysis complete.".into())],
+            ),
         ]);
         let ctx = make_ctx(Box::new(provider));
         let (tx, rx) = mpsc::channel();
@@ -1207,9 +1285,11 @@ mod tests {
         // no text, so the result is just the completion tally — assert on that exact shape.
         let events: Vec<AgentEvent> = rx.try_iter().collect();
         let spawn_result = events.iter().find_map(|e| match e {
-            AgentEvent::ToolResult { id, content, is_error } if id == "tu_spawn" => {
-                Some((content.clone(), *is_error))
-            }
+            AgentEvent::ToolResult {
+                id,
+                content,
+                is_error,
+            } if id == "tu_spawn" => Some((content.clone(), *is_error)),
             _ => None,
         });
         let (content, is_error) = spawn_result.expect("spawn_subagent should produce a ToolResult");
@@ -1219,7 +1299,10 @@ mod tests {
             "orchestrator should receive the summary/tally, got: {content}"
         );
         // The orchestrator must never see sub-agent tool-call plumbing in its result.
-        assert!(!content.contains("atom_query"), "sub-agent transcript leaked into result");
+        assert!(
+            !content.contains("atom_query"),
+            "sub-agent transcript leaked into result"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1228,9 +1311,8 @@ mod tests {
 
     #[test]
     fn subagent_result_includes_token_delta_and_elapsed() {
-        let provider = MockProvider::new(vec![
-            ("end_turn", vec![ContentBlock::Text("Done.".into())]),
-        ]);
+        let provider =
+            MockProvider::new(vec![("end_turn", vec![ContentBlock::Text("Done.".into())])]);
         let ctx = make_ctx(Box::new(provider));
         let res = run_subagent(&ctx, "recon", "Recon", 10);
         assert!(res.completed);
@@ -1238,7 +1320,10 @@ mod tests {
         assert_eq!(res.tokens.input, 100);
         assert_eq!(res.tokens.output, 50);
         assert_eq!(res.tokens.turns, 1);
-        assert!(!res.elapsed.is_zero(), "elapsed time should be non-zero after a run");
+        assert!(
+            !res.elapsed.is_zero(),
+            "elapsed time should be non-zero after a run"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1247,9 +1332,10 @@ mod tests {
 
     #[test]
     fn handle_spawn_records_profile_segment() {
-        let provider = MockProvider::new(vec![
-            ("end_turn", vec![ContentBlock::Text("Recon done.".into())]),
-        ]);
+        let provider = MockProvider::new(vec![(
+            "end_turn",
+            vec![ContentBlock::Text("Recon done.".into())],
+        )]);
         let ctx = make_ctx(Box::new(provider));
         let mut count = 0;
         let input = serde_json::json!({"role": "recon", "objective": "map it"});
@@ -1293,7 +1379,11 @@ mod tests {
         let b = effective_budgets(&ctx, &loosen);
         assert_eq!(b.max_subagents, ctx.max_subagents, "cannot exceed ctx cap");
         assert_eq!(b.turn_budget, ctx.turn_budget, "cannot exceed ctx cap");
-        assert_eq!(b.token_budget, roles::TOKEN_BUDGET_CEILING, "clamped to hard ceiling");
+        assert_eq!(
+            b.token_budget,
+            roles::TOKEN_BUDGET_CEILING,
+            "clamped to hard ceiling"
+        );
 
         // Manifest asks for LESS — the tighter value wins.
         let tighten = OrchestrateManifest {
@@ -1314,9 +1404,8 @@ mod tests {
 
     #[test]
     fn budget_warning_emitted_when_turn_budget_exceeded_but_still_spawns() {
-        let provider = MockProvider::new(vec![
-            ("end_turn", vec![ContentBlock::Text("done".into())]),
-        ]);
+        let provider =
+            MockProvider::new(vec![("end_turn", vec![ContentBlock::Text("done".into())])]);
         let mut ctx = make_ctx(Box::new(provider));
         // Set a very low turn budget so the first sub-agent triggers the warning.
         ctx.turn_budget = 0;
@@ -1328,7 +1417,11 @@ mod tests {
         assert!(!result.is_error);
         assert_eq!(count, 1);
         // The result should contain the budget notice.
-        assert!(result.content.contains("budget notice"), "should include advisory budget warning, got: {}", result.content);
+        assert!(
+            result.content.contains("budget notice"),
+            "should include advisory budget warning, got: {}",
+            result.content
+        );
 
         // The profile should record the budget warning.
         let profile = ctx.run_profile.lock().unwrap();
@@ -1337,9 +1430,8 @@ mod tests {
 
     #[test]
     fn budget_warning_emitted_when_token_budget_exceeded() {
-        let provider = MockProvider::new(vec![
-            ("end_turn", vec![ContentBlock::Text("done".into())]),
-        ]);
+        let provider =
+            MockProvider::new(vec![("end_turn", vec![ContentBlock::Text("done".into())])]);
         let mut ctx = make_ctx(Box::new(provider));
         ctx.token_budget = 0;
         let mut count = 0;
@@ -1352,9 +1444,8 @@ mod tests {
 
     #[test]
     fn no_budget_warning_within_limits() {
-        let provider = MockProvider::new(vec![
-            ("end_turn", vec![ContentBlock::Text("done".into())]),
-        ]);
+        let provider =
+            MockProvider::new(vec![("end_turn", vec![ContentBlock::Text("done".into())])]);
         let ctx = make_ctx(Box::new(provider));
         // Defaults: turn_budget=80, token_budget=1.5M — well above a single sub-agent.
         let mut count = 0;
@@ -1371,9 +1462,8 @@ mod tests {
 
     #[test]
     fn profile_event_emitted_via_sender() {
-        let provider = MockProvider::new(vec![
-            ("end_turn", vec![ContentBlock::Text("done".into())]),
-        ]);
+        let provider =
+            MockProvider::new(vec![("end_turn", vec![ContentBlock::Text("done".into())])]);
         let ctx = make_ctx(Box::new(provider));
         let (tx, rx) = mpsc::channel();
         let mut count = 0;
@@ -1384,7 +1474,10 @@ mod tests {
         // A Profile event should have been sent.
         let events: Vec<AgentEvent> = rx.try_iter().collect();
         let profile_event = events.iter().find(|e| matches!(e, AgentEvent::Profile(_)));
-        assert!(profile_event.is_some(), "should emit a Profile event for interactive path");
+        assert!(
+            profile_event.is_some(),
+            "should emit a Profile event for interactive path"
+        );
         if let Some(AgentEvent::Profile(line)) = profile_event {
             assert!(line.contains("[profile]"));
             assert!(line.contains("recon"));
@@ -1402,11 +1495,14 @@ mod tests {
         // ledger; the profile's TOTAL (sub-agents + synthetic orchestrator segment)
         // must equal the ledger total.
         let provider = MockProvider::new(vec![
-            ("tool_use", vec![ContentBlock::ToolUse {
-                id: "tu_spawn".into(),
-                name: "spawn_subagent".into(),
-                input: serde_json::json!({"role": "recon", "objective": "map it"}),
-            }]),
+            (
+                "tool_use",
+                vec![ContentBlock::ToolUse {
+                    id: "tu_spawn".into(),
+                    name: "spawn_subagent".into(),
+                    input: serde_json::json!({"role": "recon", "objective": "map it"}),
+                }],
+            ),
             ("end_turn", vec![ContentBlock::Text("done".into())]),
         ]);
         let ctx = make_ctx(Box::new(provider));
@@ -1436,11 +1532,14 @@ mod tests {
     #[test]
     fn headless_orchestrator_completes_and_writes_profile() {
         let provider = MockProvider::new(vec![
-            ("tool_use", vec![ContentBlock::ToolUse {
-                id: "tu_spawn".into(),
-                name: "spawn_subagent".into(),
-                input: serde_json::json!({"role": "recon", "objective": "map it"}),
-            }]),
+            (
+                "tool_use",
+                vec![ContentBlock::ToolUse {
+                    id: "tu_spawn".into(),
+                    name: "spawn_subagent".into(),
+                    input: serde_json::json!({"role": "recon", "objective": "map it"}),
+                }],
+            ),
             ("end_turn", vec![ContentBlock::Text("Done.".into())]),
         ]);
         let mut ctx = make_ctx(Box::new(provider));
@@ -1452,8 +1551,15 @@ mod tests {
         // Returning at all is the assertion (a held ledger lock would deadlock here).
         run_orchestrator(&ctx, "Audit", None).expect("headless run should succeed");
 
-        let profile_path = dir.path().join(".chen").join("agent-state").join("profile.json");
-        assert!(profile_path.exists(), "profile.json should be written on the headless path");
+        let profile_path = dir
+            .path()
+            .join(".chen")
+            .join("agent-state")
+            .join("profile.json");
+        assert!(
+            profile_path.exists(),
+            "profile.json should be written on the headless path"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1462,9 +1568,8 @@ mod tests {
 
     #[test]
     fn second_subagent_gets_indexed_label() {
-        let provider = MockProvider::new(vec![
-            ("end_turn", vec![ContentBlock::Text("done".into())]),
-        ]);
+        let provider =
+            MockProvider::new(vec![("end_turn", vec![ContentBlock::Text("done".into())])]);
         let ctx = make_ctx(Box::new(provider));
         let mut count = 0;
         let input1 = serde_json::json!({"role": "recon", "objective": "map it"});

@@ -21,7 +21,7 @@
 //!   taint kinds), so the formatter prefers them.
 //! - `crypto` exposes `libraries`, `materials`, and `findings` (no `assets`).
 
-use crate::shared::{field_i64, field_str, pattern_match, ListHeader};
+use crate::shared::{ListHeader, field_i64, field_str, pattern_match};
 use serde_json::Value;
 
 /// Extract a `(filename, line)` position from a golem entity.
@@ -32,13 +32,20 @@ use serde_json::Value;
 fn golem_loc(obj: &Value) -> (String, i64) {
     if let Some(start) = obj.get("range").and_then(|r| r.get("start")) {
         return (
-            start.get("filename").and_then(Value::as_str).unwrap_or("?").to_string(),
+            start
+                .get("filename")
+                .and_then(Value::as_str)
+                .unwrap_or("?")
+                .to_string(),
             start.get("line").and_then(Value::as_i64).unwrap_or(0),
         );
     }
     if let Some(pos) = obj.get("position") {
         return (
-            pos.get("filename").and_then(Value::as_str).unwrap_or("?").to_string(),
+            pos.get("filename")
+                .and_then(Value::as_str)
+                .unwrap_or("?")
+                .to_string(),
             pos.get("line").and_then(Value::as_i64).unwrap_or(0),
         );
     }
@@ -121,20 +128,24 @@ pub fn query_packages(report: &Value, pattern: Option<&str>) -> String {
         })
         .collect();
 
-    let mut lines: Vec<String> = vec![ListHeader {
-        title: "Packages",
-        total: packages.len(),
-        matched: matched.len(),
-        shown: matched.len(),
-    }
-    .to_string()];
+    let mut lines: Vec<String> = vec![
+        ListHeader {
+            title: "Packages",
+            total: packages.len(),
+            matched: matched.len(),
+            shown: matched.len(),
+        }
+        .to_string(),
+    ];
 
     for pkg in matched {
         let name = field_str(pkg, "name");
         let version = field_str(pkg, "version");
         let purl = field_str(pkg, "purl");
         let files_count = pkg["files"].as_array().map(|f| f.len()).unwrap_or(0);
-        lines.push(format!("  {name} ({version}) — {files_count} files — {purl}"));
+        lines.push(format!(
+            "  {name} ({version}) — {files_count} files — {purl}"
+        ));
     }
 
     lines.join("\n")
@@ -154,13 +165,15 @@ pub fn query_files(report: &Value, pattern: Option<&str>) -> String {
         })
         .collect();
 
-    let mut lines: Vec<String> = vec![ListHeader {
-        title: "Files",
-        total: files.len(),
-        matched: matched.len(),
-        shown: matched.len(),
-    }
-    .to_string()];
+    let mut lines: Vec<String> = vec![
+        ListHeader {
+            title: "Files",
+            total: files.len(),
+            matched: matched.len(),
+            shown: matched.len(),
+        }
+        .to_string(),
+    ];
 
     for file in matched {
         let path = field_str(file, "path");
@@ -182,19 +195,25 @@ pub fn query_declarations(report: &Value, pattern: Option<&str>, limit: usize) -
         let pat_lower = pat.to_lowercase();
         matched.retain(|d| {
             field_str(d, "name").to_lowercase().contains(&pat_lower)
-                || field_str(d, "packagePath").to_lowercase().contains(&pat_lower)
-                || field_str(d, "signature").to_lowercase().contains(&pat_lower)
+                || field_str(d, "packagePath")
+                    .to_lowercase()
+                    .contains(&pat_lower)
+                || field_str(d, "signature")
+                    .to_lowercase()
+                    .contains(&pat_lower)
         });
     }
 
     let show: Vec<&Value> = matched.iter().take(limit).copied().collect();
-    let mut lines: Vec<String> = vec![ListHeader {
-        title: "Declarations",
-        total: decls.len(),
-        matched: matched.len(),
-        shown: show.len(),
-    }
-    .to_string()];
+    let mut lines: Vec<String> = vec![
+        ListHeader {
+            title: "Declarations",
+            total: decls.len(),
+            matched: matched.len(),
+            shown: show.len(),
+        }
+        .to_string(),
+    ];
 
     for d in show {
         let name = field_str(d, "name");
@@ -230,23 +249,29 @@ pub fn query_usages(report: &Value, pattern: Option<&str>, limit: usize) -> Stri
         let pat_lower = pat.to_lowercase();
         matched.retain(|u| {
             field_str(u, "name").to_lowercase().contains(&pat_lower)
-                || field_str(u, "qualifiedName").to_lowercase().contains(&pat_lower)
+                || field_str(u, "qualifiedName")
+                    .to_lowercase()
+                    .contains(&pat_lower)
                 || field_str(u, "kind").to_lowercase().contains(&pat_lower)
         });
     }
 
     let show: Vec<&Value> = matched.iter().take(limit).copied().collect();
-    let mut lines: Vec<String> = vec![ListHeader {
-        title: "Usages/Calls",
-        total: usages.len(),
-        matched: matched.len(),
-        shown: show.len(),
-    }
-    .to_string()];
+    let mut lines: Vec<String> = vec![
+        ListHeader {
+            title: "Usages/Calls",
+            total: usages.len(),
+            matched: matched.len(),
+            shown: show.len(),
+        }
+        .to_string(),
+    ];
 
     for u in show {
         let name = field_str(u, "name");
-        let qname = u["qualifiedName"].as_str().filter(|q| !q.is_empty() && *q != "?");
+        let qname = u["qualifiedName"]
+            .as_str()
+            .filter(|q| !q.is_empty() && *q != "?");
         let kind = field_str(u, "kind");
         let (file, line) = golem_loc(u);
         let enclosing = u["enclosing"]["name"].as_str().filter(|e| !e.is_empty());
@@ -263,7 +288,11 @@ pub fn query_usages(report: &Value, pattern: Option<&str>, limit: usize) -> Stri
     lines.join("\n")
 }
 
-pub fn query_security_signals(report: &Value, category_filter: Option<&str>, limit: usize) -> String {
+pub fn query_security_signals(
+    report: &Value,
+    category_filter: Option<&str>,
+    limit: usize,
+) -> String {
     let signals = match report["securitySignals"].as_array() {
         Some(arr) => arr,
         None => return "No security signal data available.".to_string(),
@@ -275,18 +304,22 @@ pub fn query_security_signals(report: &Value, category_filter: Option<&str>, lim
         matched.retain(|s| {
             field_str(s, "category").to_lowercase().contains(&cat_lower)
                 || field_str(s, "symbol").to_lowercase().contains(&cat_lower)
-                || field_str(s, "description").to_lowercase().contains(&cat_lower)
+                || field_str(s, "description")
+                    .to_lowercase()
+                    .contains(&cat_lower)
         });
     }
 
     let show: Vec<&Value> = matched.iter().take(limit).copied().collect();
-    let mut lines: Vec<String> = vec![ListHeader {
-        title: "Security Signals",
-        total: signals.len(),
-        matched: matched.len(),
-        shown: show.len(),
-    }
-    .to_string()];
+    let mut lines: Vec<String> = vec![
+        ListHeader {
+            title: "Security Signals",
+            total: signals.len(),
+            matched: matched.len(),
+            shown: show.len(),
+        }
+        .to_string(),
+    ];
 
     for s in show {
         let category = field_str(s, "category");
@@ -296,7 +329,9 @@ pub fn query_security_signals(report: &Value, category_filter: Option<&str>, lim
         let desc = field_str(s, "description");
         let (file, line) = golem_loc(s);
 
-        lines.push(format!("  [{severity}][{confidence}] {category} — {symbol}"));
+        lines.push(format!(
+            "  [{severity}][{confidence}] {category} — {symbol}"
+        ));
         if desc != "?" {
             lines.push(format!("         {desc}"));
         }
@@ -316,8 +351,9 @@ pub fn query_callgraph(report: &Value, pattern: Option<&str>, limit: usize) -> S
     let nodes = cg["nodes"].as_array().map(|a| a.len()).unwrap_or(0);
     let edges = cg["edges"].as_array().map(|a| a.len()).unwrap_or(0);
 
-    let mut lines: Vec<String> =
-        vec![format!("# Call Graph (mode: {mode}, {nodes} nodes, {edges} edges)")];
+    let mut lines: Vec<String> = vec![format!(
+        "# Call Graph (mode: {mode}, {nodes} nodes, {edges} edges)"
+    )];
 
     let pat_lower = pattern.map(|p| p.to_lowercase());
 
@@ -341,7 +377,13 @@ pub fn query_callgraph(report: &Value, pattern: Option<&str>, limit: usize) -> S
             let (file, line) = golem_loc(n);
             let local = n["local"].as_bool().unwrap_or(false);
             let ext = n["external"].as_bool().unwrap_or(false);
-            let loc = if local { "local" } else if ext { "external" } else { "?" };
+            let loc = if local {
+                "local"
+            } else if ext {
+                "external"
+            } else {
+                "?"
+            };
             lines.push(format!("    [{kind}][{loc}] {name} at {file}:{line}"));
         }
     }
@@ -408,7 +450,11 @@ pub fn query_dataflow(report: &Value, pattern: Option<&str>, limit: usize) -> St
                 "  No taint slices or function summaries reported. Showing flagged source/sink nodes instead:"
                     .to_string(),
             );
-            lines.push(format_flagged_nodes(df.get("nodes").and_then(Value::as_array), pattern, limit));
+            lines.push(format_flagged_nodes(
+                df.get("nodes").and_then(Value::as_array),
+                pattern,
+                limit,
+            ));
         }
     }
 
@@ -475,16 +521,27 @@ fn format_slices(slices: &[Value], pattern: Option<&str>, limit: usize) -> Strin
         let path_len = field_i64(s, "pathLength");
         let taints = s["taintKinds"]
             .as_array()
-            .map(|t| t.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", "))
+            .map(|t| {
+                t.iter()
+                    .filter_map(Value::as_str)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            })
             .unwrap_or_default();
         let (src_file, src_line) = node_id_loc(field_str(s, "sourceId"));
         let (sink_file, sink_line) = node_id_loc(field_str(s, "sinkId"));
 
         lines.push(format!("    [{severity}][conf={confidence}] {rule}"));
-        lines.push(format!("         source: {src_fn} ({src_name}) at {src_file}:{src_line}"));
-        lines.push(format!("         sink:   {sink_fn} ({sink_name}) at {sink_file}:{sink_line}"));
+        lines.push(format!(
+            "         source: {src_fn} ({src_name}) at {src_file}:{src_line}"
+        ));
+        lines.push(format!(
+            "         sink:   {sink_fn} ({sink_name}) at {sink_file}:{sink_line}"
+        ));
         if !taints.is_empty() {
-            lines.push(format!("         taint: {taints} | path length: {path_len}"));
+            lines.push(format!(
+                "         taint: {taints} | path length: {path_len}"
+            ));
         }
     }
 
@@ -531,7 +588,12 @@ fn format_summaries(summaries: &[Value], pattern: Option<&str>, limit: usize) ->
                         let idx = field_i64(p, "parameterIndex");
                         let cats = p["categories"]
                             .as_array()
-                            .map(|c| c.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", "))
+                            .map(|c| {
+                                c.iter()
+                                    .filter_map(Value::as_str)
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            })
                             .unwrap_or_default();
                         format!("param[{idx}] → {cats}")
                     })
@@ -570,7 +632,11 @@ fn format_flagged_nodes(nodes: Option<&Vec<Value>>, pattern: Option<&str>, limit
 
     let mut lines: Vec<String> = Vec::new();
     for n in matched {
-        let role = if n["source"].as_bool().unwrap_or(false) { "source" } else { "sink" };
+        let role = if n["source"].as_bool().unwrap_or(false) {
+            "source"
+        } else {
+            "sink"
+        };
         let name = field_str(n, "name");
         let category = field_str(n, "category");
         let (file, line) = golem_loc(n);
@@ -602,13 +668,15 @@ pub fn query_imports(report: &Value, pattern: Option<&str>, limit: usize) -> Str
     }
 
     let show: Vec<&Value> = matched.iter().take(limit).copied().collect();
-    let mut lines: Vec<String> = vec![ListHeader {
-        title: "Imports",
-        total: imports.len(),
-        matched: matched.len(),
-        shown: show.len(),
-    }
-    .to_string()];
+    let mut lines: Vec<String> = vec![
+        ListHeader {
+            title: "Imports",
+            total: imports.len(),
+            matched: matched.len(),
+            shown: show.len(),
+        }
+        .to_string(),
+    ];
 
     for i in show {
         let path = field_str(i, "path");
@@ -666,7 +734,9 @@ pub fn query_crypto(report: &Value, pattern: Option<&str>) -> String {
                 continue;
             }
             let (file, line) = golem_loc(f);
-            lines.push(format!("  [{severity}] {rule} — {summary} at {file}:{line}"));
+            lines.push(format!(
+                "  [{severity}] {rule} — {summary} at {file}:{line}"
+            ));
         }
     }
 
@@ -692,13 +762,15 @@ pub fn query_endpoints(report: &Value, pattern: Option<&str>) -> String {
         })
         .collect();
 
-    let mut lines: Vec<String> = vec![ListHeader {
-        title: "API Endpoints",
-        total: endpoints.len(),
-        matched: matched.len(),
-        shown: matched.len(),
-    }
-    .to_string()];
+    let mut lines: Vec<String> = vec![
+        ListHeader {
+            title: "API Endpoints",
+            total: endpoints.len(),
+            matched: matched.len(),
+            shown: matched.len(),
+        }
+        .to_string(),
+    ];
 
     for ep in matched {
         let method = field_str(ep, "method");
@@ -706,7 +778,9 @@ pub fn query_endpoints(report: &Value, pattern: Option<&str>) -> String {
         let handler = field_str(ep, "handler");
         let framework = field_str(ep, "framework");
         let (file, line) = golem_loc(ep);
-        lines.push(format!("  {method} {path} → {handler} ({framework}) at {file}:{line}"));
+        lines.push(format!(
+            "  {method} {path} → {handler} ({framework}) at {file}:{line}"
+        ));
     }
 
     lines.join("\n")
@@ -767,7 +841,9 @@ pub fn detail_declaration(report: &Value, name: &str) -> String {
         .filter(|d| {
             field_str(d, "name").to_lowercase() == name_lower
                 || field_str(d, "name").to_lowercase().contains(&name_lower)
-                || field_str(d, "packagePath").to_lowercase().contains(&name_lower)
+                || field_str(d, "packagePath")
+                    .to_lowercase()
+                    .contains(&name_lower)
         })
         .collect();
 
@@ -798,7 +874,11 @@ pub fn detail_declaration(report: &Value, name: &str) -> String {
         if let Some(edges) = report["callGraph"]["edges"].as_array() {
             let outgoing: Vec<&Value> = edges
                 .iter()
-                .filter(|e| field_str(e, "sourceName").to_lowercase().contains(&name_lower))
+                .filter(|e| {
+                    field_str(e, "sourceName")
+                        .to_lowercase()
+                        .contains(&name_lower)
+                })
                 .collect();
             if !outgoing.is_empty() {
                 lines.push(format!("  Calls ({}):", outgoing.len()));
@@ -811,7 +891,11 @@ pub fn detail_declaration(report: &Value, name: &str) -> String {
 
             let incoming: Vec<&Value> = edges
                 .iter()
-                .filter(|e| field_str(e, "targetName").to_lowercase().contains(&name_lower))
+                .filter(|e| {
+                    field_str(e, "targetName")
+                        .to_lowercase()
+                        .contains(&name_lower)
+                })
                 .collect();
             if !incoming.is_empty() {
                 lines.push(format!("  Called by ({}):", incoming.len()));

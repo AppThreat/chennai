@@ -2,10 +2,11 @@
 
 pub mod theme;
 
-use crate::app::{tool_label, AgentEntry, App, BgStatus, InitPhase, Panel};
+use crate::app::{AgentEntry, App, BgStatus, InitPhase, Panel, tool_label};
 use crate::model::Cell as ModelCell;
 use theme::Theme;
 
+use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Margin, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -13,7 +14,6 @@ use ratatui::widgets::{
     Block, Borders, Cell, Clear, Paragraph, Row, Scrollbar, ScrollbarOrientation, ScrollbarState,
     Table, Wrap,
 };
-use ratatui::Frame;
 
 const REPL_PROMPT: &str = "✦ ";
 
@@ -44,8 +44,8 @@ pub fn render(frame: &mut Frame, app: &mut App, theme: &Theme) {
     // Atom-supported languages: three-panel layout (Summary, Output, REPL bottom).
     // Once a result is showing, the Summary panel collapses to a single line to give the result
     // more room; it expands again whenever it has focus (Tab or a click lands on it).
-    let summary_collapsed =
-        app.focus != Panel::Summary && (app.output.is_some() || app.flows.is_some() || app.agent_active);
+    let summary_collapsed = app.focus != Panel::Summary
+        && (app.output.is_some() || app.flows.is_some() || app.agent_active);
     let summary_constraint = if summary_collapsed {
         Constraint::Length(1)
     } else {
@@ -92,29 +92,55 @@ fn panel_block<'a>(title: String, focused: bool, theme: &Theme) -> Block<'a> {
 }
 
 /// Render a vertical scrollbar on the right edge of `area` when content overflows.
-fn render_scrollbar(frame: &mut Frame, area: Rect, theme: &Theme, len: usize, pos: usize, viewport: usize) {
+fn render_scrollbar(
+    frame: &mut Frame,
+    area: Rect,
+    theme: &Theme,
+    len: usize,
+    pos: usize,
+    viewport: usize,
+) {
     if len <= viewport {
         return;
     }
-    let mut state = ScrollbarState::new(len).position(pos).viewport_content_length(viewport);
+    let mut state = ScrollbarState::new(len)
+        .position(pos)
+        .viewport_content_length(viewport);
     let bar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
         .begin_symbol(None)
         .end_symbol(None)
         .style(Style::default().fg(theme.muted));
-    frame.render_stateful_widget(bar, area.inner(Margin { vertical: 1, horizontal: 0 }), &mut state);
+    frame.render_stateful_widget(
+        bar,
+        area.inner(Margin {
+            vertical: 1,
+            horizontal: 0,
+        }),
+        &mut state,
+    );
 }
 
 fn header_row<'a>(cols: &[&str], theme: &Theme) -> Row<'a> {
     Row::new(
         cols.iter()
-            .map(|c| Cell::from(c.to_string()).style(Style::default().fg(theme.header).add_modifier(Modifier::BOLD)))
+            .map(|c| {
+                Cell::from(c.to_string()).style(
+                    Style::default()
+                        .fg(theme.header)
+                        .add_modifier(Modifier::BOLD),
+                )
+            })
             .collect::<Vec<_>>(),
     )
 }
 
 fn row_style(selected: bool, focused: bool, theme: &Theme) -> Style {
     if selected {
-        let bg = if focused { theme.selection_bg } else { theme.muted_selection_bg };
+        let bg = if focused {
+            theme.selection_bg
+        } else {
+            theme.muted_selection_bg
+        };
         Style::default().bg(bg).fg(theme.fg)
     } else {
         Style::default().fg(theme.fg)
@@ -152,7 +178,10 @@ fn render_summary(frame: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
             let sel = scroll + i == app.summary_state.selected;
             Row::new(vec![
                 Cell::from(r.label.clone()),
-                Cell::from(Span::styled(r.count.to_string(), Style::default().fg(theme.accent))),
+                Cell::from(Span::styled(
+                    r.count.to_string(),
+                    Style::default().fg(theme.accent),
+                )),
             ])
             .style(row_style(sel, focused, theme))
         })
@@ -177,7 +206,12 @@ fn render_summary_collapsed(frame: &mut Frame, app: &mut App, theme: &Theme, are
         .collect::<Vec<_>>()
         .join(" · ");
     let line = Line::from(vec![
-        Span::styled("▸ Atom Summary ", Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            "▸ Atom Summary ",
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::styled(counts, Style::default().fg(theme.fg)),
         Span::styled("  (Tab/click to expand)", Style::default().fg(theme.muted)),
     ]);
@@ -196,8 +230,7 @@ fn render_repl(frame: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
     let bg_color = Color::Rgb(0x2b, 0x3a, 0x42);
 
     // Fill the area with the subtle background, then overlay a left-border block.
-    let bg = Paragraph::new(Line::from(vec![]))
-        .style(Style::default().bg(bg_color));
+    let bg = Paragraph::new(Line::from(vec![])).style(Style::default().bg(bg_color));
     frame.render_widget(bg, area);
 
     let border_block = Block::default()
@@ -254,8 +287,10 @@ fn render_repl(frame: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
             spans.push((0, 0));
         }
     }
-    let input_rows: Vec<String> =
-        spans.iter().map(|&(s, e)| text_chars[s..e].iter().collect()).collect();
+    let input_rows: Vec<String> = spans
+        .iter()
+        .map(|&(s, e)| text_chars[s..e].iter().collect())
+        .collect();
 
     // Map the cursor index onto a wrapped (row, col). A cursor sitting exactly
     // at a non-final row boundary belongs to the start of the next row.
@@ -275,7 +310,11 @@ fn render_repl(frame: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
             break;
         }
     }
-    let caret_col = if caret_row == 0 { prompt_len + caret_in_col } else { caret_in_col };
+    let caret_col = if caret_row == 0 {
+        prompt_len + caret_in_col
+    } else {
+        caret_in_col
+    };
     let input_h = input_rows.len().max(1).min(inner.height as usize);
     let input_y = inner.y + inner.height - input_h as u16;
     let hist_h = (inner.height as usize).saturating_sub(input_h);
@@ -299,7 +338,12 @@ fn render_repl(frame: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
     let hist = Paragraph::new(lines);
     frame.render_widget(
         hist,
-        Rect { x: inner.x, y: inner.y, width: inner.width, height: hist_h as u16 },
+        Rect {
+            x: inner.x,
+            y: inner.y,
+            width: inner.width,
+            height: hist_h as u16,
+        },
     );
 
     // Input lines (wrapped). When wrapping overflows the panel, show the
@@ -310,7 +354,12 @@ fn render_repl(frame: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
         let row_index = visible_start + i;
         let line = if row_index == 0 {
             Line::from(vec![
-                Span::styled(REPL_PROMPT, Style::default().fg(accent_color).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    REPL_PROMPT,
+                    Style::default()
+                        .fg(accent_color)
+                        .add_modifier(Modifier::BOLD),
+                ),
                 Span::styled(row.clone(), Style::default().fg(text_color)),
             ])
         } else {
@@ -318,18 +367,28 @@ fn render_repl(frame: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
         };
         frame.render_widget(
             Paragraph::new(line),
-            Rect { x: inner.x, y: input_y + i as u16, width: inner.width, height: 1 },
+            Rect {
+                x: inner.x,
+                y: input_y + i as u16,
+                width: inner.width,
+                height: 1,
+            },
         );
     }
 
     let caret_y = input_y + caret_row.saturating_sub(visible_start) as u16;
     let caret_x = inner.x + caret_col as u16;
-    app.repl_caret = Some((caret_x.min(inner.x + inner.width.saturating_sub(1)), caret_y));
-    if focused && app.repl.completion.is_none()
+    app.repl_caret = Some((
+        caret_x.min(inner.x + inner.width.saturating_sub(1)),
+        caret_y,
+    ));
+    if focused
+        && app.repl.completion.is_none()
         && caret_row >= visible_start
-        && caret_x < inner.x + inner.width {
-            frame.set_cursor_position((caret_x, caret_y));
-        }
+        && caret_x < inner.x + inner.width
+    {
+        frame.set_cursor_position((caret_x, caret_y));
+    }
 }
 
 /// Render the autocomplete popup anchored under the REPL caret, when open.
@@ -362,7 +421,12 @@ fn render_completion_popup(frame: &mut Frame, app: &App, theme: &Theme) {
     } else {
         cy.saturating_sub(height)
     };
-    let popup = Rect { x, y, width, height };
+    let popup = Rect {
+        x,
+        y,
+        width,
+        height,
+    };
 
     // Scroll the candidate window to keep the selection visible.
     let scroll = comp.selected.saturating_sub(visible.saturating_sub(1));
@@ -372,7 +436,10 @@ fn render_completion_popup(frame: &mut Frame, app: &App, theme: &Theme) {
         .map(|(i, item)| {
             let sel = scroll + i == comp.selected;
             let style = if sel {
-                Style::default().bg(theme.selection_bg).fg(theme.fg).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .bg(theme.selection_bg)
+                    .fg(theme.fg)
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(theme.code)
             };
@@ -391,9 +458,13 @@ fn render_completion_popup(frame: &mut Frame, app: &App, theme: &Theme) {
 
 fn style_for_kind(kind: &str, theme: &Theme) -> Style {
     match kind {
-        "name" => Style::default().fg(theme.accent).add_modifier(Modifier::BOLD),
+        "name" => Style::default()
+            .fg(theme.accent)
+            .add_modifier(Modifier::BOLD),
         "code" => Style::default().fg(theme.code),
-        "path" => Style::default().fg(theme.link).add_modifier(Modifier::UNDERLINED),
+        "path" => Style::default()
+            .fg(theme.link)
+            .add_modifier(Modifier::UNDERLINED),
         "num" => Style::default().fg(theme.num),
         _ => Style::default().fg(theme.fg),
     }
@@ -413,7 +484,9 @@ fn render_output(frame: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
     app.table_header_cells.clear();
 
     // Agent transcript view takes priority when agent is or was active.
-    if app.agent_active || (!app.agent_transcript.is_empty() && app.output.is_none() && app.flows.is_none()) {
+    if app.agent_active
+        || (!app.agent_transcript.is_empty() && app.output.is_none() && app.flows.is_none())
+    {
         render_agent_transcript(frame, app, theme, area, focused);
         return;
     }
@@ -466,8 +539,8 @@ fn render_output_table(frame: &mut Frame, app: &mut App, theme: &Theme, area: Re
     frame.render_widget(block, area);
 
     let Some(table) = app.output.as_ref() else {
-        let show_questions = app.non_atom
-            || (!app.starter_questions.is_empty() && app.agent_enabled);
+        let show_questions =
+            app.non_atom || (!app.starter_questions.is_empty() && app.agent_enabled);
         if show_questions {
             let lang = if !app.summary.language.is_empty() {
                 &app.summary.language
@@ -482,7 +555,9 @@ fn render_output_table(frame: &mut Frame, app: &mut App, theme: &Theme, area: Re
                 Line::from(""),
                 Line::from(Span::styled(
                     "Try asking:",
-                    Style::default().fg(theme.header).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(theme.header)
+                        .add_modifier(Modifier::BOLD),
                 )),
             ];
 
@@ -569,7 +644,11 @@ fn render_output_table(frame: &mut Frame, app: &mut App, theme: &Theme, area: Re
     let viewport = inner.height.saturating_sub(1) as usize; // minus header
     app.output_state.visible = viewport;
     let len = app.table_visible.len();
-    let scroll = if len == 0 { 0 } else { app.output_state.scroll.min(len.saturating_sub(1)) };
+    let scroll = if len == 0 {
+        0
+    } else {
+        app.output_state.scroll.min(len.saturating_sub(1))
+    };
     let end = (scroll + viewport).min(len);
 
     // Header labels carry a sort arrow on the active sort column.
@@ -583,8 +662,11 @@ fn render_output_table(frame: &mut Frame, app: &mut App, theme: &Theme, area: Re
         })
         .collect();
     let col_refs: Vec<&str> = col_names.iter().map(String::as_str).collect();
-    let constraints: Vec<Constraint> =
-        table.columns.iter().map(|c| Constraint::Fill(column_weight(c))).collect();
+    let constraints: Vec<Constraint> = table
+        .columns
+        .iter()
+        .map(|c| Constraint::Fill(column_weight(c)))
+        .collect();
 
     // Mirror the Table's column layout so header clicks can be mapped to a column for sorting.
     let col_rects = Layout::default()
@@ -594,7 +676,12 @@ fn render_output_table(frame: &mut Frame, app: &mut App, theme: &Theme, area: Re
         .split(inner);
     app.table_header_cells = col_rects
         .iter()
-        .map(|r| Rect { x: r.x, y: inner.y, width: r.width, height: 1 })
+        .map(|r| Rect {
+            x: r.x,
+            y: inner.y,
+            width: r.width,
+            height: 1,
+        })
         .collect();
 
     let rows: Vec<Row> = app.table_visible[scroll..end]
@@ -647,22 +734,23 @@ fn render_node_detail(frame: &mut Frame, app: &mut App, theme: &Theme, area: Rec
             Constraint::Min(3),
         ]
     } else {
-        vec![
-            Constraint::Length(props_height),
-            Constraint::Min(3),
-        ]
+        vec![Constraint::Length(props_height), Constraint::Min(3)]
     };
     let sections = Layout::default()
         .direction(Direction::Vertical)
         .constraints(constraints)
         .split(inner);
 
-    let prop_lines: Vec<Line> = detail.props.iter().map(|p| {
-        Line::from(vec![
-            Span::styled(format!("{}: ", p.label), Style::default().fg(theme.muted)),
-            Span::styled(p.value.clone(), Style::default().fg(theme.fg)),
-        ])
-    }).collect();
+    let prop_lines: Vec<Line> = detail
+        .props
+        .iter()
+        .map(|p| {
+            Line::from(vec![
+                Span::styled(format!("{}: ", p.label), Style::default().fg(theme.muted)),
+                Span::styled(p.value.clone(), Style::default().fg(theme.fg)),
+            ])
+        })
+        .collect();
     frame.render_widget(Paragraph::new(prop_lines), sections[0]);
 
     let child_area = sections[1];
@@ -672,7 +760,9 @@ fn render_node_detail(frame: &mut Frame, app: &mut App, theme: &Theme, area: Rec
     app.detail_child_visible = child_viewport;
     let child_scroll = if child_rows_count > 0 {
         app.detail_child_scroll.min(child_rows_count - 1)
-    } else { 0 };
+    } else {
+        0
+    };
     app.detail_child_scroll = child_scroll;
     let end = (child_scroll + child_viewport).min(child_rows_count);
 
@@ -683,62 +773,88 @@ fn render_node_detail(frame: &mut Frame, app: &mut App, theme: &Theme, area: Rec
         let tree_total = tree_nodes.len();
         let tree_scroll = if tree_total > 0 {
             app.detail_child_scroll.min(tree_total - 1)
-        } else { 0 };
+        } else {
+            0
+        };
         app.detail_child_scroll = tree_scroll;
         let tree_end = (tree_scroll + child_viewport).min(tree_total);
 
         let tree_lines: Vec<Line> = if tree_scroll < tree_end {
-            tree_nodes[tree_scroll..tree_end].iter().map(|node| {
-                let indent = "│   ".repeat(node.depth.saturating_sub(1));
-                let connector = if node.depth == 0 { "" } else { "├─ " };
-                let loc = if !node.file.is_empty() {
-                    let short_file = node.file.rsplit('/').next().unwrap_or(&node.file);
-                    if node.line.is_empty() {
-                        format!("  {}", short_file)
+            tree_nodes[tree_scroll..tree_end]
+                .iter()
+                .map(|node| {
+                    let indent = "│   ".repeat(node.depth.saturating_sub(1));
+                    let connector = if node.depth == 0 { "" } else { "├─ " };
+                    let loc = if !node.file.is_empty() {
+                        let short_file = node.file.rsplit('/').next().unwrap_or(&node.file);
+                        if node.line.is_empty() {
+                            format!("  {}", short_file)
+                        } else {
+                            format!("  {}:{}", short_file, node.line)
+                        }
                     } else {
-                        format!("  {}:{}", short_file, node.line)
-                    }
-                } else {
-                    String::new()
-                };
-                // Shorten label: keep last two segments of full name
-                let short_label = {
-                    let parts: Vec<&str> = node.label.split('.').collect();
-                    if parts.len() > 2 {
-                        format!("…{}", parts[parts.len()-2..].join("."))
+                        String::new()
+                    };
+                    // Shorten label: keep last two segments of full name
+                    let short_label = {
+                        let parts: Vec<&str> = node.label.split('.').collect();
+                        if parts.len() > 2 {
+                            format!("…{}", parts[parts.len() - 2..].join("."))
+                        } else {
+                            node.label.clone()
+                        }
+                    };
+                    let label_style = if node.depth == 0 {
+                        Style::default()
+                            .fg(theme.header)
+                            .add_modifier(Modifier::BOLD)
                     } else {
-                        node.label.clone()
-                    }
-                };
-                let label_style = if node.depth == 0 {
-                    Style::default().fg(theme.header).add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().fg(theme.accent)
-                };
-                Line::from(vec![
-                    Span::styled(format!("{}{}", indent, connector), Style::default().fg(theme.muted)),
-                    Span::styled(short_label, label_style),
-                    Span::styled(loc, Style::default().fg(theme.muted)),
-                ])
-            }).collect()
+                        Style::default().fg(theme.accent)
+                    };
+                    Line::from(vec![
+                        Span::styled(
+                            format!("{}{}", indent, connector),
+                            Style::default().fg(theme.muted),
+                        ),
+                        Span::styled(short_label, label_style),
+                        Span::styled(loc, Style::default().fg(theme.muted)),
+                    ])
+                })
+                .collect()
         } else {
             vec![]
         };
 
         frame.render_widget(Paragraph::new(tree_lines), child_area);
-        render_scrollbar(frame, child_area, theme, tree_total, tree_scroll, child_viewport);
+        render_scrollbar(
+            frame,
+            child_area,
+            theme,
+            tree_total,
+            tree_scroll,
+            child_viewport,
+        );
     } else if !detail.child_columns.is_empty() && child_rows_count > 0 {
         let col_refs: Vec<&str> = detail.child_columns.iter().map(String::as_str).collect();
-        let constraints_child: Vec<Constraint> =
-            detail.child_columns.iter().map(|c| Constraint::Fill(column_weight(c))).collect();
+        let constraints_child: Vec<Constraint> = detail
+            .child_columns
+            .iter()
+            .map(|c| Constraint::Fill(column_weight(c)))
+            .collect();
 
         let rows: Vec<Row> = if child_scroll < end {
-            detail.child_rows[child_scroll..end].iter().map(|row| {
-                let cs: Vec<Cell> = row.iter().map(|cell: &ModelCell| {
-                    Cell::from(Span::styled(cell.v.clone(), style_for_kind(&cell.k, theme)))
-                }).collect();
-                Row::new(cs)
-            }).collect()
+            detail.child_rows[child_scroll..end]
+                .iter()
+                .map(|row| {
+                    let cs: Vec<Cell> = row
+                        .iter()
+                        .map(|cell: &ModelCell| {
+                            Cell::from(Span::styled(cell.v.clone(), style_for_kind(&cell.k, theme)))
+                        })
+                        .collect();
+                    Row::new(cs)
+                })
+                .collect()
         } else {
             vec![]
         };
@@ -747,7 +863,14 @@ fn render_node_detail(frame: &mut Frame, app: &mut App, theme: &Theme, area: Rec
             .header(header_row(&col_refs, theme))
             .column_spacing(1);
         frame.render_widget(child_table, child_area);
-        render_scrollbar(frame, child_area, theme, child_rows_count, child_scroll, child_viewport);
+        render_scrollbar(
+            frame,
+            child_area,
+            theme,
+            child_rows_count,
+            child_scroll,
+            child_viewport,
+        );
     } else if child_rows_count == 0 && !detail.child_title.is_empty() && !has_call_tree {
         let hint = Paragraph::new(Line::from(Span::styled(
             format!("No {}.", detail.child_title.to_lowercase()),
@@ -767,7 +890,9 @@ fn render_node_detail(frame: &mut Frame, app: &mut App, theme: &Theme, area: Rec
             app.detail_code_visible = code_viewport;
             let code_scroll = if code_total > 0 {
                 app.detail_code_scroll.min(code_total - 1)
-            } else { 0 };
+            } else {
+                0
+            };
             app.detail_code_scroll = code_scroll;
             let code_end = (code_scroll + code_viewport).min(code_total);
 
@@ -796,7 +921,14 @@ fn render_node_detail(frame: &mut Frame, app: &mut App, theme: &Theme, area: Rec
             let code_inner = code_block.inner(code_area);
             frame.render_widget(code_block, code_area);
             frame.render_widget(Paragraph::new(rendered_lines), code_inner);
-            render_scrollbar(frame, code_area, theme, code_total, code_scroll, code_viewport);
+            render_scrollbar(
+                frame,
+                code_area,
+                theme,
+                code_total,
+                code_scroll,
+                code_viewport,
+            );
         }
     }
 }
@@ -804,9 +936,22 @@ fn render_node_detail(frame: &mut Frame, app: &mut App, theme: &Theme, area: Rec
 /// Icon + colour for a flow step kind.
 fn step_decoration(kind: &str, theme: &Theme) -> (&'static str, Style) {
     match kind {
-        "source" => ("⊙", Style::default().fg(theme.header).add_modifier(Modifier::BOLD)),
-        "sink" => ("◎", Style::default().fg(theme.error).add_modifier(Modifier::BOLD)),
-        "sanitizer" => ("✓", Style::default().fg(theme.num).add_modifier(Modifier::BOLD)),
+        "source" => (
+            "⊙",
+            Style::default()
+                .fg(theme.header)
+                .add_modifier(Modifier::BOLD),
+        ),
+        "sink" => (
+            "◎",
+            Style::default()
+                .fg(theme.error)
+                .add_modifier(Modifier::BOLD),
+        ),
+        "sanitizer" => (
+            "✓",
+            Style::default().fg(theme.num).add_modifier(Modifier::BOLD),
+        ),
         "external" => ("⌘", Style::default().fg(theme.accent)),
         _ => ("·", Style::default().fg(theme.muted)),
     }
@@ -815,15 +960,26 @@ fn step_decoration(kind: &str, theme: &Theme) -> (&'static str, Style) {
 /// Render the data-flow master/detail view inside `area`: a flow list on the left, the selected
 /// flow's ordered steps on the right.
 fn render_flows(frame: &mut Frame, app: &mut App, theme: &Theme, area: Rect, focused: bool) {
-    let fs = app.flows.as_ref().expect("render_flows called without a flow set");
+    let fs = app
+        .flows
+        .as_ref()
+        .expect("render_flows called without a flow set");
     let shown = app.flow_visible.len();
     let title = format!(
         " Flows — {} ({} shown / {} total{}{}) ",
         fs.title,
         shown,
         fs.total,
-        if app.show_subflows { "" } else { " · sub-flows hidden" },
-        if app.hide_mitigated { " · mitigated hidden" } else { "" },
+        if app.show_subflows {
+            ""
+        } else {
+            " · sub-flows hidden"
+        },
+        if app.hide_mitigated {
+            " · mitigated hidden"
+        } else {
+            ""
+        },
     );
     let block = panel_block(title, focused, theme);
     let inner = block.inner(area);
@@ -836,7 +992,10 @@ fn render_flows(frame: &mut Frame, app: &mut App, theme: &Theme, area: Rect, foc
         } else {
             "No flows match the current filters. Press s to show sub-flows or m to show mitigated."
         };
-        let hint = Paragraph::new(Line::from(Span::styled(msg, Style::default().fg(theme.muted))));
+        let hint = Paragraph::new(Line::from(Span::styled(
+            msg,
+            Style::default().fg(theme.muted),
+        )));
         frame.render_widget(hint, inner);
         return;
     }
@@ -891,7 +1050,10 @@ fn render_flow_master(frame: &mut Frame, app: &mut App, theme: &Theme, area: Rec
                 Span::styled(src, Style::default().fg(theme.header)),
                 Span::styled(" → ", Style::default().fg(theme.muted)),
                 Span::styled(sink, Style::default().fg(theme.error)),
-                Span::styled(format!("  [{}]", f.length), Style::default().fg(theme.muted)),
+                Span::styled(
+                    format!("  [{}]", f.length),
+                    Style::default().fg(theme.muted),
+                ),
             ]);
             line.style(row_style(sel, focused, theme))
         })
@@ -911,17 +1073,28 @@ fn step_spans<'a>(step: &crate::model::FlowStep, theme: &Theme, indent: bool) ->
             format!("{}:{} ", truncate(&step.file, 24), step.line),
             Style::default().fg(theme.link),
         ),
-        Span::styled(format!("{} ", truncate(&step.method, 16)), Style::default().fg(theme.muted)),
+        Span::styled(
+            format!("{} ", truncate(&step.method, 16)),
+            Style::default().fg(theme.muted),
+        ),
     ];
     if !step.symbol.is_empty() {
         spans.push(Span::styled(
             format!("{} ", step.symbol),
-            Style::default().fg(theme.accent).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD),
         ));
     }
-    spans.push(Span::styled(truncate(&step.code, 56), Style::default().fg(theme.code)));
+    spans.push(Span::styled(
+        truncate(&step.code, 56),
+        Style::default().fg(theme.code),
+    ));
     if !step.tags.is_empty() {
-        spans.push(Span::styled(format!("  [{}]", step.tags.join(",")), Style::default().fg(theme.num)));
+        spans.push(Span::styled(
+            format!("  [{}]", step.tags.join(",")),
+            Style::default().fg(theme.num),
+        ));
     }
     spans
 }
@@ -952,7 +1125,11 @@ fn render_flow_detail(frame: &mut Frame, app: &mut App, theme: &Theme, area: Rec
     }
 
     let tag_str = |tags: &[String]| {
-        if tags.is_empty() { String::new() } else { format!("  [{}]", tags.join(", ")) }
+        if tags.is_empty() {
+            String::new()
+        } else {
+            format!("  [{}]", tags.join(", "))
+        }
     };
 
     // Build ALL lines unconditionally (scroll window applied below).
@@ -962,7 +1139,10 @@ fn render_flow_detail(frame: &mut Frame, app: &mut App, theme: &Theme, area: Rec
 
     all_lines.push(Line::from(vec![
         Span::styled("Source: ", Style::default().fg(theme.muted)),
-        Span::styled(truncate(&flow.source, 50), Style::default().fg(theme.header)),
+        Span::styled(
+            truncate(&flow.source, 50),
+            Style::default().fg(theme.header),
+        ),
         Span::styled(tag_str(&flow.source_tags), Style::default().fg(theme.num)),
     ]));
     all_lines.push(Line::from(vec![
@@ -1010,7 +1190,10 @@ fn render_flow_detail(frame: &mut Frame, app: &mut App, theme: &Theme, area: Rec
                 format!("{}:{} ", truncate(&rep.file, 24), rep.line),
                 Style::default().fg(theme.link),
             ),
-            Span::styled(format!("({}) ", group.len()), Style::default().fg(theme.muted)),
+            Span::styled(
+                format!("({}) ", group.len()),
+                Style::default().fg(theme.muted),
+            ),
             Span::styled(truncate(&rep.code, 50), Style::default().fg(theme.code)),
         ]));
 
@@ -1021,19 +1204,24 @@ fn render_flow_detail(frame: &mut Frame, app: &mut App, theme: &Theme, area: Rec
         }
     }
 
-    let total    = all_lines.len();
+    let total = all_lines.len();
     let viewport = area.height as usize;
-    app.flow_detail_total   = total;
+    app.flow_detail_total = total;
     app.flow_detail_visible = viewport;
 
-    let scroll = if total > 0 { app.flow_detail_scroll.min(total - 1) } else { 0 };
+    let scroll = if total > 0 {
+        app.flow_detail_scroll.min(total - 1)
+    } else {
+        0
+    };
     app.flow_detail_scroll = scroll;
     let end = (scroll + viewport).min(total);
 
     // Map group-header positions to screen Y for click-to-expand hit-testing.
     for (line_idx, key) in group_positions {
         if line_idx >= scroll && line_idx < end {
-            app.flow_detail_groups.push((area.y + (line_idx - scroll) as u16, key));
+            app.flow_detail_groups
+                .push((area.y + (line_idx - scroll) as u16, key));
         }
     }
 
@@ -1049,7 +1237,13 @@ fn render_flow_detail(frame: &mut Frame, app: &mut App, theme: &Theme, area: Rec
 /// Braille spinner frames for the "running" indicator.
 const SPINNER_FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
-fn render_agent_transcript(frame: &mut Frame, app: &mut App, theme: &Theme, area: Rect, focused: bool) {
+fn render_agent_transcript(
+    frame: &mut Frame,
+    app: &mut App,
+    theme: &Theme,
+    area: Rect,
+    focused: bool,
+) {
     let title = if app.agent_active {
         // Advance the spinner each frame while the agent is working.
         app.agent_spinner = app.agent_spinner.wrapping_add(1);
@@ -1062,14 +1256,23 @@ fn render_agent_transcript(frame: &mut Frame, app: &mut App, theme: &Theme, area
     let outer_inner = block.inner(area);
     frame.render_widget(block, area);
 
-    if outer_inner.height == 0 || outer_inner.width == 0 { return; }
+    if outer_inner.height == 0 || outer_inner.width == 0 {
+        return;
+    }
 
     // Reserve the bottom row for a progress/usage footer once a run has started.
     let show_footer = app.agent_active || !app.agent_transcript.is_empty();
     let (inner, footer) = if show_footer && outer_inner.height >= 2 {
         (
-            Rect { height: outer_inner.height - 1, ..outer_inner },
-            Some(Rect { y: outer_inner.y + outer_inner.height - 1, height: 1, ..outer_inner }),
+            Rect {
+                height: outer_inner.height - 1,
+                ..outer_inner
+            },
+            Some(Rect {
+                y: outer_inner.y + outer_inner.height - 1,
+                height: 1,
+                ..outer_inner
+            }),
         )
     } else {
         (outer_inner, None)
@@ -1081,11 +1284,18 @@ fn render_agent_transcript(frame: &mut Frame, app: &mut App, theme: &Theme, area
     // Record the content area for mouse scroll hit-testing.
     app.agent_transcript_area = Some(inner);
 
-    if inner.height == 0 || inner.width == 0 { return; }
+    if inner.height == 0 || inner.width == 0 {
+        return;
+    }
 
     // Apply 1-char horizontal padding inside the panel.
-    let content_area = inner.inner(Margin { horizontal: 1, vertical: 0 });
-    if content_area.height == 0 || content_area.width == 0 { return; }
+    let content_area = inner.inner(Margin {
+        horizontal: 1,
+        vertical: 0,
+    });
+    if content_area.height == 0 || content_area.width == 0 {
+        return;
+    }
 
     let viewport = inner.height as usize;
     app.agent_viewport = viewport;
@@ -1097,10 +1307,19 @@ fn render_agent_transcript(frame: &mut Frame, app: &mut App, theme: &Theme, area
         } else {
             "Type a question in the REPL or use a /slash command to start the agent.\n\nExample: /security-review, /explain, what does this codebase do?"
         };
-        let hint_lines: Vec<Line> = hint.lines().map(|l| {
-            Line::from(Span::styled(l.to_string(), Style::default().fg(theme.muted)))
-        }).collect();
-        frame.render_widget(Paragraph::new(hint_lines).wrap(Wrap { trim: false }), content_area);
+        let hint_lines: Vec<Line> = hint
+            .lines()
+            .map(|l| {
+                Line::from(Span::styled(
+                    l.to_string(),
+                    Style::default().fg(theme.muted),
+                ))
+            })
+            .collect();
+        frame.render_widget(
+            Paragraph::new(hint_lines).wrap(Wrap { trim: false }),
+            content_area,
+        );
         return;
     }
 
@@ -1108,7 +1327,8 @@ fn render_agent_transcript(frame: &mut Frame, app: &mut App, theme: &Theme, area
     // line-level window. `agent_scroll` is the index of the top visible line,
     // which gives smooth, uniform scrolling regardless of entry sizes.
     let line_counts: Vec<usize> = app.agent_transcript.iter().map(entry_line_count).collect();
-    let all_lines: Vec<Line> = build_agent_lines(app, theme, &line_counts, content_area.width as usize);
+    let all_lines: Vec<Line> =
+        build_agent_lines(app, theme, &line_counts, content_area.width as usize);
     let total_lines = all_lines.len();
     let max_scroll = total_lines.saturating_sub(viewport);
 
@@ -1122,7 +1342,10 @@ fn render_agent_transcript(frame: &mut Frame, app: &mut App, theme: &Theme, area
 
     let end = (line_scroll + viewport).min(total_lines);
     let visible: Vec<Line> = all_lines[line_scroll..end].to_vec();
-    frame.render_widget(Paragraph::new(visible).wrap(Wrap { trim: false }), content_area);
+    frame.render_widget(
+        Paragraph::new(visible).wrap(Wrap { trim: false }),
+        content_area,
+    );
     drop(all_lines);
 
     // Record the extent so the scroll handlers can clamp on the next event.
@@ -1133,7 +1356,12 @@ fn render_agent_transcript(frame: &mut Frame, app: &mut App, theme: &Theme, area
 }
 
 /// Build the full list of rendered lines from the agent transcript.
-fn build_agent_lines<'a>(app: &'a App, theme: &Theme, _line_counts: &[usize], width: usize) -> Vec<Line<'a>> {
+fn build_agent_lines<'a>(
+    app: &'a App,
+    theme: &Theme,
+    _line_counts: &[usize],
+    width: usize,
+) -> Vec<Line<'a>> {
     let mut lines: Vec<Line> = Vec::new();
     for entry in &app.agent_transcript {
         let start = lines.len();
@@ -1143,10 +1371,18 @@ fn build_agent_lines<'a>(app: &'a App, theme: &Theme, _line_counts: &[usize], wi
                 // top of the transcript with a chevron icon and accent styling.
                 let icon_w = 2usize;
                 for (i, raw) in text.split('\n').enumerate() {
-                    for (j, wrapped) in wrap_line(raw, width.saturating_sub(icon_w)).into_iter().enumerate() {
+                    for (j, wrapped) in wrap_line(raw, width.saturating_sub(icon_w))
+                        .into_iter()
+                        .enumerate()
+                    {
                         let prefix = if i == 0 && j == 0 { "❯ " } else { "  " };
                         lines.push(Line::from(vec![
-                            Span::styled(prefix, Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)),
+                            Span::styled(
+                                prefix,
+                                Style::default()
+                                    .fg(theme.accent)
+                                    .add_modifier(Modifier::BOLD),
+                            ),
                             Span::styled(
                                 wrapped,
                                 Style::default().fg(theme.fg).add_modifier(Modifier::BOLD),
@@ -1167,7 +1403,10 @@ fn build_agent_lines<'a>(app: &'a App, theme: &Theme, _line_counts: &[usize], wi
                         } else {
                             "```".to_string()
                         };
-                        lines.push(Line::from(Span::styled(label, Style::default().fg(theme.muted))));
+                        lines.push(Line::from(Span::styled(
+                            label,
+                            Style::default().fg(theme.muted),
+                        )));
                     } else if in_code {
                         for wrapped in wrap_line(line, width.saturating_sub(2)) {
                             lines.push(Line::from(vec![
@@ -1198,26 +1437,44 @@ fn build_agent_lines<'a>(app: &'a App, theme: &Theme, _line_counts: &[usize], wi
                     }
                 } else {
                     let preview: String = text.chars().take(120).collect();
-                    let label = if text.len() > 120 { format!("{}…", preview) } else { preview };
+                    let label = if text.len() > 120 {
+                        format!("{}…", preview)
+                    } else {
+                        preview
+                    };
                     lines.push(Line::from(vec![
                         Span::styled("💭 ", Style::default().fg(theme.muted)),
                         Span::styled(label, Style::default().fg(theme.muted)),
                     ]));
                 }
             }
-            AgentEntry::ToolCall { name, input, result, .. } => {
+            AgentEntry::ToolCall {
+                name,
+                input,
+                result,
+                ..
+            } => {
                 if result.is_none() {
                     let spin = SPINNER_FRAMES[(app.agent_spinner / 2) % SPINNER_FRAMES.len()];
                     let display = tool_label(name);
                     let mut spans = vec![
                         Span::styled(spin.to_string(), Style::default().fg(theme.accent)),
                         Span::styled(" ", Style::default().fg(theme.fg)),
-                        Span::styled(display.to_string(), Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)),
+                        Span::styled(
+                            display.to_string(),
+                            Style::default()
+                                .fg(theme.accent)
+                                .add_modifier(Modifier::BOLD),
+                        ),
                     ];
                     if display == *name {
                         let input_str = serde_json::to_string(input).unwrap_or_default();
-                        let preview: String = input_str.chars().take(width.saturating_sub(8)).collect();
-                        spans.push(Span::styled(format!("({preview})"), Style::default().fg(theme.muted)));
+                        let preview: String =
+                            input_str.chars().take(width.saturating_sub(8)).collect();
+                        spans.push(Span::styled(
+                            format!("({preview})"),
+                            Style::default().fg(theme.muted),
+                        ));
                     }
                     lines.push(Line::from(spans));
                 }
@@ -1232,7 +1489,10 @@ fn build_agent_lines<'a>(app: &'a App, theme: &Theme, _line_counts: &[usize], wi
             }
             AgentEntry::Usage { .. } | AgentEntry::StopReason(_) => {}
             AgentEntry::Done => {
-                lines.push(Line::from(Span::styled("  ✓ done", Style::default().fg(theme.num))));
+                lines.push(Line::from(Span::styled(
+                    "  ✓ done",
+                    Style::default().fg(theme.num),
+                )));
             }
         }
         // Add a blank separator after each rendered entry for vertical spacing.
@@ -1300,9 +1560,15 @@ fn agent_footer_line<'a>(app: &App, theme: &Theme) -> Line<'a> {
     let mut spans: Vec<Span> = Vec::new();
     if app.agent_active {
         let spin = SPINNER_FRAMES[(app.agent_spinner / 2) % SPINNER_FRAMES.len()];
-        spans.push(Span::styled(format!("{spin} working "), Style::default().fg(theme.accent)));
+        spans.push(Span::styled(
+            format!("{spin} working "),
+            Style::default().fg(theme.accent),
+        ));
         if let Some(tool) = &app.agent_last_tool {
-            spans.push(Span::styled(format!("· ⚙ {tool} "), Style::default().fg(theme.muted)));
+            spans.push(Span::styled(
+                format!("· ⚙ {tool} "),
+                Style::default().fg(theme.muted),
+            ));
         }
     } else {
         spans.push(Span::styled("✓ done ", Style::default().fg(theme.num)));
@@ -1317,8 +1583,15 @@ fn agent_footer_line<'a>(app: &App, theme: &Theme) -> Line<'a> {
             Style::default().fg(theme.muted),
         ));
     }
-    let hint = if app.agent_active { "· [c] cancel" } else { "· [t] thinking" };
-    spans.push(Span::styled(hint.to_string(), Style::default().fg(theme.muted)));
+    let hint = if app.agent_active {
+        "· [c] cancel"
+    } else {
+        "· [t] thinking"
+    };
+    spans.push(Span::styled(
+        hint.to_string(),
+        Style::default().fg(theme.muted),
+    ));
     Line::from(spans)
 }
 
@@ -1332,18 +1605,30 @@ fn render_markdown_line<'a>(line: &str, theme: &Theme) -> Line<'a> {
 
     // Headings
     let heading = |text: &str, level: u8| -> Line<'a> {
-        let marker = match level { 1 => "▌ ", 2 => "▌ ", _ => "· " };
+        let marker = match level {
+            1 => "▌ ",
+            2 => "▌ ",
+            _ => "· ",
+        };
         Line::from(vec![
             Span::styled(marker.to_string(), Style::default().fg(theme.accent)),
             Span::styled(
                 text.to_string(),
-                Style::default().fg(theme.header).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(theme.header)
+                    .add_modifier(Modifier::BOLD),
             ),
         ])
     };
-    if let Some(h) = trimmed.strip_prefix("### ") { return heading(h, 3); }
-    if let Some(h) = trimmed.strip_prefix("## ") { return heading(h, 2); }
-    if let Some(h) = trimmed.strip_prefix("# ") { return heading(h, 1); }
+    if let Some(h) = trimmed.strip_prefix("### ") {
+        return heading(h, 3);
+    }
+    if let Some(h) = trimmed.strip_prefix("## ") {
+        return heading(h, 2);
+    }
+    if let Some(h) = trimmed.strip_prefix("# ") {
+        return heading(h, 1);
+    }
 
     // Horizontal rules: ---, ***, ___
     if trimmed.chars().all(|c| c == '-' || c == '*' || c == '_') && trimmed.len() >= 3 {
@@ -1364,7 +1649,10 @@ fn render_markdown_line<'a>(line: &str, theme: &Theme) -> Line<'a> {
     }
 
     // Bullet lists: - or *
-    if let Some(rest) = trimmed.strip_prefix("- ").or_else(|| trimmed.strip_prefix("* ")) {
+    if let Some(rest) = trimmed
+        .strip_prefix("- ")
+        .or_else(|| trimmed.strip_prefix("* "))
+    {
         let mut spans = vec![Span::styled(
             format!("{indent}• "),
             Style::default().fg(theme.accent),
@@ -1374,7 +1662,10 @@ fn render_markdown_line<'a>(line: &str, theme: &Theme) -> Line<'a> {
     }
 
     // Numbered lists: 1. 2. etc.
-    let digit_len = trimmed.bytes().position(|b| !b.is_ascii_digit()).unwrap_or(0);
+    let digit_len = trimmed
+        .bytes()
+        .position(|b| !b.is_ascii_digit())
+        .unwrap_or(0);
     if digit_len > 0 && trimmed[digit_len..].starts_with(". ") {
         let num = &trimmed[..digit_len];
         let rest = &trimmed[digit_len + 2..];
@@ -1419,7 +1710,10 @@ fn flush_table_buf<'a>(lines: &mut Vec<Line<'a>>, buf: &mut Vec<&str>, theme: &T
 
 /// True when every cell in this parsed row is a separator (---, :---, etc.).
 fn is_separator_row(cells: &[String]) -> bool {
-    !cells.is_empty() && cells.iter().all(|c| c.chars().all(|ch| ch == '-' || ch == ':' || ch == ' '))
+    !cells.is_empty()
+        && cells
+            .iter()
+            .all(|c| c.chars().all(|ch| ch == '-' || ch == ':' || ch == ' '))
 }
 
 /// Render a set of parsed markdown table rows as styled [`Line`]s.
@@ -1429,7 +1723,8 @@ fn render_table_rows<'a>(rows: &[Vec<String>], theme: &Theme) -> Vec<Line<'a>> {
     }
 
     // Separate header + body from separator rows.
-    let data_rows: Vec<&[String]> = rows.iter()
+    let data_rows: Vec<&[String]> = rows
+        .iter()
         .filter(|r| !is_separator_row(r))
         .map(|r| r.as_slice())
         .collect();
@@ -1452,7 +1747,9 @@ fn render_table_rows<'a>(rows: &[Vec<String>], theme: &Theme) -> Vec<Line<'a>> {
     }
 
     let sep = Style::default().fg(theme.muted);
-    let head = Style::default().fg(theme.header).add_modifier(Modifier::BOLD);
+    let head = Style::default()
+        .fg(theme.header)
+        .add_modifier(Modifier::BOLD);
     let cell = Style::default().fg(theme.fg);
     let has_sep = rows.iter().any(|r| is_separator_row(r));
 
@@ -1501,37 +1798,46 @@ fn inline_spans<'a>(text: &str, base: Style, theme: &Theme) -> Vec<Span<'a>> {
     while i < text.len() {
         // `code`
         if text.as_bytes()[i] == b'`'
-            && let Some(end) = text[i + 1..].find('`') {
-                if !buf.is_empty() {
-                    spans.push(Span::styled(std::mem::take(&mut buf), base));
-                }
-                spans.push(Span::styled(text[i + 1..i + 1 + end].to_string(), code_style));
-                i = i + 1 + end + 1;
-                continue;
+            && let Some(end) = text[i + 1..].find('`')
+        {
+            if !buf.is_empty() {
+                spans.push(Span::styled(std::mem::take(&mut buf), base));
             }
+            spans.push(Span::styled(
+                text[i + 1..i + 1 + end].to_string(),
+                code_style,
+            ));
+            i = i + 1 + end + 1;
+            continue;
+        }
         // **bold**
         if text[i..].starts_with("**")
-            && let Some(end) = text[i + 2..].find("**") {
-                if !buf.is_empty() {
-                    spans.push(Span::styled(std::mem::take(&mut buf), base));
-                }
-                spans.push(Span::styled(text[i + 2..i + 2 + end].to_string(), bold));
-                i = i + 2 + end + 2;
-                continue;
+            && let Some(end) = text[i + 2..].find("**")
+        {
+            if !buf.is_empty() {
+                spans.push(Span::styled(std::mem::take(&mut buf), base));
             }
+            spans.push(Span::styled(text[i + 2..i + 2 + end].to_string(), bold));
+            i = i + 2 + end + 2;
+            continue;
+        }
         // [text](url)
         if text.as_bytes()[i] == b'['
             && let Some(bracket_end) = text[i + 1..].find(']')
             && text[i + 1 + bracket_end..].starts_with("](")
-            && let Some(paren_end) = text[i + 1 + bracket_end + 2..].find(')') {
-                if !buf.is_empty() {
-                    spans.push(Span::styled(std::mem::take(&mut buf), base));
-                }
-                let link_text = &text[i + 1..i + 1 + bracket_end];
-                spans.push(Span::styled(link_text.to_string(), link_style.add_modifier(Modifier::UNDERLINED)));
-                i = i + 1 + bracket_end + 2 + paren_end + 1;
-                continue;
+            && let Some(paren_end) = text[i + 1 + bracket_end + 2..].find(')')
+        {
+            if !buf.is_empty() {
+                spans.push(Span::styled(std::mem::take(&mut buf), base));
             }
+            let link_text = &text[i + 1..i + 1 + bracket_end];
+            spans.push(Span::styled(
+                link_text.to_string(),
+                link_style.add_modifier(Modifier::UNDERLINED),
+            ));
+            i = i + 1 + bracket_end + 2 + paren_end + 1;
+            continue;
+        }
         let ch_len = text[i..].chars().next().map(char::len_utf8).unwrap_or(1);
         buf.push_str(&text[i..i + ch_len]);
         i += ch_len;
@@ -1552,7 +1858,11 @@ fn entry_line_count(entry: &AgentEntry) -> usize {
         AgentEntry::Text(t) => t.split('\n').count().max(1),
         AgentEntry::Thinking(_) => 1,
         AgentEntry::ToolCall { result, .. } => {
-            if result.is_none() { 1 } else { 0 }
+            if result.is_none() {
+                1
+            } else {
+                0
+            }
         }
         AgentEntry::Error(_) | AgentEntry::Done => 1,
         AgentEntry::Usage { .. } | AgentEntry::StopReason(_) => 0,
@@ -1578,8 +1888,8 @@ fn render_status(frame: &mut Frame, app: &App, theme: &Theme, area: Rect) {
         let tasks = app.bg_progress.lock().unwrap();
         for task in tasks.iter() {
             let (color, icon) = match &task.status {
-                BgStatus::Running => (theme.accent, "\u{23F3}"),  // ⏳
-                BgStatus::Done => (theme.num, "\u{2713}"),        // ✓
+                BgStatus::Running => (theme.accent, "\u{23F3}"), // ⏳
+                BgStatus::Done => (theme.num, "\u{2713}"),       // ✓
                 BgStatus::Failed(_) => (theme.error, "\u{2717}"), // ✗
             };
             spans.push(Span::styled(
@@ -1610,8 +1920,8 @@ mod tests {
     use super::*;
     use crate::app::App;
     use crate::model::{Cell, ResultTable, Summary, SummaryRow};
-    use ratatui::backend::TestBackend;
     use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
 
     #[test]
     fn humanize_count_uses_k_and_m_suffixes() {
@@ -1644,8 +1954,14 @@ mod tests {
             language: "JSSRC".into(),
             version: "0.1".into(),
             rows: vec![
-                SummaryRow { label: "Files".into(), count: 8 },
-                SummaryRow { label: "Methods".into(), count: 349 },
+                SummaryRow {
+                    label: "Files".into(),
+                    count: 8,
+                },
+                SummaryRow {
+                    label: "Methods".into(),
+                    count: 349,
+                },
             ],
         };
         let mut app = App::new(None, "js-app.atom".into(), summary, None);
@@ -1665,9 +1981,18 @@ mod tests {
             title: "Methods".into(),
             columns: vec!["Name".into(), "File".into(), "Line Count".into()],
             rows: vec![vec![
-                Cell { v: "main".into(), k: "name".into() },
-                Cell { v: "a.c".into(), k: "path".into() },
-                Cell { v: "12".into(), k: "num".into() },
+                Cell {
+                    v: "main".into(),
+                    k: "name".into(),
+                },
+                Cell {
+                    v: "a.c".into(),
+                    k: "path".into(),
+                },
+                Cell {
+                    v: "12".into(),
+                    k: "num".into(),
+                },
             ]],
             total: 1,
             offset: 0,
@@ -1685,8 +2010,14 @@ mod tests {
         use crate::model::{Cell, ResultTable};
         let row = |n: &str, lc: &str| {
             vec![
-                Cell { v: n.into(), k: "name".into() },
-                Cell { v: lc.into(), k: "num".into() },
+                Cell {
+                    v: n.into(),
+                    k: "name".into(),
+                },
+                Cell {
+                    v: lc.into(),
+                    k: "num".into(),
+                },
             ]
         };
         let mut app = App::new(None, "x.atom".into(), Summary::default(), None);
@@ -1727,8 +2058,11 @@ mod tests {
         let cell = app.table_header_cells[1];
         app.on_click(cell.x + 1, cell.y);
         assert_eq!(app.table_sort, Some((1, true)));
-        let order: Vec<&str> =
-            app.table_visible.iter().map(|&i| app.output.as_ref().unwrap().rows[i][1].v.as_str()).collect();
+        let order: Vec<&str> = app
+            .table_visible
+            .iter()
+            .map(|&i| app.output.as_ref().unwrap().rows[i][1].v.as_str())
+            .collect();
         assert_eq!(order, vec!["9", "30", "100"]);
         // Clicking the same header again flips the direction.
         app.on_click(cell.x + 1, cell.y);
@@ -1740,18 +2074,27 @@ mod tests {
         let mut app = methods_table_app();
         // Sort by Line Count (column 1): numeric, ascending → 9, 30, 100.
         app.sort_by_column(1);
-        let order: Vec<&str> =
-            app.table_visible.iter().map(|&i| app.output.as_ref().unwrap().rows[i][1].v.as_str()).collect();
+        let order: Vec<&str> = app
+            .table_visible
+            .iter()
+            .map(|&i| app.output.as_ref().unwrap().rows[i][1].v.as_str())
+            .collect();
         assert_eq!(order, vec!["9", "30", "100"]);
         // Toggle to descending.
         app.sort_by_column(1);
-        let order: Vec<&str> =
-            app.table_visible.iter().map(|&i| app.output.as_ref().unwrap().rows[i][1].v.as_str()).collect();
+        let order: Vec<&str> = app
+            .table_visible
+            .iter()
+            .map(|&i| app.output.as_ref().unwrap().rows[i][1].v.as_str())
+            .collect();
         assert_eq!(order, vec!["100", "30", "9"]);
         // Sort by Name (column 0): lexicographic ascending.
         app.sort_by_column(0);
-        let names: Vec<&str> =
-            app.table_visible.iter().map(|&i| app.output.as_ref().unwrap().rows[i][0].v.as_str()).collect();
+        let names: Vec<&str> = app
+            .table_visible
+            .iter()
+            .map(|&i| app.output.as_ref().unwrap().rows[i][0].v.as_str())
+            .collect();
         assert_eq!(names, vec!["alpha", "bravo", "charlie"]);
     }
 
@@ -1765,7 +2108,11 @@ mod tests {
             file: "views.py".into(),
             line: 10,
             symbol: sym.into(),
-            tags: if kind == "source" { vec!["framework-input".into()] } else { vec![] },
+            tags: if kind == "source" {
+                vec!["framework-input".into()]
+            } else {
+                vec![]
+            },
             ..Default::default()
         };
         let main = Flow {
@@ -1778,7 +2125,11 @@ mod tests {
             has_purl: true,
             length: 3,
             sub_flow_of: None,
-            steps: vec![step("source", "request"), step("sanitizer", "clean"), step("sink", "q")],
+            steps: vec![
+                step("source", "request"),
+                step("sanitizer", "clean"),
+                step("sink", "q"),
+            ],
         };
         let sub = Flow {
             id: 1,
@@ -1846,7 +2197,14 @@ mod tests {
             ..Default::default()
         };
         let mut app = App::new(None, "x.atom".into(), Summary::default(), None);
-        app.flows = Some(FlowSet { title: "F".into(), total: 1, shown: 1, offset: 0, flows: vec![flow], ..Default::default() });
+        app.flows = Some(FlowSet {
+            title: "F".into(),
+            total: 1,
+            shown: 1,
+            offset: 0,
+            flows: vec![flow],
+            ..Default::default()
+        });
         app.flow_visible = vec![0];
         app.focus = Panel::Output;
 
@@ -1879,13 +2237,19 @@ mod tests {
         let summary = Summary {
             language: "PYTHONSRC".into(),
             version: "1".into(),
-            rows: vec![SummaryRow { label: "Files".into(), count: 1484 }],
+            rows: vec![SummaryRow {
+                label: "Files".into(),
+                count: 1484,
+            }],
         };
         let mut app = App::new(None, "x.atom".into(), summary, None);
         app.output = Some(ResultTable {
             title: "Methods".into(),
             columns: vec!["Name".into()],
-            rows: vec![vec![Cell { v: "main".into(), k: "name".into() }]],
+            rows: vec![vec![Cell {
+                v: "main".into(),
+                k: "name".into(),
+            }]],
             total: 1,
             offset: 0,
         });
@@ -1907,7 +2271,8 @@ mod tests {
     #[test]
     fn renders_repl_scrollback() {
         let mut app = App::new(None, "x.atom".into(), Summary::default(), None);
-        app.repl.record("atom.file", "Files: 8 of 8 row(s)".into(), true);
+        app.repl
+            .record("atom.file", "Files: 8 of 8 row(s)".into(), true);
         let text = rendered_text(&mut app);
         assert!(text.contains("atom.file"));
     }

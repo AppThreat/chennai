@@ -134,13 +134,18 @@ impl FindingSet {
     /// Sort by severity (Critical first), then by confidence (Confirmed first).
     pub fn rank(&mut self) {
         self.findings.sort_by(|a, b| {
-            a.severity.cmp(&b.severity).then(a.confidence.cmp(&b.confidence))
+            a.severity
+                .cmp(&b.severity)
+                .then(a.confidence.cmp(&b.confidence))
         });
     }
 
     /// Return the number of findings with `Confirmed` confidence.
     pub fn confirmed_count(&self) -> usize {
-        self.findings.iter().filter(|f| f.confidence == Confidence::Confirmed).count()
+        self.findings
+            .iter()
+            .filter(|f| f.confidence == Confidence::Confirmed)
+            .count()
     }
 
     /// Render all findings as a Markdown string.
@@ -190,21 +195,36 @@ impl FindingSet {
         for f in &visible {
             let sev = format!("{:?}", f.severity);
             let conf = format!("{:?}", f.confidence);
-            let cwe = f.cwe.as_deref().map(|c| format!(" | **CWE:** {}", c)).unwrap_or_default();
+            let cwe = f
+                .cwe
+                .as_deref()
+                .map(|c| format!(" | **CWE:** {}", c))
+                .unwrap_or_default();
             let src_line = f.source.line.map(|l| format!(":{}", l)).unwrap_or_default();
             let snk_line = f.sink.line.map(|l| format!(":{}", l)).unwrap_or_default();
-            let proven = if f.proof.verified { "✅ verified" } else { "❌ not verified" };
-            let remediation = f.remediation.as_deref()
+            let proven = if f.proof.verified {
+                "✅ verified"
+            } else {
+                "❌ not verified"
+            };
+            let remediation = f
+                .remediation
+                .as_deref()
                 .map(|r| format!("\n- **Remediation:** {}", r))
                 .unwrap_or_default();
-            let grounded = f.grounded_by.as_deref()
+            let grounded = f
+                .grounded_by
+                .as_deref()
                 .filter(|s| !s.is_empty())
                 .map(|g| format!("\n- **Grounded by:** {}", g))
                 .unwrap_or_default();
             let sanitizers = if f.sanitizers_checked.is_empty() {
                 String::new()
             } else {
-                format!("\n- **Sanitizers checked:** {}", f.sanitizers_checked.join(", "))
+                format!(
+                    "\n- **Sanitizers checked:** {}",
+                    f.sanitizers_checked.join(", ")
+                )
             };
 
             out.push_str(&format!(
@@ -213,11 +233,22 @@ impl FindingSet {
                  - **Source:** `{}`{}\n\
                  - **Sink:** `{}`{}\n\
                  - **Proof:** `{}` — {} path(s), {}{}{}{}\n\n",
-                f.id, f.title, sev, conf, f.id, cwe,
-                f.source.file, src_line,
-                f.sink.file, snk_line,
-                f.proof.expr, f.proof.path_count, proven,
-                sanitizers, grounded, remediation,
+                f.id,
+                f.title,
+                sev,
+                conf,
+                f.id,
+                cwe,
+                f.source.file,
+                src_line,
+                f.sink.file,
+                snk_line,
+                f.proof.expr,
+                f.proof.path_count,
+                proven,
+                sanitizers,
+                grounded,
+                remediation,
             ));
         }
 
@@ -289,7 +320,12 @@ pub struct TokenLedger {
 }
 
 impl TokenLedger {
-    pub fn record_usage(&mut self, input_tokens: u32, output_tokens: u32, cache_read_tokens: Option<u32>) {
+    pub fn record_usage(
+        &mut self,
+        input_tokens: u32,
+        output_tokens: u32,
+        cache_read_tokens: Option<u32>,
+    ) {
         self.input += input_tokens as u64;
         self.output += output_tokens as u64;
         if let Some(cr) = cache_read_tokens {
@@ -300,7 +336,10 @@ impl TokenLedger {
 
     /// One-line summary like `tokens: 1234 in / 567 out / 89 cache`.
     pub fn summary(&self) -> String {
-        format!("tokens: {} in / {} out / {} cache", self.input, self.output, self.cache_read)
+        format!(
+            "tokens: {} in / {} out / {} cache",
+            self.input, self.output, self.cache_read
+        )
     }
 
     /// Capture a point-in-time snapshot of the current ledger state. Used to
@@ -445,7 +484,9 @@ impl RunProfile {
 
     /// Total wall-clock time across all segments.
     pub fn total_elapsed(&self) -> Duration {
-        self.segments.iter().fold(Duration::ZERO, |acc, s| acc + s.elapsed)
+        self.segments
+            .iter()
+            .fold(Duration::ZERO, |acc, s| acc + s.elapsed)
     }
 
     /// Total findings across all segments.
@@ -504,21 +545,25 @@ impl RunProfile {
 
     /// Render as a JSON value for persistence.
     pub fn to_json(&self) -> serde_json::Value {
-        let segments: Vec<serde_json::Value> = self.segments.iter().map(|s| {
-            serde_json::json!({
-                "label": s.label,
-                "tokens": {
-                    "input": s.tokens.input,
-                    "output": s.tokens.output,
-                    "cache_read": s.tokens.cache_read,
-                    "total": s.tokens.total_tokens(),
-                },
-                "turns": s.turns,
-                "findings_delta": s.findings_delta,
-                "elapsed_secs": s.elapsed.as_secs_f64(),
-                "completed": s.completed,
+        let segments: Vec<serde_json::Value> = self
+            .segments
+            .iter()
+            .map(|s| {
+                serde_json::json!({
+                    "label": s.label,
+                    "tokens": {
+                        "input": s.tokens.input,
+                        "output": s.tokens.output,
+                        "cache_read": s.tokens.cache_read,
+                        "total": s.tokens.total_tokens(),
+                    },
+                    "turns": s.turns,
+                    "findings_delta": s.findings_delta,
+                    "elapsed_secs": s.elapsed.as_secs_f64(),
+                    "completed": s.completed,
+                })
             })
-        }).collect();
+            .collect();
         serde_json::json!({
             "segments": segments,
             "totals": {
@@ -534,9 +579,7 @@ impl RunProfile {
     /// Persist to `<source_root>/.chen/agent-state/profile.json`.
     pub fn save(&self, source_root: Option<&str>) -> Result<(), String> {
         let base = source_root.ok_or("no source root configured")?;
-        let dir = std::path::Path::new(base)
-            .join(".chen")
-            .join("agent-state");
+        let dir = std::path::Path::new(base).join(".chen").join("agent-state");
         std::fs::create_dir_all(&dir).map_err(|e| format!("create agent-state dir: {e}"))?;
         let json = serde_json::to_string_pretty(&self.to_json())
             .map_err(|e| format!("serialize profile: {e}"))?;
@@ -583,7 +626,11 @@ impl AuditProgress {
     }
 
     /// Mark a stage as completed and persist immediately.
-    pub fn mark_completed(&mut self, stage_name: &str, source_root: Option<&str>) -> Result<(), String> {
+    pub fn mark_completed(
+        &mut self,
+        stage_name: &str,
+        source_root: Option<&str>,
+    ) -> Result<(), String> {
         if !self.completed_stages.contains(&stage_name.to_string()) {
             self.completed_stages.push(stage_name.to_string());
         }
@@ -601,7 +648,8 @@ impl AuditProgress {
         let dir = std::path::Path::new(base).join(".chen").join("agent-state");
         std::fs::create_dir_all(&dir).map_err(|e| format!("create agent-state dir: {e}"))?;
         let path = dir.join("audit-progress.json");
-        let json = serde_json::to_string_pretty(self).map_err(|e| format!("serialize audit progress: {e}"))?;
+        let json = serde_json::to_string_pretty(self)
+            .map_err(|e| format!("serialize audit progress: {e}"))?;
         std::fs::write(&path, json).map_err(|e| format!("write audit progress: {e}"))?;
         Ok(())
     }
@@ -635,11 +683,7 @@ pub fn count_flow_paths(data: &serde_json::Value) -> usize {
     data.get("flows")
         .and_then(|v| v.as_array())
         .map(|a| a.len())
-        .or_else(|| {
-            data.get("rows")
-                .and_then(|v| v.as_array())
-                .map(|a| a.len())
-        })
+        .or_else(|| data.get("rows").and_then(|v| v.as_array()).map(|a| a.len()))
         .unwrap_or(0)
 }
 
@@ -668,7 +712,10 @@ pub fn parse_confidence(s: &str) -> Confidence {
 /// Parse a [`Location`] from an optional JSON sub-object.
 pub fn parse_location(val: Option<&serde_json::Value>) -> Result<Location, String> {
     let obj = val.ok_or("missing location")?;
-    let file = obj.get("file").and_then(|v| v.as_str()).ok_or("location requires 'file'")?;
+    let file = obj
+        .get("file")
+        .and_then(|v| v.as_str())
+        .ok_or("location requires 'file'")?;
     Ok(Location {
         file: file.to_string(),
         line: obj.get("line").and_then(|v| v.as_u64()).map(|v| v as u32),
@@ -697,16 +744,35 @@ mod tests {
     use super::*;
     use crate::agent::process_note::ProcessNote;
 
-    fn sample_finding(id: &str, severity: Severity, confidence: Confidence, tag: &str, sink_file: &str, sink_line: Option<u32>) -> Finding {
+    fn sample_finding(
+        id: &str,
+        severity: Severity,
+        confidence: Confidence,
+        tag: &str,
+        sink_file: &str,
+        sink_line: Option<u32>,
+    ) -> Finding {
         Finding {
             id: id.into(),
             title: "Test Finding".into(),
             severity,
             cwe: Some("CWE-22".into()),
             confidence,
-            source: Location { file: "src/input.rs".into(), line: Some(1), tag: Some(tag.into()) },
-            sink: Location { file: sink_file.into(), line: sink_line, tag: None },
-            proof: Proof { expr: "sink.reachableByFlows(source)".into(), path_count: 3, verified: true },
+            source: Location {
+                file: "src/input.rs".into(),
+                line: Some(1),
+                tag: Some(tag.into()),
+            },
+            sink: Location {
+                file: sink_file.into(),
+                line: sink_line,
+                tag: None,
+            },
+            proof: Proof {
+                expr: "sink.reachableByFlows(source)".into(),
+                path_count: 3,
+                verified: true,
+            },
             reachable: true,
             sanitizers_checked: vec!["escapeHtml".into()],
             grounded_by: Some("atom_reaches".into()),
@@ -720,7 +786,14 @@ mod tests {
 
     #[test]
     fn finding_serde_roundtrip() {
-        let f = sample_finding("F-test", Severity::High, Confidence::Confirmed, "cli-source", "src/exec.rs", Some(42));
+        let f = sample_finding(
+            "F-test",
+            Severity::High,
+            Confidence::Confirmed,
+            "cli-source",
+            "src/exec.rs",
+            Some(42),
+        );
         let json = serde_json::to_value(&f).unwrap();
         let deser: Finding = serde_json::from_value(json.clone()).unwrap();
         assert_eq!(deser.id, f.id);
@@ -736,7 +809,14 @@ mod tests {
 
     #[test]
     fn finding_set_roundtrip() {
-        let f = sample_finding("F1", Severity::Critical, Confidence::Confirmed, "cli", "sink.rs", Some(1));
+        let f = sample_finding(
+            "F1",
+            Severity::Critical,
+            Confidence::Confirmed,
+            "cli",
+            "sink.rs",
+            Some(1),
+        );
         let mut set = FindingSet::new();
         set.add(f);
         let json = set.render_json();
@@ -751,8 +831,22 @@ mod tests {
     #[test]
     fn dedupe_collapses_same_source_tag_sink_file_sink_line() {
         let mut set = FindingSet::new();
-        set.add(sample_finding("A", Severity::High, Confidence::Plausible, "cli", "sink.rs", Some(10)));
-        set.add(sample_finding("B", Severity::Critical, Confidence::Confirmed, "cli", "sink.rs", Some(10)));
+        set.add(sample_finding(
+            "A",
+            Severity::High,
+            Confidence::Plausible,
+            "cli",
+            "sink.rs",
+            Some(10),
+        ));
+        set.add(sample_finding(
+            "B",
+            Severity::Critical,
+            Confidence::Confirmed,
+            "cli",
+            "sink.rs",
+            Some(10),
+        ));
         set.dedupe();
         assert_eq!(set.findings.len(), 1);
         // The higher-ranked one (Critical+Confirmed) should have won.
@@ -762,8 +856,22 @@ mod tests {
     #[test]
     fn dedupe_preserves_different_sink_files() {
         let mut set = FindingSet::new();
-        set.add(sample_finding("A", Severity::High, Confidence::Confirmed, "cli", "sink-a.rs", Some(10)));
-        set.add(sample_finding("B", Severity::High, Confidence::Confirmed, "cli", "sink-b.rs", Some(10)));
+        set.add(sample_finding(
+            "A",
+            Severity::High,
+            Confidence::Confirmed,
+            "cli",
+            "sink-a.rs",
+            Some(10),
+        ));
+        set.add(sample_finding(
+            "B",
+            Severity::High,
+            Confidence::Confirmed,
+            "cli",
+            "sink-b.rs",
+            Some(10),
+        ));
         set.dedupe();
         assert_eq!(set.findings.len(), 2);
     }
@@ -771,8 +879,22 @@ mod tests {
     #[test]
     fn dedupe_preserves_different_source_tags() {
         let mut set = FindingSet::new();
-        set.add(sample_finding("A", Severity::High, Confidence::Confirmed, "cli", "sink.rs", Some(10)));
-        set.add(sample_finding("B", Severity::High, Confidence::Confirmed, "framework-input", "sink.rs", Some(10)));
+        set.add(sample_finding(
+            "A",
+            Severity::High,
+            Confidence::Confirmed,
+            "cli",
+            "sink.rs",
+            Some(10),
+        ));
+        set.add(sample_finding(
+            "B",
+            Severity::High,
+            Confidence::Confirmed,
+            "framework-input",
+            "sink.rs",
+            Some(10),
+        ));
         set.dedupe();
         assert_eq!(set.findings.len(), 2);
     }
@@ -784,8 +906,22 @@ mod tests {
     #[test]
     fn rank_orders_critical_before_high() {
         let mut set = FindingSet::new();
-        set.findings.push(sample_finding("L", Severity::High, Confidence::Confirmed, "t1", "s.rs", Some(1)));
-        set.findings.push(sample_finding("H", Severity::Critical, Confidence::Confirmed, "t2", "s.rs", Some(2)));
+        set.findings.push(sample_finding(
+            "L",
+            Severity::High,
+            Confidence::Confirmed,
+            "t1",
+            "s.rs",
+            Some(1),
+        ));
+        set.findings.push(sample_finding(
+            "H",
+            Severity::Critical,
+            Confidence::Confirmed,
+            "t2",
+            "s.rs",
+            Some(2),
+        ));
         set.rank();
         assert_eq!(set.findings[0].id, "H");
         assert_eq!(set.findings[1].id, "L");
@@ -794,8 +930,22 @@ mod tests {
     #[test]
     fn rank_orders_confirmed_before_plausible_within_same_severity() {
         let mut set = FindingSet::new();
-        set.findings.push(sample_finding("P", Severity::High, Confidence::Plausible, "t1", "s.rs", Some(1)));
-        set.findings.push(sample_finding("C", Severity::High, Confidence::Confirmed, "t2", "s.rs", Some(2)));
+        set.findings.push(sample_finding(
+            "P",
+            Severity::High,
+            Confidence::Plausible,
+            "t1",
+            "s.rs",
+            Some(1),
+        ));
+        set.findings.push(sample_finding(
+            "C",
+            Severity::High,
+            Confidence::Confirmed,
+            "t2",
+            "s.rs",
+            Some(2),
+        ));
         set.rank();
         assert_eq!(set.findings[0].id, "C");
         assert_eq!(set.findings[1].id, "P");
@@ -848,8 +998,16 @@ mod tests {
 
     #[test]
     fn finding_id_is_deterministic() {
-        let loc1 = Location { file: "a.rs".into(), line: Some(1), tag: None };
-        let loc2 = Location { file: "b.rs".into(), line: Some(2), tag: None };
+        let loc1 = Location {
+            file: "a.rs".into(),
+            line: Some(1),
+            tag: None,
+        };
+        let loc2 = Location {
+            file: "b.rs".into(),
+            line: Some(2),
+            tag: None,
+        };
         let id1 = finding_id("test", &loc1, &loc2);
         let id2 = finding_id("test", &loc1, &loc2);
         assert_eq!(id1, id2);
@@ -876,7 +1034,14 @@ mod tests {
     #[test]
     fn render_markdown_includes_finding_details() {
         let mut set = FindingSet::new();
-        set.add(sample_finding("F-001", Severity::Critical, Confidence::Confirmed, "cli", "exec.rs", Some(42)));
+        set.add(sample_finding(
+            "F-001",
+            Severity::Critical,
+            Confidence::Confirmed,
+            "cli",
+            "exec.rs",
+            Some(42),
+        ));
         let md = set.render_markdown();
         assert!(md.contains("F-001"));
         assert!(md.contains("Critical"));
@@ -936,9 +1101,25 @@ mod tests {
     #[test]
     fn delta_saturates_on_underflow() {
         // If a snapshot somehow has higher values than the current ledger, delta saturates at 0.
-        let later = LedgerSnapshot { input: 50, output: 30, cache_read: 10, turns: 1 };
-        let earlier = LedgerSnapshot { input: 200, output: 100, cache_read: 50, turns: 5 };
-        let ledger = TokenLedger { input: later.input, output: later.output, cache_read: later.cache_read, turns: later.turns, per_tool: HashMap::new() };
+        let later = LedgerSnapshot {
+            input: 50,
+            output: 30,
+            cache_read: 10,
+            turns: 1,
+        };
+        let earlier = LedgerSnapshot {
+            input: 200,
+            output: 100,
+            cache_read: 50,
+            turns: 5,
+        };
+        let ledger = TokenLedger {
+            input: later.input,
+            output: later.output,
+            cache_read: later.cache_read,
+            turns: later.turns,
+            per_tool: HashMap::new(),
+        };
         let delta = ledger.delta_since(&earlier);
         assert_eq!(delta.input, 0);
         assert_eq!(delta.output, 0);
@@ -948,7 +1129,12 @@ mod tests {
 
     #[test]
     fn total_tokens_aggregates_all() {
-        let delta = LedgerDelta { input: 100, output: 50, cache_read: 25, turns: 3 };
+        let delta = LedgerDelta {
+            input: 100,
+            output: 50,
+            cache_read: 25,
+            turns: 3,
+        };
         assert_eq!(delta.total_tokens(), 175);
     }
 
@@ -973,7 +1159,12 @@ mod tests {
         let mut profile = RunProfile::new();
         profile.push_segment(ProfileSegment {
             label: "recon".into(),
-            tokens: LedgerDelta { input: 1000, output: 500, cache_read: 200, turns: 3 },
+            tokens: LedgerDelta {
+                input: 1000,
+                output: 500,
+                cache_read: 200,
+                turns: 3,
+            },
             elapsed: Duration::from_secs(60),
             turns: 3,
             findings_delta: 2,
@@ -981,7 +1172,12 @@ mod tests {
         });
         profile.push_segment(ProfileSegment {
             label: "sink-hunter".into(),
-            tokens: LedgerDelta { input: 2000, output: 800, cache_read: 300, turns: 5 },
+            tokens: LedgerDelta {
+                input: 2000,
+                output: 800,
+                cache_read: 300,
+                turns: 5,
+            },
             elapsed: Duration::from_secs(100),
             turns: 5,
             findings_delta: 4,
@@ -1008,7 +1204,12 @@ mod tests {
         let mut profile = RunProfile::new();
         profile.push_segment(ProfileSegment {
             label: "recon".into(),
-            tokens: LedgerDelta { input: 1000, output: 500, cache_read: 200, turns: 3 },
+            tokens: LedgerDelta {
+                input: 1000,
+                output: 500,
+                cache_read: 200,
+                turns: 3,
+            },
             elapsed: Duration::from_secs(100),
             turns: 3,
             findings_delta: 2,
@@ -1035,7 +1236,12 @@ mod tests {
         let mut profile = RunProfile::new();
         profile.push_segment(ProfileSegment {
             label: "recon".into(),
-            tokens: LedgerDelta { input: 1000, output: 500, cache_read: 200, turns: 3 },
+            tokens: LedgerDelta {
+                input: 1000,
+                output: 500,
+                cache_read: 200,
+                turns: 3,
+            },
             elapsed: Duration::from_secs(60),
             turns: 3,
             findings_delta: 1,
@@ -1058,7 +1264,12 @@ mod tests {
         let mut profile = RunProfile::new();
         profile.push_segment(ProfileSegment {
             label: "recon".into(),
-            tokens: LedgerDelta { input: 500, output: 200, cache_read: 100, turns: 2 },
+            tokens: LedgerDelta {
+                input: 500,
+                output: 200,
+                cache_read: 100,
+                turns: 2,
+            },
             elapsed: Duration::from_secs(30),
             turns: 2,
             findings_delta: 1,
@@ -1066,7 +1277,11 @@ mod tests {
         });
         profile.save(Some(dir.path().to_str().unwrap())).unwrap();
 
-        let path = dir.path().join(".chen").join("agent-state").join("profile.json");
+        let path = dir
+            .path()
+            .join(".chen")
+            .join("agent-state")
+            .join("profile.json");
         let content = std::fs::read_to_string(path).unwrap();
         let loaded: serde_json::Value = serde_json::from_str(&content).unwrap();
         assert_eq!(loaded["segments"][0]["label"].as_str().unwrap(), "recon");
@@ -1110,16 +1325,33 @@ mod tests {
     // render_markdown_filtered
     // -----------------------------------------------------------------------
 
-    fn make_finding_with(id: &str, severity: Severity, confidence: Confidence, reachable: bool) -> Finding {
+    fn make_finding_with(
+        id: &str,
+        severity: Severity,
+        confidence: Confidence,
+        reachable: bool,
+    ) -> Finding {
         Finding {
             id: id.into(),
             title: format!("Finding {}", id),
             severity,
             cwe: None,
             confidence,
-            source: Location { file: "src/input.rs".into(), line: Some(1), tag: Some("cli".into()) },
-            sink: Location { file: "src/exec.rs".into(), line: Some(10), tag: None },
-            proof: Proof { expr: "sink.reachableByFlows(source)".into(), path_count: 1, verified: reachable },
+            source: Location {
+                file: "src/input.rs".into(),
+                line: Some(1),
+                tag: Some("cli".into()),
+            },
+            sink: Location {
+                file: "src/exec.rs".into(),
+                line: Some(10),
+                tag: None,
+            },
+            proof: Proof {
+                expr: "sink.reachableByFlows(source)".into(),
+                path_count: 1,
+                verified: reachable,
+            },
             reachable,
             sanitizers_checked: vec![],
             grounded_by: None,
@@ -1130,8 +1362,18 @@ mod tests {
     #[test]
     fn render_markdown_filtered_hides_unreachable() {
         let mut set = FindingSet::new();
-        set.findings.push(make_finding_with("F-1", Severity::Critical, Confidence::Confirmed, true));
-        set.findings.push(make_finding_with("F-2", Severity::High, Confidence::Confirmed, false));
+        set.findings.push(make_finding_with(
+            "F-1",
+            Severity::Critical,
+            Confidence::Confirmed,
+            true,
+        ));
+        set.findings.push(make_finding_with(
+            "F-2",
+            Severity::High,
+            Confidence::Confirmed,
+            false,
+        ));
         let md = set.render_markdown_filtered(false);
         assert!(md.contains("F-1"), "reachable finding must be present");
         assert!(!md.contains("F-2"), "unreachable finding must be hidden");
@@ -1141,8 +1383,18 @@ mod tests {
     #[test]
     fn render_markdown_filtered_hides_low_confidence() {
         let mut set = FindingSet::new();
-        set.findings.push(make_finding_with("F-1", Severity::Critical, Confidence::Confirmed, true));
-        set.findings.push(make_finding_with("F-2", Severity::High, Confidence::Low, true));
+        set.findings.push(make_finding_with(
+            "F-1",
+            Severity::Critical,
+            Confidence::Confirmed,
+            true,
+        ));
+        set.findings.push(make_finding_with(
+            "F-2",
+            Severity::High,
+            Confidence::Low,
+            true,
+        ));
         let md = set.render_markdown_filtered(false);
         assert!(md.contains("F-1"), "confirmed finding must be present");
         assert!(!md.contains("F-2"), "low-confidence finding must be hidden");
@@ -1152,30 +1404,66 @@ mod tests {
     #[test]
     fn render_markdown_filtered_keeps_all_when_include_low_value() {
         let mut set = FindingSet::new();
-        set.findings.push(make_finding_with("F-1", Severity::Critical, Confidence::Confirmed, true));
-        set.findings.push(make_finding_with("F-2", Severity::High, Confidence::Low, true));
-        set.findings.push(make_finding_with("F-3", Severity::Medium, Confidence::Plausible, false));
+        set.findings.push(make_finding_with(
+            "F-1",
+            Severity::Critical,
+            Confidence::Confirmed,
+            true,
+        ));
+        set.findings.push(make_finding_with(
+            "F-2",
+            Severity::High,
+            Confidence::Low,
+            true,
+        ));
+        set.findings.push(make_finding_with(
+            "F-3",
+            Severity::Medium,
+            Confidence::Plausible,
+            false,
+        ));
         let md = set.render_markdown_filtered(true);
         assert!(md.contains("F-1"));
         assert!(md.contains("F-2"));
         assert!(md.contains("F-3"));
-        assert!(!md.contains("hidden"), "no hidden footer when include_low_value is true");
+        assert!(
+            !md.contains("hidden"),
+            "no hidden footer when include_low_value is true"
+        );
     }
 
     #[test]
     fn render_markdown_filtered_no_footer_when_none_hidden() {
         let mut set = FindingSet::new();
-        set.findings.push(make_finding_with("F-1", Severity::Critical, Confidence::Confirmed, true));
+        set.findings.push(make_finding_with(
+            "F-1",
+            Severity::Critical,
+            Confidence::Confirmed,
+            true,
+        ));
         let md = set.render_markdown_filtered(false);
         assert!(md.contains("F-1"));
-        assert!(!md.contains("hidden"), "no hidden footer when nothing is hidden");
+        assert!(
+            !md.contains("hidden"),
+            "no hidden footer when nothing is hidden"
+        );
     }
 
     #[test]
     fn render_json_always_includes_all() {
         let mut set = FindingSet::new();
-        set.findings.push(make_finding_with("F-1", Severity::Critical, Confidence::Confirmed, true));
-        set.findings.push(make_finding_with("F-2", Severity::High, Confidence::Low, false));
+        set.findings.push(make_finding_with(
+            "F-1",
+            Severity::Critical,
+            Confidence::Confirmed,
+            true,
+        ));
+        set.findings.push(make_finding_with(
+            "F-2",
+            Severity::High,
+            Confidence::Low,
+            false,
+        ));
         let json = set.render_json();
         assert_eq!(json["total"].as_i64().unwrap(), 2);
     }
@@ -1184,7 +1472,12 @@ mod tests {
     fn render_markdown_delegates_to_filtered() {
         // render_markdown() should behave the same as render_markdown_filtered(true).
         let mut set = FindingSet::new();
-        set.findings.push(make_finding_with("F-1", Severity::High, Confidence::Low, false));
+        set.findings.push(make_finding_with(
+            "F-1",
+            Severity::High,
+            Confidence::Low,
+            false,
+        ));
         let unfiltered = set.render_markdown();
         let with_true = set.render_markdown_filtered(true);
         assert_eq!(unfiltered, with_true);
@@ -1199,8 +1492,22 @@ mod tests {
     fn findingset_load_roundtrip() {
         let dir = tempfile::tempdir().unwrap();
         let mut set = FindingSet::new();
-        set.add(sample_finding("F-1", Severity::Critical, Confidence::Confirmed, "cli", "exec.rs", Some(42)));
-        set.add(sample_finding("F-2", Severity::Medium, Confidence::Plausible, "web", "render.rs", Some(15)));
+        set.add(sample_finding(
+            "F-1",
+            Severity::Critical,
+            Confidence::Confirmed,
+            "cli",
+            "exec.rs",
+            Some(42),
+        ));
+        set.add(sample_finding(
+            "F-2",
+            Severity::Medium,
+            Confidence::Plausible,
+            "web",
+            "render.rs",
+            Some(15),
+        ));
         ProcessNote::save_findings(Some(dir.path().to_str().unwrap()), &set).unwrap();
 
         let loaded = FindingSet::load(Some(dir.path().to_str().unwrap()));
@@ -1224,8 +1531,12 @@ mod tests {
     fn audit_progress_roundtrip() {
         let dir = tempfile::tempdir().unwrap();
         let mut progress = AuditProgress::new();
-        progress.mark_completed("recon", Some(dir.path().to_str().unwrap())).unwrap();
-        progress.mark_completed("sink-hunter", Some(dir.path().to_str().unwrap())).unwrap();
+        progress
+            .mark_completed("recon", Some(dir.path().to_str().unwrap()))
+            .unwrap();
+        progress
+            .mark_completed("sink-hunter", Some(dir.path().to_str().unwrap()))
+            .unwrap();
 
         let loaded = AuditProgress::load(Some(dir.path().to_str().unwrap()));
         assert!(loaded.is_completed("recon"));
@@ -1244,8 +1555,12 @@ mod tests {
     fn audit_progress_mark_completed_idempotent() {
         let dir = tempfile::tempdir().unwrap();
         let mut progress = AuditProgress::new();
-        progress.mark_completed("recon", Some(dir.path().to_str().unwrap())).unwrap();
-        progress.mark_completed("recon", Some(dir.path().to_str().unwrap())).unwrap();
+        progress
+            .mark_completed("recon", Some(dir.path().to_str().unwrap()))
+            .unwrap();
+        progress
+            .mark_completed("recon", Some(dir.path().to_str().unwrap()))
+            .unwrap();
         let loaded = AuditProgress::load(Some(dir.path().to_str().unwrap()));
         assert_eq!(loaded.completed_stages.len(), 1);
     }

@@ -22,7 +22,7 @@ pub use runner::find_blint;
 
 use crate::shared::backend::Backend;
 use crate::shared::make_tool;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// Context for blint analysis mode, holding all loaded reports for a binary artifact.
 #[derive(Clone)]
@@ -72,9 +72,18 @@ impl BlintCtx {
                 pattern,
                 limit,
             ),
-            "security_properties" => query::query_security_properties(&self.reports.metadata.report),
-            "callgraph" => query::query_callgraph(&self.reports.metadata.report, &self.reports.extra_callgraphs, pattern, limit),
-            "disassembly" => query::query_disassembly(&self.reports.metadata.report, pattern, limit),
+            "security_properties" => {
+                query::query_security_properties(&self.reports.metadata.report)
+            }
+            "callgraph" => query::query_callgraph(
+                &self.reports.metadata.report,
+                &self.reports.extra_callgraphs,
+                pattern,
+                limit,
+            ),
+            "disassembly" => {
+                query::query_disassembly(&self.reports.metadata.report, pattern, limit)
+            }
             _ => format!(
                 "Unknown query kind '{kind}'. Valid kinds: capabilities, findings, symbols, strings, components, behaviours, security_properties, callgraph, disassembly"
             ),
@@ -124,14 +133,30 @@ impl BlintCtx {
 }
 
 impl Backend for BlintCtx {
-    fn summary(&self) -> String { self.summary() }
-    fn query(&self, kind: &str, pattern: Option<&str>, limit: usize) -> String { self.query(kind, pattern, limit) }
-    fn backend_name(&self) -> &'static str { "blint" }
-    fn tool_definitions(&self) -> Vec<Value> { blint_tool_definitions() }
-    fn system_prompt(&self, summary_text: &str, bom_summary: Option<&str>, bom_components: Option<&str>, console_history: Option<&str>) -> String {
+    fn summary(&self) -> String {
+        self.summary()
+    }
+    fn query(&self, kind: &str, pattern: Option<&str>, limit: usize) -> String {
+        self.query(kind, pattern, limit)
+    }
+    fn backend_name(&self) -> &'static str {
+        "blint"
+    }
+    fn tool_definitions(&self) -> Vec<Value> {
+        blint_tool_definitions()
+    }
+    fn system_prompt(
+        &self,
+        summary_text: &str,
+        bom_summary: Option<&str>,
+        bom_components: Option<&str>,
+        console_history: Option<&str>,
+    ) -> String {
         build_blint_system_prompt(summary_text, bom_summary, bom_components, console_history)
     }
-    fn clone_box(&self) -> Box<dyn Backend> { Box::new(self.clone()) }
+    fn clone_box(&self) -> Box<dyn Backend> {
+        Box::new(self.clone())
+    }
 }
 
 /// Build the blint-specific system prompt for the LLM agent.
@@ -470,7 +495,10 @@ mod tests {
             extra_callgraphs: Vec::new(),
             artifact_type: "ELF".to_string(),
         };
-        BlintCtx { reports, artifact_path: "/tmp/test.elf".to_string() }
+        BlintCtx {
+            reports,
+            artifact_path: "/tmp/test.elf".to_string(),
+        }
     }
 
     #[test]

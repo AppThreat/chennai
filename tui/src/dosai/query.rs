@@ -12,7 +12,7 @@
 //! report is optional: `dosai methods` can fail to load assemblies on some inputs,
 //! so every methods-backed query degrades gracefully to a clear message.
 
-use crate::shared::{field_i64, field_str, pattern_match, ListHeader};
+use crate::shared::{ListHeader, field_i64, field_str, pattern_match};
 use serde_json::Value;
 use std::collections::HashMap;
 
@@ -34,7 +34,10 @@ fn node_index(dataflows: &Value) -> HashMap<&str, &Value> {
 fn node_label(id: &str, idx: &HashMap<&str, &Value>) -> String {
     match idx.get(id) {
         Some(node) => {
-            let name = node["Name"].as_str().or_else(|| node["Symbol"].as_str()).unwrap_or(id);
+            let name = node["Name"]
+                .as_str()
+                .or_else(|| node["Symbol"].as_str())
+                .unwrap_or(id);
             let (file, line) = dosai_loc(node);
             format!("{name} ({file}:{line})")
         }
@@ -66,9 +69,18 @@ pub fn extract_summary(dataflows: &Value, methods: &Option<Value>) -> String {
     let slices = field_i64(stats, "SliceCount");
     let files = field_i64(stats, "FilesAnalyzed");
 
-    let weaknesses = dataflows["WeaknessCandidates"].as_array().map(|a| a.len()).unwrap_or(0);
-    let dangerous = dataflows["DangerousApiReachability"].as_array().map(|a| a.len()).unwrap_or(0);
-    let entry_points = dataflows["EntryPoints"].as_array().map(|a| a.len()).unwrap_or(0);
+    let weaknesses = dataflows["WeaknessCandidates"]
+        .as_array()
+        .map(|a| a.len())
+        .unwrap_or(0);
+    let dangerous = dataflows["DangerousApiReachability"]
+        .as_array()
+        .map(|a| a.len())
+        .unwrap_or(0);
+    let entry_points = dataflows["EntryPoints"]
+        .as_array()
+        .map(|a| a.len())
+        .unwrap_or(0);
 
     let mut out = format!(
         "Analysis tool: dosai (schema {schema}, analyzer {version})\n\
@@ -102,25 +114,34 @@ pub fn query_methods(methods: &Option<Value>, pattern: Option<&str>, limit: usiz
         let pat_lower = pat.to_lowercase();
         matched.retain(|m| {
             field_str(m, "Name").to_lowercase().contains(&pat_lower)
-                || field_str(m, "ClassName").to_lowercase().contains(&pat_lower)
-                || field_str(m, "SourceSignature").to_lowercase().contains(&pat_lower)
+                || field_str(m, "ClassName")
+                    .to_lowercase()
+                    .contains(&pat_lower)
+                || field_str(m, "SourceSignature")
+                    .to_lowercase()
+                    .contains(&pat_lower)
         });
     }
 
     let show: Vec<&Value> = matched.iter().take(limit).copied().collect();
-    let mut lines: Vec<String> = vec![ListHeader {
-        title: "Methods",
-        total: ms.len(),
-        matched: matched.len(),
-        shown: show.len(),
-    }
-    .to_string()];
+    let mut lines: Vec<String> = vec![
+        ListHeader {
+            title: "Methods",
+            total: ms.len(),
+            matched: matched.len(),
+            shown: show.len(),
+        }
+        .to_string(),
+    ];
 
     for m in show {
         let name = field_str(m, "Name");
         let class = field_str(m, "ClassName");
         let ns = field_str(m, "Namespace");
-        let sig = m["SourceSignature"].as_str().or_else(|| m["AssemblySignature"].as_str()).unwrap_or("");
+        let sig = m["SourceSignature"]
+            .as_str()
+            .or_else(|| m["AssemblySignature"].as_str())
+            .unwrap_or("");
         let (file, line) = dosai_loc(m);
 
         lines.push(format!("  {ns}.{class}.{name}"));
@@ -137,26 +158,34 @@ pub fn query_methods(methods: &Option<Value>, pattern: Option<&str>, limit: usiz
 pub fn query_method_calls(methods: &Option<Value>, pattern: Option<&str>, limit: usize) -> String {
     let calls = match methods.as_ref().and_then(|m| m["MethodCalls"].as_array()) {
         Some(arr) => arr,
-        None => return "No method call data available (dosai methods report not loaded).".to_string(),
+        None => {
+            return "No method call data available (dosai methods report not loaded).".to_string();
+        }
     };
 
     let mut matched: Vec<&Value> = calls.iter().collect();
     if let Some(pat) = pattern {
         let pat_lower = pat.to_lowercase();
         matched.retain(|c| {
-            field_str(c, "ClassName").to_lowercase().contains(&pat_lower)
-                || field_str(c, "CalledMethod").to_lowercase().contains(&pat_lower)
+            field_str(c, "ClassName")
+                .to_lowercase()
+                .contains(&pat_lower)
+                || field_str(c, "CalledMethod")
+                    .to_lowercase()
+                    .contains(&pat_lower)
         });
     }
 
     let show: Vec<&Value> = matched.iter().take(limit).copied().collect();
-    let mut lines: Vec<String> = vec![ListHeader {
-        title: "Method Calls",
-        total: calls.len(),
-        matched: matched.len(),
-        shown: show.len(),
-    }
-    .to_string()];
+    let mut lines: Vec<String> = vec![
+        ListHeader {
+            title: "Method Calls",
+            total: calls.len(),
+            matched: matched.len(),
+            shown: show.len(),
+        }
+        .to_string(),
+    ];
 
     for c in show {
         let caller = field_str(c, "ClassName");
@@ -185,13 +214,15 @@ pub fn query_dataflow_nodes(dataflows: &Value, pattern: Option<&str>, limit: usi
     }
 
     let show: Vec<&Value> = matched.iter().take(limit).copied().collect();
-    let mut lines: Vec<String> = vec![ListHeader {
-        title: "Data-Flow Nodes",
-        total: nodes.len(),
-        matched: matched.len(),
-        shown: show.len(),
-    }
-    .to_string()];
+    let mut lines: Vec<String> = vec![
+        ListHeader {
+            title: "Data-Flow Nodes",
+            total: nodes.len(),
+            matched: matched.len(),
+            shown: show.len(),
+        }
+        .to_string(),
+    ];
 
     for n in show {
         let name = field_str(n, "Name");
@@ -200,8 +231,16 @@ pub fn query_dataflow_nodes(dataflows: &Value, pattern: Option<&str>, limit: usi
         let (file, line) = dosai_loc(n);
         let is_source = n["IsSource"].as_bool().unwrap_or(false);
         let is_sink = n["IsSink"].as_bool().unwrap_or(false);
-        let tag = if is_source { " [source]" } else if is_sink { " [sink]" } else { "" };
-        lines.push(format!("  [{kind}]{tag} {name} ({category}) at {file}:{line}"));
+        let tag = if is_source {
+            " [source]"
+        } else if is_sink {
+            " [sink]"
+        } else {
+            ""
+        };
+        lines.push(format!(
+            "  [{kind}]{tag} {name} ({category}) at {file}:{line}"
+        ));
     }
 
     lines.join("\n")
@@ -228,13 +267,15 @@ pub fn query_slices(dataflows: &Value, pattern: Option<&str>, limit: usize) -> S
     let show: Vec<&Value> = matched.iter().take(limit).copied().collect();
 
     let idx = node_index(dataflows);
-    let mut lines: Vec<String> = vec![ListHeader {
-        title: "Data-Flow Slices",
-        total: slices.len(),
-        matched: matched.len(),
-        shown: show.len(),
-    }
-    .to_string()];
+    let mut lines: Vec<String> = vec![
+        ListHeader {
+            title: "Data-Flow Slices",
+            total: slices.len(),
+            matched: matched.len(),
+            shown: show.len(),
+        }
+        .to_string(),
+    ];
 
     for s in show {
         let id = field_str(s, "Id");
@@ -248,7 +289,12 @@ pub fn query_slices(dataflows: &Value, pattern: Option<&str>, limit: usize) -> S
         let sink = node_label(field_str(s, "SinkId"), &idx);
         let taint = s["TaintKinds"]
             .as_array()
-            .map(|t| t.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", "))
+            .map(|t| {
+                t.iter()
+                    .filter_map(Value::as_str)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            })
             .unwrap_or_default();
 
         lines.push(format!(
@@ -262,7 +308,9 @@ pub fn query_slices(dataflows: &Value, pattern: Option<&str>, limit: usize) -> S
             lines.push(format!("         taint: {taint}"));
         }
     }
-    lines.push("Use dosai_trace with a slice id (e.g. dfs1) to expand the full node path.".to_string());
+    lines.push(
+        "Use dosai_trace with a slice id (e.g. dfs1) to expand the full node path.".to_string(),
+    );
 
     lines.join("\n")
 }
@@ -287,7 +335,10 @@ pub fn query_trace(dataflows: &Value, pattern: Option<&str>, limit: usize) -> St
     matched.sort_by_key(|s| std::cmp::Reverse(confidence_rank(field_str(s, "Confidence"))));
 
     if matched.is_empty() {
-        return format!("No data-flow slice matching '{}' found.", pattern.unwrap_or(""));
+        return format!(
+            "No data-flow slice matching '{}' found.",
+            pattern.unwrap_or("")
+        );
     }
 
     let idx = node_index(dataflows);
@@ -313,22 +364,44 @@ pub fn query_trace(dataflows: &Value, pattern: Option<&str>, limit: usize) -> St
 ///
 /// Prefers the dataflows report's `EntryPoints` (always available and carrying HTTP
 /// metadata) and falls back to the methods report's `ApiEndpoints`.
-pub fn query_endpoints(dataflows: &Value, methods: &Option<Value>, pattern: Option<&str>) -> String {
+pub fn query_endpoints(
+    dataflows: &Value,
+    methods: &Option<Value>,
+    pattern: Option<&str>,
+) -> String {
     // Prefer dataflows EntryPoints that look like HTTP routes.
     if let Some(eps) = dataflows["EntryPoints"].as_array() {
         let http: Vec<&Value> = eps
             .iter()
-            .filter(|e| e.get("Route").and_then(Value::as_str).is_some() || field_str(e, "Kind").contains("Http"))
-            .filter(|e| pattern_match(field_str(e, "Route"), pattern) || pattern_match(field_str(e, "Kind"), pattern))
+            .filter(|e| {
+                e.get("Route").and_then(Value::as_str).is_some()
+                    || field_str(e, "Kind").contains("Http")
+            })
+            .filter(|e| {
+                pattern_match(field_str(e, "Route"), pattern)
+                    || pattern_match(field_str(e, "Kind"), pattern)
+            })
             .collect();
         if !http.is_empty() {
-            let mut lines: Vec<String> = vec![format!("# API Endpoints ({} from dataflows entry points)", http.len())];
+            let mut lines: Vec<String> = vec![format!(
+                "# API Endpoints ({} from dataflows entry points)",
+                http.len()
+            )];
             for e in http {
                 let verb = field_str(e, "HttpMethod");
                 let route = field_str(e, "Route");
                 let anon = e["AllowAnonymous"].as_bool().unwrap_or(false);
-                let policies = e["AuthorizationPolicies"].as_array().map(|a| a.len()).unwrap_or(0);
-                let auth = if anon { " [anonymous]" } else if policies > 0 { " [auth]" } else { "" };
+                let policies = e["AuthorizationPolicies"]
+                    .as_array()
+                    .map(|a| a.len())
+                    .unwrap_or(0);
+                let auth = if anon {
+                    " [anonymous]"
+                } else if policies > 0 {
+                    " [auth]"
+                } else {
+                    ""
+                };
                 let (file, line) = dosai_loc(e);
                 lines.push(format!("  {verb} {route}{auth} at {file}:{line}"));
             }
@@ -344,7 +417,10 @@ pub fn query_endpoints(dataflows: &Value, methods: &Option<Value>, pattern: Opti
 
     let matched: Vec<&Value> = endpoints
         .iter()
-        .filter(|ep| pattern_match(field_str(ep, "Route"), pattern) || pattern_match(field_str(ep, "MethodName"), pattern))
+        .filter(|ep| {
+            pattern_match(field_str(ep, "Route"), pattern)
+                || pattern_match(field_str(ep, "MethodName"), pattern)
+        })
         .collect();
 
     let mut lines: Vec<String> = vec![format!("# API Endpoints ({} total)", matched.len())];
@@ -354,7 +430,13 @@ pub fn query_endpoints(dataflows: &Value, methods: &Option<Value>, pattern: Opti
         let handler = field_str(ep, "MethodName");
         let anon = ep["AllowAnonymous"].as_bool().unwrap_or(false);
         let required = ep["AuthorizationRequired"].as_bool().unwrap_or(false);
-        let auth = if anon { " [anonymous]" } else if required { " [auth]" } else { "" };
+        let auth = if anon {
+            " [anonymous]"
+        } else if required {
+            " [auth]"
+        } else {
+            ""
+        };
         lines.push(format!("  {verb} {route} → {handler}{auth}"));
     }
 
@@ -411,21 +493,32 @@ pub fn query_dangerous_apis(dataflows: &Value, pattern: Option<&str>, limit: usi
     }
 
     let show: Vec<&Value> = matched.iter().take(limit).copied().collect();
-    let mut lines: Vec<String> = vec![ListHeader {
-        title: "Dangerous API Reachability",
-        total: apis.len(),
-        matched: matched.len(),
-        shown: show.len(),
-    }
-    .to_string()];
+    let mut lines: Vec<String> = vec![
+        ListHeader {
+            title: "Dangerous API Reachability",
+            total: apis.len(),
+            matched: matched.len(),
+            shown: show.len(),
+        }
+        .to_string(),
+    ];
 
     for a in show {
         let symbol = field_str(a, "Symbol");
         let category = field_str(a, "Category");
         let confidence = field_str(a, "Confidence");
-        let reachable = !a["SliceIds"].as_array().map(|s| s.is_empty()).unwrap_or(true);
-        let reach_str = if reachable { "REACHABLE" } else { "present (no flow)" };
-        lines.push(format!("  [{category}][{confidence}][{reach_str}] {symbol}"));
+        let reachable = !a["SliceIds"]
+            .as_array()
+            .map(|s| s.is_empty())
+            .unwrap_or(true);
+        let reach_str = if reachable {
+            "REACHABLE"
+        } else {
+            "present (no flow)"
+        };
+        lines.push(format!(
+            "  [{category}][{confidence}][{reach_str}] {symbol}"
+        ));
     }
 
     lines.join("\n")
@@ -461,8 +554,12 @@ pub fn detail_method(methods: &Option<Value>, name: &str) -> String {
         .iter()
         .filter(|m| {
             field_str(m, "Name").to_lowercase() == name_lower
-                || field_str(m, "SourceSignature").to_lowercase().contains(&name_lower)
-                || field_str(m, "ClassName").to_lowercase().contains(&name_lower)
+                || field_str(m, "SourceSignature")
+                    .to_lowercase()
+                    .contains(&name_lower)
+                || field_str(m, "ClassName")
+                    .to_lowercase()
+                    .contains(&name_lower)
         })
         .collect();
 

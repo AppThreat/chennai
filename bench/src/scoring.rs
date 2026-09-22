@@ -32,9 +32,20 @@ impl ReportedFinding {
     /// Create from a serde_json::Value (chennai.audit.v1 findings array entry).
     pub fn from_json(val: &serde_json::Value) -> Option<Self> {
         Some(ReportedFinding {
-            cwe: val.get("cwe").and_then(|v| v.as_str()).map(|s| s.to_string()),
-            sink_file: val.get("sink").and_then(|s| s.get("file")).and_then(|v| v.as_str()).map(|s| s.to_string()),
-            sink_line: val.get("sink").and_then(|s| s.get("line")).and_then(|v| v.as_u64()).map(|v| v as u32),
+            cwe: val
+                .get("cwe")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string()),
+            sink_file: val
+                .get("sink")
+                .and_then(|s| s.get("file"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string()),
+            sink_line: val
+                .get("sink")
+                .and_then(|s| s.get("line"))
+                .and_then(|v| v.as_u64())
+                .map(|v| v as u32),
             reachable: val.get("reachable").and_then(|v| v.as_bool()),
         })
     }
@@ -112,11 +123,7 @@ pub fn score_run(
             gt_total: 0,
             reported_total,
             recall: 1.0, // No GT to miss — trivially perfect recall.
-            fp_rate: if reported_total > 0 {
-                1.0
-            } else {
-                0.0
-            },
+            fp_rate: if reported_total > 0 { 1.0 } else { 0.0 },
             tokens_per_confirmed: 0.0,
             total_tokens,
             total_turns,
@@ -141,7 +148,9 @@ pub fn score_run(
             }
 
             // Check CWE family match.
-            let cwe_match = finding.cwe.as_deref()
+            let cwe_match = finding
+                .cwe
+                .as_deref()
                 .map(|fc| cwe_family(fc) == cwe_family(&gt.cwe))
                 .unwrap_or(false);
             if !cwe_match {
@@ -149,12 +158,16 @@ pub fn score_run(
             }
 
             // Check sink file match (basename comparison).
-            let file_match = finding.sink_file.as_ref()
+            let file_match = finding
+                .sink_file
+                .as_ref()
                 .map(|ff| {
-                    let fb = std::path::Path::new(ff).file_name()
+                    let fb = std::path::Path::new(ff)
+                        .file_name()
                         .and_then(|n| n.to_str())
                         .unwrap_or("");
-                    let gb = std::path::Path::new(&gt.sink_file).file_name()
+                    let gb = std::path::Path::new(&gt.sink_file)
+                        .file_name()
                         .and_then(|n| n.to_str())
                         .unwrap_or("");
                     fb == gb
@@ -239,11 +252,7 @@ pub fn parse_findings_from_v1(json: &serde_json::Value) -> Vec<ReportedFinding> 
     json.get("findings")
         .and_then(|f| f.get("findings"))
         .and_then(|a| a.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(ReportedFinding::from_json)
-                .collect()
-        })
+        .map(|arr| arr.iter().filter_map(ReportedFinding::from_json).collect())
         .unwrap_or_default()
 }
 
@@ -252,16 +261,20 @@ pub fn parse_findings_from_v1(json: &serde_json::Value) -> Vec<ReportedFinding> 
 /// Tokens/turns/elapsed live under `profile.totals` (see `RunProfile::to_json`);
 /// the top-level `totals` object only carries `findings`/`confirmed`.
 pub fn parse_totals_from_v1(json: &serde_json::Value) -> (u64, u64, usize, f64) {
-    let tokens = json.pointer("/profile/totals/tokens")
+    let tokens = json
+        .pointer("/profile/totals/tokens")
         .and_then(|v| v.as_u64())
         .unwrap_or(0);
-    let turns = json.pointer("/profile/totals/turns")
+    let turns = json
+        .pointer("/profile/totals/turns")
         .and_then(|v| v.as_u64())
         .unwrap_or(0);
-    let confirmed = json.pointer("/totals/confirmed")
+    let confirmed = json
+        .pointer("/totals/confirmed")
         .and_then(|v| v.as_u64())
         .unwrap_or(0) as usize;
-    let elapsed = json.pointer("/profile/totals/elapsed_secs")
+    let elapsed = json
+        .pointer("/profile/totals/elapsed_secs")
         .and_then(|v| v.as_f64())
         .unwrap_or(0.0);
     (tokens, turns, confirmed, elapsed)
@@ -568,7 +581,10 @@ mod tests {
             },
         });
         let (tokens, turns, confirmed, elapsed) = parse_totals_from_v1(&json);
-        assert_eq!(tokens, 120_000, "tokens must be read from profile.totals, not top-level totals");
+        assert_eq!(
+            tokens, 120_000,
+            "tokens must be read from profile.totals, not top-level totals"
+        );
         assert_eq!(turns, 42);
         assert_eq!(confirmed, 3);
         assert!((elapsed - 212.5).abs() < f64::EPSILON);

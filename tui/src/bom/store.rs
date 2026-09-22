@@ -102,14 +102,11 @@ impl ComponentRow {
     }
 
     pub fn crypto_algorithm(&self) -> Option<String> {
-        self.component
-            .crypto_properties
-            .as_ref()
-            .and_then(|cp| {
-                cp.algorithm_properties
-                    .as_ref()
-                    .and_then(|ap| ap.primitive.clone())
-            })
+        self.component.crypto_properties.as_ref().and_then(|cp| {
+            cp.algorithm_properties
+                .as_ref()
+                .and_then(|ap| ap.primitive.clone())
+        })
     }
 
     pub fn matches_query(&self, query: &str) -> bool {
@@ -124,7 +121,13 @@ impl ComponentRow {
             || self.license_display().to_lowercase().contains(&q)
             || self.bom_ref_display().to_lowercase().contains(&q)
             || self.description_display().to_lowercase().contains(&q)
-            || self.component.group.as_deref().unwrap_or("").to_lowercase().contains(&q)
+            || self
+                .component
+                .group
+                .as_deref()
+                .unwrap_or("")
+                .to_lowercase()
+                .contains(&q)
             || self
                 .crypto_algorithm()
                 .unwrap_or_default()
@@ -320,8 +323,9 @@ impl BomStore {
         let old_crypto: Vec<usize> = self.crypto_assets.clone();
         for &old_idx in &old_crypto {
             if let Some(&new_idx) = old_to_new.get(&old_idx)
-                && !crypto_merged.contains(&new_idx) {
-                    crypto_merged.push(new_idx);
+                && !crypto_merged.contains(&new_idx)
+            {
+                crypto_merged.push(new_idx);
             }
         }
 
@@ -681,9 +685,9 @@ fn merge_component_properties(existing: &mut Component, duplicate: &Component) {
     if let Some(ref dup_props) = duplicate.properties {
         let existing_props = existing.properties.get_or_insert_with(Vec::new);
         for prop in dup_props {
-            let is_new = !existing_props.iter().any(|p| {
-                p.name == prop.name && p.value == prop.value
-            });
+            let is_new = !existing_props
+                .iter()
+                .any(|p| p.name == prop.name && p.value == prop.value);
             if is_new {
                 existing_props.push(prop.clone());
             }
@@ -718,9 +722,9 @@ fn merge_component_properties(existing: &mut Component, duplicate: &Component) {
     if let Some(ref dup_hashes) = duplicate.hashes {
         let existing_hashes = existing.hashes.get_or_insert_with(Vec::new);
         for h in dup_hashes {
-            let is_new = !existing_hashes.iter().any(|eh| {
-                eh.alg == h.alg && eh.content == h.content
-            });
+            let is_new = !existing_hashes
+                .iter()
+                .any(|eh| eh.alg == h.alg && eh.content == h.content);
             if is_new {
                 existing_hashes.push(h.clone());
             }
@@ -980,7 +984,11 @@ mod tests {
 
         let crypto_row = &store.components[store.crypto_assets[0]];
         assert_eq!(
-            crypto_row.component.crypto_properties.as_ref().and_then(|cp| cp.asset_type.clone()),
+            crypto_row
+                .component
+                .crypto_properties
+                .as_ref()
+                .and_then(|cp| cp.asset_type.clone()),
             Some("algorithm".to_string())
         );
         assert_eq!(crypto_row.crypto_algorithm().unwrap(), "AES");
@@ -1101,7 +1109,9 @@ mod tests {
         let mut store = BomStore::new();
         store.load_path(tmp.path()).unwrap();
 
-        let (_idx, row) = store.get_component_by_ref("pkg:npm/express@4.18.0").unwrap();
+        let (_idx, row) = store
+            .get_component_by_ref("pkg:npm/express@4.18.0")
+            .unwrap();
         assert_eq!(row.name_display(), "express");
 
         assert!(store.get_component_by_ref("nonexistent").is_none());
@@ -1133,7 +1143,11 @@ mod tests {
 
         assert_eq!(store.total_components, 3, "express should be merged");
 
-        let express = store.components.iter().find(|r| r.name_display() == "express").unwrap();
+        let express = store
+            .components
+            .iter()
+            .find(|r| r.name_display() == "express")
+            .unwrap();
         let props = express.component.properties.as_ref().unwrap();
         assert_eq!(props.len(), 3, "3 unique properties after merge");
         let lic = express.component.licenses.as_ref().unwrap();

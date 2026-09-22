@@ -163,7 +163,12 @@ impl FactStore {
         let existing = std::fs::read_to_string(&gitignore_path).unwrap_or_default();
         let mut lines: Vec<&str> = existing.lines().collect();
 
-        let needed = ["facts-memory/", "chennai-debug-logs/", "chennai-reports/", "agent-state/"];
+        let needed = [
+            "facts-memory/",
+            "chennai-debug-logs/",
+            "chennai-reports/",
+            "agent-state/",
+        ];
         let mut changed = false;
         for entry in &needed {
             if !lines.contains(entry) {
@@ -203,7 +208,9 @@ impl FactStore {
         let mut prev_dash = false;
         for c in slug.chars() {
             if c == '-' {
-                if !prev_dash { result.push('-'); }
+                if !prev_dash {
+                    result.push('-');
+                }
                 prev_dash = true;
             } else {
                 result.push(c);
@@ -211,7 +218,11 @@ impl FactStore {
             }
         }
         let result = result.trim_matches('-').to_string();
-        if result.len() > 60 { result[..60].to_string() } else { result }
+        if result.len() > 60 {
+            result[..60].to_string()
+        } else {
+            result
+        }
     }
 
     /// Validate that `name` (raw or slug) contains no path separators or `..`.
@@ -220,7 +231,9 @@ impl FactStore {
             return Err("fact name cannot be empty".into());
         }
         if name.contains('/') || name.contains('\\') || name.contains("..") {
-            return Err(format!("invalid fact name '{name}': path separators and '..' are not allowed"));
+            return Err(format!(
+                "invalid fact name '{name}': path separators and '..' are not allowed"
+            ));
         }
         Ok(())
     }
@@ -234,11 +247,17 @@ impl FactStore {
     /// List all fact files, parsing only frontmatter (fast, no body reads).
     pub fn list(&self) -> Vec<FactMeta> {
         let mut facts = Vec::new();
-        let Ok(entries) = std::fs::read_dir(&self.dir) else { return facts };
+        let Ok(entries) = std::fs::read_dir(&self.dir) else {
+            return facts;
+        };
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) != Some("md") { continue; }
-            if path.file_stem().and_then(|s| s.to_str()) == Some("MEMORY") { continue; }
+            if path.extension().and_then(|e| e.to_str()) != Some("md") {
+                continue;
+            }
+            if path.file_stem().and_then(|s| s.to_str()) == Some("MEMORY") {
+                continue;
+            }
             if let Some(meta) = Self::parse_frontmatter_file(&path) {
                 facts.push(meta);
             }
@@ -251,7 +270,9 @@ impl FactStore {
     pub fn load(&self, name: &str) -> Option<Fact> {
         let slug = Self::slugify(name);
         let path = self.fact_path_unchecked(&slug);
-        if !path.exists() { return None; }
+        if !path.exists() {
+            return None;
+        }
         Self::parse_fact_file(&path)
     }
 
@@ -267,7 +288,8 @@ impl FactStore {
 
         let (created, merged_refs) = if path.exists() {
             if let Some(existing) = Self::parse_fact_file(&path) {
-                let mut refs: std::collections::BTreeSet<String> = existing.source_refs.into_iter().collect();
+                let mut refs: std::collections::BTreeSet<String> =
+                    existing.source_refs.into_iter().collect();
                 refs.extend(fact.source_refs.clone());
                 let v: Vec<String> = refs.into_iter().collect();
                 (existing.created, v)
@@ -280,9 +302,16 @@ impl FactStore {
 
         let now = chrono::Utc::now().format("%Y-%m-%d").to_string();
         let content = Self::format_fact_file(
-            &slug, &fact.description, fact.fact_type,
-            fact.grounded_by.as_deref(), fact.confidence.as_deref(),
-            &merged_refs, &created, &now, self.commit.as_deref(), &fact.body,
+            &slug,
+            &fact.description,
+            fact.fact_type,
+            fact.grounded_by.as_deref(),
+            fact.confidence.as_deref(),
+            &merged_refs,
+            &created,
+            &now,
+            self.commit.as_deref(),
+            &fact.body,
         );
         std::fs::write(&path, content).map_err(|e| format!("failed to write fact: {e}"))?;
         Ok(())
@@ -295,8 +324,7 @@ impl FactStore {
         Self::validate_name(&slug)?;
         let path = self.fact_path_unchecked(&slug);
         if path.exists() {
-            std::fs::remove_file(&path)
-                .map_err(|e| format!("failed to delete fact: {e}"))?;
+            std::fs::remove_file(&path).map_err(|e| format!("failed to delete fact: {e}"))?;
         }
         Ok(())
     }
@@ -306,12 +334,20 @@ impl FactStore {
     pub fn search(&self, query: &str) -> Vec<FactMeta> {
         let lower = query.to_ascii_lowercase();
         let mut results = Vec::new();
-        let Ok(entries) = std::fs::read_dir(&self.dir) else { return results };
+        let Ok(entries) = std::fs::read_dir(&self.dir) else {
+            return results;
+        };
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) != Some("md") { continue; }
-            if path.file_stem().and_then(|s| s.to_str()) == Some("MEMORY") { continue; }
-            let Some(meta) = Self::parse_frontmatter_file(&path) else { continue };
+            if path.extension().and_then(|e| e.to_str()) != Some("md") {
+                continue;
+            }
+            if path.file_stem().and_then(|s| s.to_str()) == Some("MEMORY") {
+                continue;
+            }
+            let Some(meta) = Self::parse_frontmatter_file(&path) else {
+                continue;
+            };
             // Only search name, description, and body — not frontmatter metadata.
             if meta.name.to_ascii_lowercase().contains(&lower)
                 || meta.description.to_ascii_lowercase().contains(&lower)
@@ -345,13 +381,21 @@ impl FactStore {
         if facts.is_empty() {
             return "none yet".to_string();
         }
-        let mut lines: Vec<String> = facts.iter()
-            .map(|f| format!("- [{name}]({name}.md) — {desc}", name = f.name, desc = f.description))
+        let mut lines: Vec<String> = facts
+            .iter()
+            .map(|f| {
+                format!(
+                    "- [{name}]({name}.md) — {desc}",
+                    name = f.name,
+                    desc = f.description
+                )
+            })
             .collect();
         lines.sort();
         let mut result = lines.join("\n");
         if result.len() > max_bytes {
-            let cutoff = result.char_indices()
+            let cutoff = result
+                .char_indices()
                 .take(max_bytes)
                 .last()
                 .map(|(i, c)| i + c.len_utf8())
@@ -373,19 +417,30 @@ impl FactStore {
     /// facts (oldest-`updated` findings and references) are deleted. Project
     /// and feedback facts are never auto-evicted.
     pub fn prune(&self, budget: &PruneBudget) -> PruneReport {
-        let mut report = PruneReport { demoted: 0, evicted: 0 };
+        let mut report = PruneReport {
+            demoted: 0,
+            evicted: 0,
+        };
 
         // Staleness demotion.
         if let Some(ref current_commit) = self.commit {
             for fact in &self.list() {
-                let Some(fact_commit) = self.read_fact_commit(&fact.name) else { continue };
-                if fact_commit == *current_commit { continue; }
-                let Some(full) = self.load(&fact.name) else { continue };
+                let Some(fact_commit) = self.read_fact_commit(&fact.name) else {
+                    continue;
+                };
+                if fact_commit == *current_commit {
+                    continue;
+                }
+                let Some(full) = self.load(&fact.name) else {
+                    continue;
+                };
                 // Only demote when EVERY source_ref file is missing (not just any).
                 let all_missing = !full.source_refs.is_empty()
                     && full.source_refs.iter().all(|r| {
                         let file_path = strip_line_suffix(r);
-                        let p = self.dir.parent()
+                        let p = self
+                            .dir
+                            .parent()
                             .and_then(|d| d.parent())
                             .map(|base| base.join(&file_path));
                         p.is_none_or(|p| !p.exists())
@@ -413,7 +468,8 @@ impl FactStore {
         let current_facts = self.list();
         if current_facts.len() > budget.max_facts {
             let to_evict = current_facts.len() - budget.max_facts;
-            let mut evictable: Vec<&FactMeta> = current_facts.iter()
+            let mut evictable: Vec<&FactMeta> = current_facts
+                .iter()
                 .filter(|f| matches!(f.fact_type, FactType::Finding | FactType::Reference))
                 .collect();
             evictable.sort_by_key(|f| f.updated.clone());
@@ -428,11 +484,15 @@ impl FactStore {
 
     /// Non-destructive eviction-only pass for open-time use.
     fn evict_to_budget(&self, budget: &PruneBudget) -> PruneReport {
-        let mut report = PruneReport { demoted: 0, evicted: 0 };
+        let mut report = PruneReport {
+            demoted: 0,
+            evicted: 0,
+        };
         let current_facts = self.list();
         if current_facts.len() > budget.max_facts {
             let to_evict = current_facts.len() - budget.max_facts;
-            let mut evictable: Vec<&FactMeta> = current_facts.iter()
+            let mut evictable: Vec<&FactMeta> = current_facts
+                .iter()
                 .filter(|f| matches!(f.fact_type, FactType::Finding | FactType::Reference))
                 .collect();
             evictable.sort_by_key(|f| f.updated.clone());
@@ -454,10 +514,16 @@ impl FactStore {
         let slug = Self::slugify(&fact.name);
         let path = self.fact_path_unchecked(&slug);
         let content = Self::format_fact_file(
-            &slug, &fact.description, fact.fact_type,
-            fact.grounded_by.as_deref(), fact.confidence.as_deref(),
-            &fact.source_refs, &fact.created, &fact.updated,
-            fact.commit.as_deref(), &fact.body,
+            &slug,
+            &fact.description,
+            fact.fact_type,
+            fact.grounded_by.as_deref(),
+            fact.confidence.as_deref(),
+            &fact.source_refs,
+            &fact.created,
+            &fact.updated,
+            fact.commit.as_deref(),
+            &fact.body,
         );
         let _ = std::fs::write(&path, content);
     }
@@ -469,13 +535,16 @@ impl FactStore {
         let content = std::fs::read_to_string(&path).ok()?;
         let yaml_str = Self::extract_frontmatter_yaml(&content)?;
         let yaml: serde_yaml_ng::Value = serde_yaml_ng::from_str(&yaml_str).ok()?;
-        yaml.get("commit").and_then(|v| v.as_str()).map(|s| s.to_string())
+        yaml.get("commit")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
     }
 
     /// Extract the YAML frontmatter string from a markdown file.
     fn extract_frontmatter_yaml(content: &str) -> Option<String> {
         let trimmed = content.trim_start();
-        let rest = trimmed.strip_prefix("---\n")
+        let rest = trimmed
+            .strip_prefix("---\n")
             .or_else(|| trimmed.strip_prefix("---\r\n"))?;
         let closing = rest.find("\n---").or_else(|| rest.find("\r\n---"))?;
         Some(rest[..closing].to_string())
@@ -499,7 +568,8 @@ impl FactStore {
     fn parse_fact_file(path: &Path) -> Option<Fact> {
         let content = std::fs::read_to_string(path).ok()?;
         let trimmed = content.trim_start();
-        let rest = trimmed.strip_prefix("---\n")
+        let rest = trimmed
+            .strip_prefix("---\n")
             .or_else(|| trimmed.strip_prefix("---\r\n"))?;
         let closing = rest.find("\n---").or_else(|| rest.find("\r\n---"))?;
         let yaml_str = &rest[..closing];
@@ -525,10 +595,16 @@ impl FactStore {
     /// Format a fact file with YAML frontmatter (serde-serialized, safe) + body.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn format_fact_file(
-        slug: &str, description: &str, fact_type: FactType,
-        grounded_by: Option<&str>, confidence: Option<&str>,
-        source_refs: &[String], created: &str, updated: &str,
-        commit: Option<&str>, body: &str,
+        slug: &str,
+        description: &str,
+        fact_type: FactType,
+        grounded_by: Option<&str>,
+        confidence: Option<&str>,
+        source_refs: &[String],
+        created: &str,
+        updated: &str,
+        commit: Option<&str>,
+        body: &str,
     ) -> String {
         let fm = FactFrontmatter {
             name: slug.to_string(),
@@ -590,7 +666,10 @@ pub fn memory_dispatch(
         "search" => action_search(&store, input),
         "save" => action_save(&store, input),
         "delete" => action_delete(&store, input),
-        _ => (format!("Unknown action '{action}'. Valid actions: recall, search, save, delete."), true),
+        _ => (
+            format!("Unknown action '{action}'. Valid actions: recall, search, save, delete."),
+            true,
+        ),
     };
 
     super::ToolExecResult {
@@ -609,10 +688,16 @@ fn action_recall(store: &FactStore, input: &Value) -> (String, bool) {
         Some(fact) => {
             // Reuse the same format as the actual file for consistency.
             let content = FactStore::format_fact_file(
-                &fact.name, &fact.description, fact.fact_type,
-                fact.grounded_by.as_deref(), fact.confidence.as_deref(),
-                &fact.source_refs, &fact.created, &fact.updated,
-                fact.commit.as_deref(), &fact.body,
+                &fact.name,
+                &fact.description,
+                fact.fact_type,
+                fact.grounded_by.as_deref(),
+                fact.confidence.as_deref(),
+                &fact.source_refs,
+                &fact.created,
+                &fact.updated,
+                fact.commit.as_deref(),
+                &fact.body,
             );
             (content, false)
         }
@@ -629,9 +714,16 @@ fn action_search(store: &FactStore, input: &Value) -> (String, bool) {
     if results.is_empty() {
         return ("No facts matching query.".into(), false);
     }
-    let lines: Vec<String> = results.iter()
-        .map(|f| format!("- [{name}]({name}.md) ({t}) — {desc}",
-            name = f.name, t = f.fact_type.as_str(), desc = f.description))
+    let lines: Vec<String> = results
+        .iter()
+        .map(|f| {
+            format!(
+                "- [{name}]({name}.md) ({t}) — {desc}",
+                name = f.name,
+                t = f.fact_type.as_str(),
+                desc = f.description
+            )
+        })
         .collect();
     (lines.join("\n"), false)
 }
@@ -641,14 +733,25 @@ fn action_save(store: &FactStore, input: &Value) -> (String, bool) {
     if name.is_empty() {
         return ("'name' is required for 'save' action.".into(), true);
     }
-    let description = input.get("description").and_then(Value::as_str).unwrap_or("");
-    let type_str = input.get("type").and_then(Value::as_str).unwrap_or("project");
+    let description = input
+        .get("description")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let type_str = input
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or("project");
     let grounded_by = input.get("grounded_by").and_then(Value::as_str);
     let confidence = input.get("confidence").and_then(Value::as_str);
     let body = input.get("body").and_then(Value::as_str).unwrap_or("");
-    let source_refs: Vec<String> = input.get("source_refs")
+    let source_refs: Vec<String> = input
+        .get("source_refs")
         .and_then(Value::as_array)
-        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect()
+        })
         .unwrap_or_default();
 
     let fact_type = FactType::from_str(type_str).unwrap_or(FactType::Project);
@@ -658,12 +761,30 @@ fn action_save(store: &FactStore, input: &Value) -> (String, bool) {
     // golem_*, dosai_*, and bom_*. Generic tools (ripgrep, read_file, git, text)
     // or missing grounded_by are rejected outright.
     match grounded_by {
-        Some(g) if !(g.starts_with("atom_") || g.starts_with("blint_") || g.starts_with("rusi_")
-            || g.starts_with("golem_") || g.starts_with("dosai_") || g == "bom_query") => {
-            return (format!("Fact '{}' rejected: facts grounded in '{g}' are not stored. Use a custom analysis tool (atom_*, blint_*, rusi_*, golem_*, dosai_*, bom_*) instead.", name), true);
+        Some(g)
+            if !(g.starts_with("atom_")
+                || g.starts_with("blint_")
+                || g.starts_with("rusi_")
+                || g.starts_with("golem_")
+                || g.starts_with("dosai_")
+                || g == "bom_query") =>
+        {
+            return (
+                format!(
+                    "Fact '{}' rejected: facts grounded in '{g}' are not stored. Use a custom analysis tool (atom_*, blint_*, rusi_*, golem_*, dosai_*, bom_*) instead.",
+                    name
+                ),
+                true,
+            );
         }
         None => {
-            return (format!("Fact '{}' rejected: 'grounded_by' is required. Specify which custom analysis tool produced the evidence (atom_*, blint_*, rusi_*, golem_*, dosai_*, bom_*).", name), true);
+            return (
+                format!(
+                    "Fact '{}' rejected: 'grounded_by' is required. Specify which custom analysis tool produced the evidence (atom_*, blint_*, rusi_*, golem_*, dosai_*, bom_*).",
+                    name
+                ),
+                true,
+            );
         }
         _ => {}
     }
@@ -745,7 +866,11 @@ mod tests {
             body: "This is a test fact body.".into(),
         };
         store.save(&fact).unwrap();
-        let path = dir.path().join(".chen").join("facts-memory").join("test-fact.md");
+        let path = dir
+            .path()
+            .join(".chen")
+            .join("facts-memory")
+            .join("test-fact.md");
         assert!(path.exists());
     }
 
@@ -770,7 +895,10 @@ mod tests {
 
         let loaded = store.load("auth-boundary").unwrap();
         assert_eq!(loaded.name, "auth-boundary");
-        assert_eq!(loaded.description, "Auth is enforced in requireAuth middleware");
+        assert_eq!(
+            loaded.description,
+            "Auth is enforced in requireAuth middleware"
+        );
         assert_eq!(loaded.fact_type, FactType::Project);
         assert_eq!(loaded.grounded_by.as_deref(), Some("atom_flows"));
         assert_eq!(loaded.confidence.as_deref(), Some("high"));
@@ -812,7 +940,10 @@ mod tests {
 
         let loaded = store.load("my-fact").unwrap();
         assert_eq!(loaded.created, "2026-01-01");
-        assert_eq!(loaded.updated, chrono::Utc::now().format("%Y-%m-%d").to_string());
+        assert_eq!(
+            loaded.updated,
+            chrono::Utc::now().format("%Y-%m-%d").to_string()
+        );
         assert_eq!(loaded.description, "Updated");
         assert_eq!(loaded.body, "Updated body");
         assert!(loaded.source_refs.contains(&"new/file.rs:10".into()));
@@ -850,31 +981,35 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = FactStore::open(Some(dir.path().to_str().unwrap())).unwrap();
 
-        store.save(&Fact {
-            name: "sql-injection".into(),
-            description: "SQL injection in user search".into(),
-            fact_type: FactType::Finding,
-            grounded_by: Some("atom_flows".into()),
-            confidence: Some("high".into()),
-            source_refs: vec!["src/search.rs:42".into()],
-            created: "2026-06-29".into(),
-            updated: "2026-06-29".into(),
-            commit: None,
-            body: "User input reaches executeQuery directly.".into(),
-        }).unwrap();
+        store
+            .save(&Fact {
+                name: "sql-injection".into(),
+                description: "SQL injection in user search".into(),
+                fact_type: FactType::Finding,
+                grounded_by: Some("atom_flows".into()),
+                confidence: Some("high".into()),
+                source_refs: vec!["src/search.rs:42".into()],
+                created: "2026-06-29".into(),
+                updated: "2026-06-29".into(),
+                commit: None,
+                body: "User input reaches executeQuery directly.".into(),
+            })
+            .unwrap();
 
-        store.save(&Fact {
-            name: "auth-boundary".into(),
-            description: "Auth boundary at middleware".into(),
-            fact_type: FactType::Project,
-            grounded_by: Some("atom_flows".into()),
-            confidence: Some("high".into()),
-            source_refs: vec!["src/mw/auth.ts:10".into()],
-            created: "2026-06-29".into(),
-            updated: "2026-06-29".into(),
-            commit: None,
-            body: "All routes pass through authentication middleware.".into(),
-        }).unwrap();
+        store
+            .save(&Fact {
+                name: "auth-boundary".into(),
+                description: "Auth boundary at middleware".into(),
+                fact_type: FactType::Project,
+                grounded_by: Some("atom_flows".into()),
+                confidence: Some("high".into()),
+                source_refs: vec!["src/mw/auth.ts:10".into()],
+                created: "2026-06-29".into(),
+                updated: "2026-06-29".into(),
+                commit: None,
+                body: "All routes pass through authentication middleware.".into(),
+            })
+            .unwrap();
 
         // Search in name.
         let results = store.search("sql");
@@ -903,7 +1038,10 @@ mod tests {
     #[test]
     fn slugify_handles_special_chars() {
         assert_eq!(FactStore::slugify("Hello World"), "hello-world");
-        assert_eq!(FactStore::slugify("auth-boundary-express"), "auth-boundary-express");
+        assert_eq!(
+            FactStore::slugify("auth-boundary-express"),
+            "auth-boundary-express"
+        );
         assert_eq!(FactStore::slugify("  spaced  out  "), "spaced-out");
         assert_eq!(FactStore::slugify("UPPER_CASE"), "upper-case");
         assert_eq!(FactStore::slugify(&"a".repeat(100)).len(), 60);
@@ -923,18 +1061,34 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = FactStore::open(Some(dir.path().to_str().unwrap())).unwrap();
 
-        store.save(&Fact {
-            name: "z-fact".into(), description: "Last".into(),
-            fact_type: FactType::Project, grounded_by: None, confidence: None,
-            source_refs: vec![], created: "2026-01-01".into(), updated: "2026-01-01".into(),
-            commit: None, body: "".into(),
-        }).unwrap();
-        store.save(&Fact {
-            name: "a-fact".into(), description: "First".into(),
-            fact_type: FactType::Project, grounded_by: None, confidence: None,
-            source_refs: vec![], created: "2026-01-01".into(), updated: "2026-01-01".into(),
-            commit: None, body: "".into(),
-        }).unwrap();
+        store
+            .save(&Fact {
+                name: "z-fact".into(),
+                description: "Last".into(),
+                fact_type: FactType::Project,
+                grounded_by: None,
+                confidence: None,
+                source_refs: vec![],
+                created: "2026-01-01".into(),
+                updated: "2026-01-01".into(),
+                commit: None,
+                body: "".into(),
+            })
+            .unwrap();
+        store
+            .save(&Fact {
+                name: "a-fact".into(),
+                description: "First".into(),
+                fact_type: FactType::Project,
+                grounded_by: None,
+                confidence: None,
+                source_refs: vec![],
+                created: "2026-01-01".into(),
+                updated: "2026-01-01".into(),
+                commit: None,
+                body: "".into(),
+            })
+            .unwrap();
 
         let index = store.index_markdown();
         let lines: Vec<&str> = index.lines().collect();
@@ -965,7 +1119,10 @@ mod tests {
 
         let result = action_save(&store, &input);
         assert!(result.1, "save should be rejected: {}", result.0);
-        assert!(result.0.contains("rejected"), "error should mention rejection");
+        assert!(
+            result.0.contains("rejected"),
+            "error should mention rejection"
+        );
     }
 
     #[test]
@@ -996,17 +1153,27 @@ mod tests {
         let store = FactStore::open(Some(dir.path().to_str().unwrap())).unwrap();
 
         for i in 0..3 {
-            store.save(&Fact {
-                name: format!("fact-{i}"), description: format!("Fact {i}"),
-                fact_type: FactType::Finding, grounded_by: Some("text".into()),
-                confidence: Some("low".into()), source_refs: vec![],
-                created: "2026-01-01".into(), updated: "2026-01-01".into(),
-                commit: None, body: format!("{i}"),
-            }).unwrap();
+            store
+                .save(&Fact {
+                    name: format!("fact-{i}"),
+                    description: format!("Fact {i}"),
+                    fact_type: FactType::Finding,
+                    grounded_by: Some("text".into()),
+                    confidence: Some("low".into()),
+                    source_refs: vec![],
+                    created: "2026-01-01".into(),
+                    updated: "2026-01-01".into(),
+                    commit: None,
+                    body: format!("{i}"),
+                })
+                .unwrap();
         }
         assert_eq!(store.list().len(), 3);
 
-        let report = store.prune(&PruneBudget { max_facts: 1, max_index_bytes: 16 * 1024 });
+        let report = store.prune(&PruneBudget {
+            max_facts: 1,
+            max_index_bytes: 16 * 1024,
+        });
         assert_eq!(report.evicted, 2);
 
         let facts = store.list();
@@ -1018,14 +1185,25 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = FactStore::open(Some(dir.path().to_str().unwrap())).unwrap();
 
-        store.save(&Fact {
-            name: "sticky-project".into(), description: "Sticky".into(),
-            fact_type: FactType::Project, grounded_by: None, confidence: None,
-            source_refs: vec![], created: "2026-01-01".into(), updated: "2026-01-01".into(),
-            commit: None, body: "".into(),
-        }).unwrap();
+        store
+            .save(&Fact {
+                name: "sticky-project".into(),
+                description: "Sticky".into(),
+                fact_type: FactType::Project,
+                grounded_by: None,
+                confidence: None,
+                source_refs: vec![],
+                created: "2026-01-01".into(),
+                updated: "2026-01-01".into(),
+                commit: None,
+                body: "".into(),
+            })
+            .unwrap();
 
-        let report = store.prune(&PruneBudget { max_facts: 0, max_index_bytes: 16 * 1024 });
+        let report = store.prune(&PruneBudget {
+            max_facts: 0,
+            max_index_bytes: 16 * 1024,
+        });
         assert_eq!(report.evicted, 0, "project facts are sticky");
         assert_eq!(store.list().len(), 1);
     }
@@ -1059,14 +1237,21 @@ mod tests {
     fn strip_line_suffix_removes_trailing_line_number() {
         assert_eq!(strip_line_suffix("src/auth.ts:42"), "src/auth.ts");
         assert_eq!(strip_line_suffix("src/auth.ts"), "src/auth.ts");
-        assert_eq!(strip_line_suffix("C:\\Users\\me\\file.rs:10"), "C:\\Users\\me\\file.rs");
+        assert_eq!(
+            strip_line_suffix("C:\\Users\\me\\file.rs:10"),
+            "C:\\Users\\me\\file.rs"
+        );
         assert_eq!(strip_line_suffix("file:notanumber"), "file:notanumber");
         assert_eq!(strip_line_suffix(""), "");
     }
 
     #[test]
     fn memory_dispatch_without_source_returns_error() {
-        let result = memory_dispatch(None, "id1", &serde_json::json!({"action": "recall", "name": "x"}));
+        let result = memory_dispatch(
+            None,
+            "id1",
+            &serde_json::json!({"action": "recall", "name": "x"}),
+        );
         assert!(result.is_error);
         assert!(result.content.contains("no source root configured"));
     }

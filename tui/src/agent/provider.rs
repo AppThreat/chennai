@@ -37,12 +37,24 @@ pub enum AgentEvent {
     /// A fragment of the assistant's text response.
     TextDelta(String),
     /// A tool call request from the model.
-    ToolCall { id: String, name: String, input: Value },
+    ToolCall {
+        id: String,
+        name: String,
+        input: Value,
+    },
     /// The result of executing a tool call, so the UI can attach it to the
     /// matching tool card. `content` is the (already truncated) text result.
-    ToolResult { id: String, content: String, is_error: bool },
+    ToolResult {
+        id: String,
+        content: String,
+        is_error: bool,
+    },
     /// Token usage for the current turn.
-    Usage { input_tokens: u32, output_tokens: u32, cache_read_tokens: Option<u32> },
+    Usage {
+        input_tokens: u32,
+        output_tokens: u32,
+        cache_read_tokens: Option<u32>,
+    },
     /// The reason the model stopped (end_turn, tool_use, max_tokens, refusal).
     StopReason(String),
     /// An error from the provider or agent loop.
@@ -81,11 +93,20 @@ pub enum ContentBlock {
     /// signature may be empty for providers that don't emit one (e.g. most
     /// OpenAI-compatible endpoints) — in that case it is simply omitted on the
     /// wire.
-    Thinking { text: String, signature: String },
+    Thinking {
+        text: String,
+        signature: String,
+    },
     /// Encrypted reasoning the API chose not to expose. The opaque `data` must
     /// be echoed back unchanged on replay, exactly like a signed thinking block.
-    RedactedThinking { data: String },
-    ToolUse { id: String, name: String, input: Value },
+    RedactedThinking {
+        data: String,
+    },
+    ToolUse {
+        id: String,
+        name: String,
+        input: Value,
+    },
 }
 
 /// A message in the conversation transcript.
@@ -101,15 +122,30 @@ pub struct Message {
 
 impl Message {
     pub fn user(text: &str) -> Self {
-        Message { role: "user".into(), content: vec![ContentBlock::Text(text.into())], tool_call_id: None, is_error: false }
+        Message {
+            role: "user".into(),
+            content: vec![ContentBlock::Text(text.into())],
+            tool_call_id: None,
+            is_error: false,
+        }
     }
 
     pub fn assistant(blocks: Vec<ContentBlock>) -> Self {
-        Message { role: "assistant".into(), content: blocks, tool_call_id: None, is_error: false }
+        Message {
+            role: "assistant".into(),
+            content: blocks,
+            tool_call_id: None,
+            is_error: false,
+        }
     }
 
     pub fn tool_result(tool_call_id: &str, content: &str, is_error: bool) -> Self {
-        Message { role: "tool_result".into(), content: vec![ContentBlock::Text(content.into())], tool_call_id: Some(tool_call_id.into()), is_error }
+        Message {
+            role: "tool_result".into(),
+            content: vec![ContentBlock::Text(content.into())],
+            tool_call_id: Some(tool_call_id.into()),
+            is_error,
+        }
     }
 
     /// Serialize to the provider-agnostic JSON format used internally.
@@ -125,10 +161,15 @@ impl Message {
         }
         if self.role == "tool_result" {
             // Tool results are always text content.
-            let text = self.content.iter().filter_map(|b| match b {
-                ContentBlock::Text(t) => Some(t.as_str()),
-                _ => None,
-            }).collect::<Vec<_>>().join("\n");
+            let text = self
+                .content
+                .iter()
+                .filter_map(|b| match b {
+                    ContentBlock::Text(t) => Some(t.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
             map.insert("content".into(), Value::String(text));
         } else {
             let blocks: Vec<Value> = self.content.iter().map(content_block_to_json).collect();
@@ -145,8 +186,9 @@ fn content_block_to_json(block: &ContentBlock) -> Value {
         ContentBlock::Thinking { text, signature } => serde_json::json!({
             "type": "thinking", "thinking": text, "signature": signature,
         }),
-        ContentBlock::RedactedThinking { data } =>
-            serde_json::json!({ "type": "redacted_thinking", "data": data }),
+        ContentBlock::RedactedThinking { data } => {
+            serde_json::json!({ "type": "redacted_thinking", "data": data })
+        }
         ContentBlock::ToolUse { id, name, input } => serde_json::json!({
             "type": "tool_use",
             "id": id,
@@ -218,7 +260,11 @@ impl EventSink for ChannelSink {
 /// A provider that can stream LLM responses.
 pub trait LlmProvider {
     /// Send a turn request and stream events to `sink`. Returns the accumulated turn result.
-    fn stream_turn(&self, req: &TurnRequest, sink: &mut dyn EventSink) -> Result<TurnResult, ProviderError>;
+    fn stream_turn(
+        &self,
+        req: &TurnRequest,
+        sink: &mut dyn EventSink,
+    ) -> Result<TurnResult, ProviderError>;
 }
 
 // ---------------------------------------------------------------------------

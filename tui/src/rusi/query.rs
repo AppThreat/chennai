@@ -47,13 +47,16 @@ pub fn query_packages(report: &Value, pattern: Option<&str>) -> String {
 
         if let Some(pat) = pattern {
             let pat_lower = pat.to_lowercase();
-            if !name.to_lowercase().contains(&pat_lower) && !purl.to_lowercase().contains(&pat_lower)
+            if !name.to_lowercase().contains(&pat_lower)
+                && !purl.to_lowercase().contains(&pat_lower)
             {
                 continue;
             }
         }
 
-        lines.push(format!("  {name} ({version}) — {files_count} files — {purl}"));
+        lines.push(format!(
+            "  {name} ({version}) — {files_count} files — {purl}"
+        ));
     }
 
     lines.join("\n")
@@ -74,7 +77,8 @@ pub fn query_files(report: &Value, pattern: Option<&str>) -> String {
 
         if let Some(pat) = pattern {
             let pat_lower = pat.to_lowercase();
-            if !path.to_lowercase().contains(&pat_lower) && !package.to_lowercase().contains(&pat_lower)
+            if !path.to_lowercase().contains(&pat_lower)
+                && !package.to_lowercase().contains(&pat_lower)
             {
                 continue;
             }
@@ -96,9 +100,21 @@ pub fn query_declarations(report: &Value, pattern: Option<&str>, limit: usize) -
     if let Some(pat) = pattern {
         let pat_lower = pat.to_lowercase();
         matched.retain(|d| {
-            d["name"].as_str().unwrap_or("").to_lowercase().contains(&pat_lower)
-                || d["qualified_name"].as_str().unwrap_or("").to_lowercase().contains(&pat_lower)
-                || d["file_path"].as_str().unwrap_or("").to_lowercase().contains(&pat_lower)
+            d["name"]
+                .as_str()
+                .unwrap_or("")
+                .to_lowercase()
+                .contains(&pat_lower)
+                || d["qualified_name"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_lowercase()
+                    .contains(&pat_lower)
+                || d["file_path"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_lowercase()
+                    .contains(&pat_lower)
         });
     }
 
@@ -140,9 +156,21 @@ pub fn query_usages(report: &Value, pattern: Option<&str>, limit: usize) -> Stri
     if let Some(pat) = pattern {
         let pat_lower = pat.to_lowercase();
         matched.retain(|u| {
-            u["name"].as_str().unwrap_or("").to_lowercase().contains(&pat_lower)
-                || u["kind"].as_str().unwrap_or("").to_lowercase().contains(&pat_lower)
-                || u["position"]["filename"].as_str().unwrap_or("").to_lowercase().contains(&pat_lower)
+            u["name"]
+                .as_str()
+                .unwrap_or("")
+                .to_lowercase()
+                .contains(&pat_lower)
+                || u["kind"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_lowercase()
+                    .contains(&pat_lower)
+                || u["position"]["filename"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_lowercase()
+                    .contains(&pat_lower)
         });
     }
 
@@ -170,7 +198,11 @@ pub fn query_usages(report: &Value, pattern: Option<&str>, limit: usize) -> Stri
     lines.join("\n")
 }
 
-pub fn query_security_signals(report: &Value, category_filter: Option<&str>, limit: usize) -> String {
+pub fn query_security_signals(
+    report: &Value,
+    category_filter: Option<&str>,
+    limit: usize,
+) -> String {
     let signals = match report["security_signals"].as_array() {
         Some(arr) => arr,
         None => return "No security signal data available.".to_string(),
@@ -180,7 +212,11 @@ pub fn query_security_signals(report: &Value, category_filter: Option<&str>, lim
     if let Some(cat) = category_filter {
         let cat_lower = cat.to_lowercase();
         matched.retain(|s| {
-            s["category"].as_str().unwrap_or("").to_lowercase().contains(&cat_lower)
+            s["category"]
+                .as_str()
+                .unwrap_or("")
+                .to_lowercase()
+                .contains(&cat_lower)
         });
     }
 
@@ -218,7 +254,9 @@ pub fn query_callgraph(report: &Value, pattern: Option<&str>, limit: usize) -> S
     let edges = cg["edges"].as_array().map(|a| a.len()).unwrap_or(0);
 
     let mut lines: Vec<String> = Vec::new();
-    lines.push(format!("# Call Graph (mode: {mode}, {nodes} nodes, {edges} edges)"));
+    lines.push(format!(
+        "# Call Graph (mode: {mode}, {nodes} nodes, {edges} edges)"
+    ));
 
     if let Some(pat) = pattern {
         let pat_lower = pat.to_lowercase();
@@ -227,9 +265,21 @@ pub fn query_callgraph(report: &Value, pattern: Option<&str>, limit: usize) -> S
             let matched: Vec<&Value> = node_list
                 .iter()
                 .filter(|n| {
-                    n["name"].as_str().unwrap_or("").to_lowercase().contains(&pat_lower)
-                        || n["qualified_name"].as_str().unwrap_or("").to_lowercase().contains(&pat_lower)
-                        || n["file_path"].as_str().unwrap_or("").to_lowercase().contains(&pat_lower)
+                    n["name"]
+                        .as_str()
+                        .unwrap_or("")
+                        .to_lowercase()
+                        .contains(&pat_lower)
+                        || n["qualified_name"]
+                            .as_str()
+                            .unwrap_or("")
+                            .to_lowercase()
+                            .contains(&pat_lower)
+                        || n["file_path"]
+                            .as_str()
+                            .unwrap_or("")
+                            .to_lowercase()
+                            .contains(&pat_lower)
                 })
                 .take(limit)
                 .collect();
@@ -242,7 +292,13 @@ pub fn query_callgraph(report: &Value, pattern: Option<&str>, limit: usize) -> S
                 let line = n["position"]["line"].as_i64().unwrap_or(0);
                 let local = n["local"].as_bool().unwrap_or(false);
                 let ext = n["external"].as_bool().unwrap_or(false);
-                let loc = if local { "local" } else if ext { "external" } else { "?" };
+                let loc = if local {
+                    "local"
+                } else if ext {
+                    "external"
+                } else {
+                    "?"
+                };
                 lines.push(format!("    [{kind}][{loc}] {name} at {file}:{line}"));
             }
         }
@@ -252,8 +308,16 @@ pub fn query_callgraph(report: &Value, pattern: Option<&str>, limit: usize) -> S
             let matched: Vec<&Value> = edge_list
                 .iter()
                 .filter(|e| {
-                    e["source_name"].as_str().unwrap_or("").to_lowercase().contains(&pat_lower)
-                        || e["target_name"].as_str().unwrap_or("").to_lowercase().contains(&pat_lower)
+                    e["source_name"]
+                        .as_str()
+                        .unwrap_or("")
+                        .to_lowercase()
+                        .contains(&pat_lower)
+                        || e["target_name"]
+                            .as_str()
+                            .unwrap_or("")
+                            .to_lowercase()
+                            .contains(&pat_lower)
                 })
                 .take(limit)
                 .collect();
@@ -284,7 +348,9 @@ pub fn query_dataflow(report: &Value, pattern: Option<&str>, limit: usize) -> St
     let nodes = df["nodes"].as_array().map(|a| a.len()).unwrap_or(0);
 
     let mut lines: Vec<String> = Vec::new();
-    lines.push(format!("# Data Flow (mode: {mode}, {nodes} nodes, {slices} slices)"));
+    lines.push(format!(
+        "# Data Flow (mode: {mode}, {nodes} nodes, {slices} slices)"
+    ));
 
     if let Some(slice_list) = df["slices"].as_array() {
         let matched: Vec<&Value> = if let Some(pat) = pattern {
@@ -292,10 +358,26 @@ pub fn query_dataflow(report: &Value, pattern: Option<&str>, limit: usize) -> St
             slice_list
                 .iter()
                 .filter(|s| {
-                    s["source_name"].as_str().unwrap_or("").to_lowercase().contains(&pat_lower)
-                        || s["sink_name"].as_str().unwrap_or("").to_lowercase().contains(&pat_lower)
-                        || s["rule_name"].as_str().unwrap_or("").to_lowercase().contains(&pat_lower)
-                        || s["description"].as_str().unwrap_or("").to_lowercase().contains(&pat_lower)
+                    s["source_name"]
+                        .as_str()
+                        .unwrap_or("")
+                        .to_lowercase()
+                        .contains(&pat_lower)
+                        || s["sink_name"]
+                            .as_str()
+                            .unwrap_or("")
+                            .to_lowercase()
+                            .contains(&pat_lower)
+                        || s["rule_name"]
+                            .as_str()
+                            .unwrap_or("")
+                            .to_lowercase()
+                            .contains(&pat_lower)
+                        || s["description"]
+                            .as_str()
+                            .unwrap_or("")
+                            .to_lowercase()
+                            .contains(&pat_lower)
                 })
                 .take(limit)
                 .collect()
@@ -303,7 +385,11 @@ pub fn query_dataflow(report: &Value, pattern: Option<&str>, limit: usize) -> St
             slice_list.iter().take(limit).collect()
         };
 
-        lines.push(format!("  Slices (showing {} of {}):", matched.len(), slices));
+        lines.push(format!(
+            "  Slices (showing {} of {}):",
+            matched.len(),
+            slices
+        ));
         for s in matched {
             let src_name = s["source_name"].as_str().unwrap_or("?");
             let sink_name = s["sink_name"].as_str().unwrap_or("?");
@@ -331,8 +417,16 @@ pub fn query_imports(report: &Value, pattern: Option<&str>, limit: usize) -> Str
     if let Some(pat) = pattern {
         let pat_lower = pat.to_lowercase();
         matched.retain(|i| {
-            i["path"].as_str().unwrap_or("").to_lowercase().contains(&pat_lower)
-                || i["alias"].as_str().unwrap_or("").to_lowercase().contains(&pat_lower)
+            i["path"]
+                .as_str()
+                .unwrap_or("")
+                .to_lowercase()
+                .contains(&pat_lower)
+                || i["alias"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_lowercase()
+                    .contains(&pat_lower)
         });
     }
 
@@ -376,7 +470,8 @@ pub fn query_crypto(report: &Value, pattern: Option<&str>) -> String {
             let file = lib["file_path"].as_str().unwrap_or("?");
             if let Some(pat) = pattern {
                 let lower = pat.to_lowercase();
-                if !path.to_lowercase().contains(&lower) && !family.to_lowercase().contains(&lower) {
+                if !path.to_lowercase().contains(&lower) && !family.to_lowercase().contains(&lower)
+                {
                     continue;
                 }
             }
@@ -402,7 +497,9 @@ pub fn query_crypto(report: &Value, pattern: Option<&str>) -> String {
                     continue;
                 }
             }
-            lines.push(format!("  [{kind}] {algorithm} ({provider}) — {operation} at {file}"));
+            lines.push(format!(
+                "  [{kind}] {algorithm} ({provider}) — {operation} at {file}"
+            ));
         }
     }
 
@@ -433,7 +530,8 @@ pub fn query_crypto(report: &Value, pattern: Option<&str>) -> String {
             let file = f["file_path"].as_str().unwrap_or("?");
             if let Some(pat) = pattern {
                 let lower = pat.to_lowercase();
-                if !summary.to_lowercase().contains(&lower) && !category.to_lowercase().contains(&lower)
+                if !summary.to_lowercase().contains(&lower)
+                    && !category.to_lowercase().contains(&lower)
                 {
                     continue;
                 }
@@ -460,7 +558,11 @@ pub fn detail_declaration(report: &Value, name: &str) -> String {
         .filter(|d| {
             d["name"].as_str().unwrap_or("").to_lowercase() == name_lower
                 || d["qualified_name"].as_str().unwrap_or("").to_lowercase() == name_lower
-                || d["qualified_name"].as_str().unwrap_or("").to_lowercase().contains(&name_lower)
+                || d["qualified_name"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_lowercase()
+                    .contains(&name_lower)
         })
         .collect();
 
@@ -561,8 +663,11 @@ pub fn query_endpoints(report: &Value, pattern: Option<&str>) -> String {
         })
         .collect();
 
-    let mut lines: Vec<String> =
-        vec![format!("# API Endpoints ({} total, showing {})", endpoints.len(), matched.len())];
+    let mut lines: Vec<String> = vec![format!(
+        "# API Endpoints ({} total, showing {})",
+        endpoints.len(),
+        matched.len()
+    )];
 
     for ep in matched {
         let method = ep["method"].as_str().unwrap_or("?");
@@ -571,7 +676,9 @@ pub fn query_endpoints(report: &Value, pattern: Option<&str>) -> String {
         let framework = ep["framework"].as_str().unwrap_or("?");
         let file = ep["file_path"].as_str().unwrap_or("?");
         let line = ep["position"]["line"].as_i64().unwrap_or(0);
-        lines.push(format!("  {method} {path} → {handler} ({framework}) at {file}:{line}"));
+        lines.push(format!(
+            "  {method} {path} → {handler} ({framework}) at {file}:{line}"
+        ));
     }
 
     lines.join("\n")

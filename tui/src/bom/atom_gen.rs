@@ -44,18 +44,33 @@ pub fn detect_language(source_dir: &Path) -> Option<&'static str> {
         return Some("ts");
     }
     // JavaScript / Node.js
-    if has_any(source_dir, &["package.json", "yarn.lock", "rush.json", "pnpm-lock.yaml"]) {
+    if has_any(
+        source_dir,
+        &["package.json", "yarn.lock", "rush.json", "pnpm-lock.yaml"],
+    ) {
         return Some("js");
     }
     // Python (pipenv / poetry / pyproject / setup.py / requirements.txt)
-    if has_any(source_dir, &["Pipfile", "poetry.lock", "setup.py", "pyproject.toml"]) {
+    if has_any(
+        source_dir,
+        &["Pipfile", "poetry.lock", "setup.py", "pyproject.toml"],
+    ) {
         return Some("py");
     }
     if has_glob(source_dir, "*requirements*.txt") {
         return Some("py");
     }
     // Java (Maven / Gradle)
-    if has_any(source_dir, &["pom.xml", "build.gradle", "build.gradle.kts", "gradle.lockfile", "settings.gradle"]) {
+    if has_any(
+        source_dir,
+        &[
+            "pom.xml",
+            "build.gradle",
+            "build.gradle.kts",
+            "gradle.lockfile",
+            "settings.gradle",
+        ],
+    ) {
         return Some("java");
     }
     // Scala (SBT / Mill)
@@ -71,7 +86,16 @@ pub fn detect_language(source_dir: &Path) -> Option<&'static str> {
         return Some("rb");
     }
     // C / C++
-    if has_any(source_dir, &["CMakeLists.txt", "CMakeCache.txt", "configure", "meson.build", "conanfile.txt"]) {
+    if has_any(
+        source_dir,
+        &[
+            "CMakeLists.txt",
+            "CMakeCache.txt",
+            "configure",
+            "meson.build",
+            "conanfile.txt",
+        ],
+    ) {
         return Some("cpp");
     }
 
@@ -203,7 +227,11 @@ pub fn auto_install_npm() -> Result<(), String> {
 /// * `source_dir` — The project source directory to analyse
 /// * `output_path` — The desired path for the output `.atom` file
 /// * `language` — Source language identifier (e.g. `"js"`, `"py"`, `"all"`)
-pub fn generate_atom(source_dir: &Path, output_path: &Path, language: &str) -> Result<PathBuf, String> {
+pub fn generate_atom(
+    source_dir: &Path,
+    output_path: &Path,
+    language: &str,
+) -> Result<PathBuf, String> {
     let atom_bin = find_atom()?;
 
     // Ensure the parent directory exists.
@@ -309,9 +337,7 @@ mod tests {
 
     #[test]
     fn test_which_returns_none_for_nonexistent() {
-        assert!(
-            which("this-command-definitely-does-not-exist-12345xyz").is_none()
-        );
+        assert!(which("this-command-definitely-does-not-exist-12345xyz").is_none());
     }
 
     #[test]
@@ -328,9 +354,13 @@ mod tests {
         // find_atom should fall through to PATH when ATOM_CMD points to a non-existent file.
         // This test only verifies no panic; the actual lookup depends on PATH state.
         // SAFETY: test-only environment mutation with immediate restore.
-        unsafe { std::env::set_var("ATOM_CMD", "/nonexistent/path/to/atom"); }
+        unsafe {
+            std::env::set_var("ATOM_CMD", "/nonexistent/path/to/atom");
+        }
         let _result = find_atom();
-        unsafe { std::env::remove_var("ATOM_CMD"); }
+        unsafe {
+            std::env::remove_var("ATOM_CMD");
+        }
     }
 
     #[test]

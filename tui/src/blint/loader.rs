@@ -98,7 +98,9 @@ fn load_optional(dir: &Path, stem: &str, name: &str) -> Option<LoadedReport> {
 /// the agent sees which app/binary each graph belongs to. Sorted for determinism.
 fn load_callgraph_sidecars(dir: &Path) -> Vec<(String, serde_json::Value)> {
     let mut out: Vec<(String, serde_json::Value)> = Vec::new();
-    let Ok(entries) = std::fs::read_dir(dir) else { return out };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return out;
+    };
     let mut paths: Vec<std::path::PathBuf> = entries
         .flatten()
         .map(|e| e.path())
@@ -111,13 +113,19 @@ fn load_callgraph_sidecars(dir: &Path) -> Vec<(String, serde_json::Value)> {
         .collect();
     paths.sort();
     for p in paths {
-        let Some(name) = p.file_name().and_then(|n| n.to_str()) else { continue };
+        let Some(name) = p.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
         let label = name
             .trim_end_matches(".dex-callgraph.json")
             .trim_end_matches(".callgraph.json")
             .to_string();
         if let Ok(report) = LoadedReport::from_file(&p)
-            && report.report.get("nodes").map(|n| n.is_array()).unwrap_or(false)
+            && report
+                .report
+                .get("nodes")
+                .map(|n| n.is_array())
+                .unwrap_or(false)
         {
             out.push((label, report.report));
         }
@@ -132,9 +140,11 @@ fn first_graphml(dir: &Path) -> Option<std::path::PathBuf> {
     if fixed.is_file() {
         return Some(fixed);
     }
-    std::fs::read_dir(dir).ok()?.flatten().map(|e| e.path()).find(|p| {
-        p.extension().and_then(|e| e.to_str()) == Some("graphml")
-    })
+    std::fs::read_dir(dir)
+        .ok()?
+        .flatten()
+        .map(|e| e.path())
+        .find(|p| p.extension().and_then(|e| e.to_str()) == Some("graphml"))
 }
 
 /// Detect the binary artifact type, preferring blint's own metadata fields
@@ -154,10 +164,15 @@ fn detect_artifact_type(basename: &str, metadata: &serde_json::Value) -> String 
     }
     let lower = basename.to_lowercase();
     for (suffix, kind) in [
-        (".apkm", "apk"), (".apk", "apk"), (".aab", "apk"),
-        (".ipa", "ipa"), (".wasm", "wasm"),
-        (".dll", "pe"), (".exe", "pe"),
-        (".so", "elf"), (".dylib", "macho"),
+        (".apkm", "apk"),
+        (".apk", "apk"),
+        (".aab", "apk"),
+        (".ipa", "ipa"),
+        (".wasm", "wasm"),
+        (".dll", "pe"),
+        (".exe", "pe"),
+        (".so", "elf"),
+        (".dylib", "macho"),
     ] {
         if lower.ends_with(suffix) {
             return kind.to_string();
@@ -180,7 +195,10 @@ mod tests {
         )
         .unwrap();
         let reports = BlintReports::load("app.apk", dir.path()).unwrap();
-        assert_eq!(reports.metadata.report["exe_type"].as_str(), Some("dexbinary"));
+        assert_eq!(
+            reports.metadata.report["exe_type"].as_str(),
+            Some("dexbinary")
+        );
         assert_eq!(reports.artifact_type, "apk");
         assert!(reports.findings.is_none());
     }
@@ -189,11 +207,27 @@ mod tests {
     fn test_blint_loader_all_files() {
         let dir = tempfile::tempdir().unwrap();
         let base = "myapp.exe";
-        std::fs::write(dir.path().join(format!("{base}-metadata.json")), r#"{"binary_type":"PE32"}"#).unwrap();
-        std::fs::write(dir.path().join(format!("{base}-findings.json")), r#"{"findings":[]}"#).unwrap();
-        std::fs::write(dir.path().join(format!("{base}-reviews.json")), r#"{"reviews":[]}"#).unwrap();
+        std::fs::write(
+            dir.path().join(format!("{base}-metadata.json")),
+            r#"{"binary_type":"PE32"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join(format!("{base}-findings.json")),
+            r#"{"findings":[]}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join(format!("{base}-reviews.json")),
+            r#"{"reviews":[]}"#,
+        )
+        .unwrap();
         std::fs::write(dir.path().join(format!("{base}-fuzzables.json")), r#"[]"#).unwrap();
-        std::fs::write(dir.path().join("sbom.cdx.json"), r#"{"bomFormat":"CycloneDX"}"#).unwrap();
+        std::fs::write(
+            dir.path().join("sbom.cdx.json"),
+            r#"{"bomFormat":"CycloneDX"}"#,
+        )
+        .unwrap();
         std::fs::write(dir.path().join("callgraph.graphml"), r#"<?xml?>"#).unwrap();
 
         let reports = BlintReports::load(base, dir.path()).unwrap();
@@ -209,7 +243,11 @@ mod tests {
     fn test_blint_loader_bare_findings_reviews() {
         // Some blint invocations write bare `findings.json` / `reviews.json` (no stem prefix).
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("app.apk-metadata.json"), r#"{"exe_type":"dexbinary"}"#).unwrap();
+        std::fs::write(
+            dir.path().join("app.apk-metadata.json"),
+            r#"{"exe_type":"dexbinary"}"#,
+        )
+        .unwrap();
         std::fs::write(dir.path().join("findings.json"), r#"{"findings":[]}"#).unwrap();
         std::fs::write(dir.path().join("reviews.json"), r#"{"reviews":[]}"#).unwrap();
         let reports = BlintReports::load("app.apk", dir.path()).unwrap();

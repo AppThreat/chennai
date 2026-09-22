@@ -163,8 +163,9 @@ fn has_file_with_extension(dir: &Path, ext: &str) -> bool {
     };
     for entry in entries.flatten() {
         if let Some(name) = entry.file_name().to_str()
-            && name.ends_with(ext) {
-                return true;
+            && name.ends_with(ext)
+        {
+            return true;
         }
     }
     false
@@ -245,10 +246,7 @@ fn lifecycle_option(lifecycle: &str) -> Option<&'static str> {
 /// Combined logic: look for existing BOMs first, generate if none found.
 /// Returns the loaded BomStore and whether generation was attempted.
 #[allow(dead_code)]
-pub fn ensure_bom(
-    source_dir: Option<&Path>,
-    reports_dir: Option<&Path>,
-) -> (BomStore, bool) {
+pub fn ensure_bom(source_dir: Option<&Path>, reports_dir: Option<&Path>) -> (BomStore, bool) {
     // Priority 1: Check the reports directory for existing BOMs
     if let Some(rdir) = reports_dir {
         let store = find_existing_boms(rdir);
@@ -311,16 +309,21 @@ pub fn find_cdxgen() -> Result<PathBuf, String> {
     }
 
     if let Ok(exe) = std::env::current_exe()
-        && let Some(parent) = exe.parent() {
-            let candidates = [
-                parent.join("node_modules").join(".bin").join("cdxgen"),
-                parent.join("..").join("node_modules").join(".bin").join("cdxgen"),
-            ];
-            for c in &candidates {
-                if c.is_file() {
-                    return Ok(c.clone());
-                }
+        && let Some(parent) = exe.parent()
+    {
+        let candidates = [
+            parent.join("node_modules").join(".bin").join("cdxgen"),
+            parent
+                .join("..")
+                .join("node_modules")
+                .join(".bin")
+                .join("cdxgen"),
+        ];
+        for c in &candidates {
+            if c.is_file() {
+                return Ok(c.clone());
             }
+        }
     }
 
     Err("cdxgen not found. Install it with: npm install -g @cyclonedx/cdxgen".to_string())
@@ -391,7 +394,10 @@ mod tests {
     #[test]
     fn test_bom_filename() {
         assert_eq!(bom_filename(Some("js"), "build"), "sbom-js-build.cdx.json");
-        assert_eq!(bom_filename(Some("py"), "postbuild"), "sbom-py-postbuild.cdx.json");
+        assert_eq!(
+            bom_filename(Some("py"), "postbuild"),
+            "sbom-py-postbuild.cdx.json"
+        );
         assert_eq!(bom_filename(None, "build"), "sbom-build.cdx.json");
     }
 

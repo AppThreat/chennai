@@ -95,17 +95,49 @@ pub fn run_dosai(source_dir: &Path, out_dir: &Path) -> Result<Vec<PathBuf>, Stri
     outputs.push(df_path);
 
     // 2. Methods (best-effort — failure is tolerated and logged).
-    run_optional(&dosai_bin, &["methods", "--path", &source_dir.to_string_lossy(), "--o", &methods_path.to_string_lossy()], &methods_path, "methods", &mut outputs);
+    run_optional(
+        &dosai_bin,
+        &[
+            "methods",
+            "--path",
+            &source_dir.to_string_lossy(),
+            "--o",
+            &methods_path.to_string_lossy(),
+        ],
+        &methods_path,
+        "methods",
+        &mut outputs,
+    );
 
     // 3. Crypto (best-effort).
-    run_optional(&dosai_bin, &["crypto", "--path", &source_dir.to_string_lossy(), "--format", "dosai", "--o", &crypto_path.to_string_lossy()], &crypto_path, "crypto", &mut outputs);
+    run_optional(
+        &dosai_bin,
+        &[
+            "crypto",
+            "--path",
+            &source_dir.to_string_lossy(),
+            "--format",
+            "dosai",
+            "--o",
+            &crypto_path.to_string_lossy(),
+        ],
+        &crypto_path,
+        "crypto",
+        &mut outputs,
+    );
 
     Ok(outputs)
 }
 
 /// Run a best-effort dosai subcommand: if it exits non-zero or writes no file, log a
 /// warning and continue. Successful outputs are appended to `outputs`.
-fn run_optional(bin: &Path, args: &[&str], out_path: &Path, label: &str, outputs: &mut Vec<PathBuf>) {
+fn run_optional(
+    bin: &Path,
+    args: &[&str],
+    out_path: &Path,
+    label: &str,
+    outputs: &mut Vec<PathBuf>,
+) {
     match Command::new(bin)
         .args(args)
         .stdout(std::process::Stdio::null())
@@ -116,7 +148,9 @@ fn run_optional(bin: &Path, args: &[&str], out_path: &Path, label: &str, outputs
             outputs.push(out_path.to_path_buf());
         }
         Ok(status) => {
-            eprintln!("dosai {label} did not produce usable output (exit {status}); continuing with dataflows only.");
+            eprintln!(
+                "dosai {label} did not produce usable output (exit {status}); continuing with dataflows only."
+            );
         }
         Err(e) => {
             eprintln!("dosai {label} could not be executed ({e}); continuing with dataflows only.");

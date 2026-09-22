@@ -5,16 +5,23 @@
 //! and prompt caching.
 
 use super::provider::{
-    backoff_delay, interruptible_sleep, is_retryable_status, AgentEvent, ContentBlock, EventSink,
-    LlmProvider, Message, ProviderError, TurnRequest, TurnResult, MAX_SEND_ATTEMPTS,
+    AgentEvent, ContentBlock, EventSink, LlmProvider, MAX_SEND_ATTEMPTS, Message, ProviderError,
+    TurnRequest, TurnResult, backoff_delay, interruptible_sleep, is_retryable_status,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::io::{BufRead, BufReader, Read};
 use std::time::Duration;
 
 /// Parse a `Retry-After` header (delta-seconds form) into a duration.
 fn retry_after<T>(resp: &ureq::http::Response<T>) -> Option<Duration> {
-    let secs: u64 = resp.headers().get("retry-after")?.to_str().ok()?.trim().parse().ok()?;
+    let secs: u64 = resp
+        .headers()
+        .get("retry-after")?
+        .to_str()
+        .ok()?
+        .trim()
+        .parse()
+        .ok()?;
     Some(Duration::from_secs(secs.min(60)))
 }
 
@@ -53,11 +60,19 @@ pub struct AnthropicProvider {
 
 impl AnthropicProvider {
     pub fn new(api_key: String, model: String) -> Self {
-        AnthropicProvider { api_key, model, base_url: ANTHROPIC_API.into() }
+        AnthropicProvider {
+            api_key,
+            model,
+            base_url: ANTHROPIC_API.into(),
+        }
     }
 
     pub fn with_base_url(api_key: String, model: String, base_url: String) -> Self {
-        AnthropicProvider { api_key, model, base_url: normalize_anthropic_url(&base_url) }
+        AnthropicProvider {
+            api_key,
+            model,
+            base_url: normalize_anthropic_url(&base_url),
+        }
     }
 
     /// Build a configured ureq Agent with timeout and no automatic status-code errors.
@@ -71,9 +86,14 @@ impl AnthropicProvider {
 }
 
 impl LlmProvider for AnthropicProvider {
-    fn stream_turn(&self, req: &TurnRequest, sink: &mut dyn EventSink) -> Result<TurnResult, ProviderError> {
+    fn stream_turn(
+        &self,
+        req: &TurnRequest,
+        sink: &mut dyn EventSink,
+    ) -> Result<TurnResult, ProviderError> {
         let body = build_request_body(req, &self.model);
-        let body_bytes = serde_json::to_vec(&body).map_err(|e| ProviderError::Protocol(e.to_string()))?;
+        let body_bytes =
+            serde_json::to_vec(&body).map_err(|e| ProviderError::Protocol(e.to_string()))?;
 
         let agent = Self::agent();
 
@@ -121,7 +141,10 @@ impl LlmProvider for AnthropicProvider {
         if status_code >= 400 {
             let mut body = resp.into_body();
             let body_text = body.read_to_string().unwrap_or_default();
-            return Err(ProviderError::Api { status: status_code, body: body_text });
+            return Err(ProviderError::Api {
+                status: status_code,
+                body: body_text,
+            });
         }
 
         let reader = resp.into_body().into_reader();
@@ -134,16 +157,22 @@ fn build_request_body(req: &TurnRequest, model: &str) -> Value {
     let mut body = serde_json::Map::new();
 
     body.insert("model".into(), json!(model));
-    body.insert("max_tokens".into(), json!(req.max_tokens.max(DEFAULT_MAX_TOKENS)));
+    body.insert(
+        "max_tokens".into(),
+        json!(req.max_tokens.max(DEFAULT_MAX_TOKENS)),
+    );
     body.insert("stream".into(), json!(true));
 
     // Thinking config: skip when `no_thinking` is set (e.g. for Anthropic-compatible proxies
     // like DeepSeek that may not support the Anthropic-specific `thinking` parameter).
     if !req.no_thinking {
-        body.insert("thinking".into(), json!({
-            "type": "adaptive",
-            "display": "summarized"
-        }));
+        body.insert(
+            "thinking".into(),
+            json!({
+                "type": "adaptive",
+                "display": "summarized"
+            }),
+        );
     }
 
     // Output effort (Anthropic `output_config.effort`: low|medium|high|xhigh|max).
@@ -155,13 +184,16 @@ fn build_request_body(req: &TurnRequest, model: &str) -> Value {
     }
 
     // System prompt with cache control.
-    body.insert("system".into(), json!([
-        {
-            "type": "text",
-            "text": req.system,
-            "cache_control": { "type": "ephemeral" }
-        }
-    ]));
+    body.insert(
+        "system".into(),
+        json!([
+            {
+                "type": "text",
+                "text": req.system,
+                "cache_control": { "type": "ephemeral" }
+            }
+        ]),
+    );
 
     // Tools: convert from generic JSON Schema to Anthropic's format; add cache control on the last.
     let mut tools: Vec<Value> = req.tools.iter().map(|t| {
@@ -188,8 +220,10 @@ fn build_request_body(req: &TurnRequest, model: &str) -> Value {
             if anthropic_msg["role"] == "user"
                 && let Some(last) = merged.last_mut()
                 && last["role"] == "user"
-                && let (Some(last_content), Some(new_content)) =
-                    (last["content"].as_array_mut(), anthropic_msg["content"].as_array())
+                && let (Some(last_content), Some(new_content)) = (
+                    last["content"].as_array_mut(),
+                    anthropic_msg["content"].as_array(),
+                )
             {
                 last_content.extend(new_content.iter().cloned());
                 continue;
@@ -210,16 +244,24 @@ fn message_to_anthropic(msg: &Message) -> Value {
     match msg.role.as_str() {
         "tool_result" => {
             obj.insert("role".into(), json!("user"));
-            let text = msg.content.iter().filter_map(|b| match b {
-                ContentBlock::Text(t) => Some(t.as_str()),
-                _ => None,
-            }).collect::<Vec<_>>().join("\n");
-            obj.insert("content".into(), json!([{
-                "type": "tool_result",
-                "tool_use_id": msg.tool_call_id,
-                "content": text,
-                "is_error": msg.is_error,
-            }]));
+            let text = msg
+                .content
+                .iter()
+                .filter_map(|b| match b {
+                    ContentBlock::Text(t) => Some(t.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            obj.insert(
+                "content".into(),
+                json!([{
+                    "type": "tool_result",
+                    "tool_use_id": msg.tool_call_id,
+                    "content": text,
+                    "is_error": msg.is_error,
+                }]),
+            );
         }
         "assistant" => {
             obj.insert("role".into(), json!("assistant"));
@@ -228,42 +270,57 @@ fn message_to_anthropic(msg: &Message) -> Value {
             // rejects the turn with a 400. A signature-less thinking block (from
             // a non-Anthropic provider) is emitted without the field. Block order
             // is preserved exactly as received from the stream.
-            let blocks: Vec<Value> = msg.content.iter().map(|b| match b {
-                ContentBlock::Text(t) => json!({ "type": "text", "text": t }),
-                ContentBlock::Thinking { text, signature } => {
-                    let mut block = serde_json::Map::new();
-                    block.insert("type".into(), json!("thinking"));
-                    block.insert("thinking".into(), json!(text));
-                    if !signature.is_empty() {
-                        block.insert("signature".into(), json!(signature));
+            let blocks: Vec<Value> = msg
+                .content
+                .iter()
+                .map(|b| match b {
+                    ContentBlock::Text(t) => json!({ "type": "text", "text": t }),
+                    ContentBlock::Thinking { text, signature } => {
+                        let mut block = serde_json::Map::new();
+                        block.insert("type".into(), json!("thinking"));
+                        block.insert("thinking".into(), json!(text));
+                        if !signature.is_empty() {
+                            block.insert("signature".into(), json!(signature));
+                        }
+                        Value::Object(block)
                     }
-                    Value::Object(block)
-                }
-                ContentBlock::RedactedThinking { data } =>
-                    json!({ "type": "redacted_thinking", "data": data }),
-                ContentBlock::ToolUse { id, name, input } => json!({
-                    "type": "tool_use",
-                    "id": id,
-                    "name": name,
-                    "input": input,
-                }),
-            }).collect();
+                    ContentBlock::RedactedThinking { data } => {
+                        json!({ "type": "redacted_thinking", "data": data })
+                    }
+                    ContentBlock::ToolUse { id, name, input } => json!({
+                        "type": "tool_use",
+                        "id": id,
+                        "name": name,
+                        "input": input,
+                    }),
+                })
+                .collect();
             obj.insert("content".into(), json!(blocks));
         }
         "user" => {
             obj.insert("role".into(), json!("user"));
-            let text = msg.content.iter().filter_map(|b| match b {
-                ContentBlock::Text(t) => Some(t.as_str()),
-                _ => None,
-            }).collect::<Vec<_>>().join("\n");
+            let text = msg
+                .content
+                .iter()
+                .filter_map(|b| match b {
+                    ContentBlock::Text(t) => Some(t.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
             obj.insert("content".into(), json!([{ "type": "text", "text": text }]));
         }
         _ => {
             obj.insert("role".into(), json!(msg.role));
-            let text = msg.content.iter().filter_map(|b| match b {
-                ContentBlock::Text(t) => Some(t.as_str()),
-                _ => None,
-            }).collect::<Vec<_>>().join("\n");
+            let text = msg
+                .content
+                .iter()
+                .filter_map(|b| match b {
+                    ContentBlock::Text(t) => Some(t.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
             obj.insert("content".into(), json!(text));
         }
     }
@@ -336,13 +393,22 @@ fn parse_sse_stream<R: Read>(
     // During streaming, content blocks arrive by index. We accumulate them incrementally.
     // content_blocks[index] = (type, id, name, text_accumulator, json_accumulator)
     enum AccumBlock {
-        Text(String),       // accumulating text
+        Text(String), // accumulating text
         /// Accumulating thinking text plus its signature. The signature arrives
         /// in `signature_delta` events (and occasionally on the start block) and
         /// must be preserved for replay — see [`ContentBlock::Thinking`].
-        Thinking { text: String, signature: String },
-        RedactedThinking { data: String },
-        ToolUse { id: String, name: String, input: String }, // accumulating JSON string for input
+        Thinking {
+            text: String,
+            signature: String,
+        },
+        RedactedThinking {
+            data: String,
+        },
+        ToolUse {
+            id: String,
+            name: String,
+            input: String,
+        }, // accumulating JSON string for input
     }
 
     let mut blocks: Vec<AccumBlock> = Vec::new();
@@ -358,7 +424,8 @@ fn parse_sse_stream<R: Read>(
         }
 
         line.clear();
-        let bytes_read = buf_reader.read_line(&mut line)
+        let bytes_read = buf_reader
+            .read_line(&mut line)
             .map_err(|e| ProviderError::Stream(e.to_string()))?;
         if bytes_read == 0 {
             break;
@@ -387,7 +454,10 @@ fn parse_sse_stream<R: Read>(
                     Some("thinking") => {
                         let thinking = block["thinking"].as_str().unwrap_or("");
                         let signature = block["signature"].as_str().unwrap_or("").to_string();
-                        blocks[index] = AccumBlock::Thinking { text: thinking.to_string(), signature };
+                        blocks[index] = AccumBlock::Thinking {
+                            text: thinking.to_string(),
+                            signature,
+                        };
                     }
                     Some("redacted_thinking") => {
                         let data = block["data"].as_str().unwrap_or("").to_string();
@@ -409,7 +479,11 @@ fn parse_sse_stream<R: Read>(
                             .as_object()
                             .map(|o| !o.is_empty())
                             .unwrap_or(false);
-                        let input = if prepopulated { input_val.to_string() } else { String::new() };
+                        let input = if prepopulated {
+                            input_val.to_string()
+                        } else {
+                            String::new()
+                        };
                         // The ToolCall event is emitted once, at content_block_stop,
                         // after the full input has been accumulated.
                         blocks[index] = AccumBlock::ToolUse { id, name, input };
@@ -460,14 +534,15 @@ fn parse_sse_stream<R: Read>(
                 // For tool_use, we send the event on start (not here) unless we're accumulating JSON.
                 // Actually, we need to send the ToolCall event here after accumulating all deltas.
                 if let Some(AccumBlock::ToolUse { id, name, input }) = &blocks.get(index)
-                    && !id.is_empty() {
-                        let parsed: Value = serde_json::from_str(input).unwrap_or(json!({}));
-                        sink.emit(AgentEvent::ToolCall {
-                            id: id.clone(),
-                            name: name.clone(),
-                            input: parsed,
-                        });
-                    }
+                    && !id.is_empty()
+                {
+                    let parsed: Value = serde_json::from_str(input).unwrap_or(json!({}));
+                    sink.emit(AgentEvent::ToolCall {
+                        id: id.clone(),
+                        name: name.clone(),
+                        input: parsed,
+                    });
+                }
             }
 
             SseEvent::MessageDelta(delta) => {
@@ -477,9 +552,14 @@ fn parse_sse_stream<R: Read>(
                 }
                 let usage_obj = delta.get("usage");
                 if let Some(u) = usage_obj {
-                    let input_tokens = u.get("input_tokens").and_then(Value::as_u64).unwrap_or(0) as u32;
-                    let output_tokens = u.get("output_tokens").and_then(Value::as_u64).unwrap_or(0) as u32;
-                    let cache_read = u.get("cache_read_input_tokens").and_then(Value::as_u64).map(|v| v as u32);
+                    let input_tokens =
+                        u.get("input_tokens").and_then(Value::as_u64).unwrap_or(0) as u32;
+                    let output_tokens =
+                        u.get("output_tokens").and_then(Value::as_u64).unwrap_or(0) as u32;
+                    let cache_read = u
+                        .get("cache_read_input_tokens")
+                        .and_then(Value::as_u64)
+                        .map(|v| v as u32);
                     usage = Some((input_tokens, output_tokens));
                     sink.emit(AgentEvent::Usage {
                         input_tokens,
@@ -505,20 +585,31 @@ fn parse_sse_stream<R: Read>(
     }
 
     // Convert accumulated blocks to TurnResult.
-    let content_blocks: Vec<ContentBlock> = blocks.into_iter().map(|b| match b {
-        AccumBlock::Text(t) => ContentBlock::Text(t),
-        AccumBlock::Thinking { text, signature } => ContentBlock::Thinking { text, signature },
-        AccumBlock::RedactedThinking { data } => ContentBlock::RedactedThinking { data },
-        AccumBlock::ToolUse { id, name, input } => {
-            let parsed: Value = serde_json::from_str(&input).unwrap_or(json!({}));
-            ContentBlock::ToolUse { id, name, input: parsed }
-        }
-    }).collect();
+    let content_blocks: Vec<ContentBlock> = blocks
+        .into_iter()
+        .map(|b| match b {
+            AccumBlock::Text(t) => ContentBlock::Text(t),
+            AccumBlock::Thinking { text, signature } => ContentBlock::Thinking { text, signature },
+            AccumBlock::RedactedThinking { data } => ContentBlock::RedactedThinking { data },
+            AccumBlock::ToolUse { id, name, input } => {
+                let parsed: Value = serde_json::from_str(&input).unwrap_or(json!({}));
+                ContentBlock::ToolUse {
+                    id,
+                    name,
+                    input: parsed,
+                }
+            }
+        })
+        .collect();
 
     // A "refusal" is a *successful* HTTP 200 with empty/partial content. Return
     // it as a normal turn so the agent loop can end gracefully and keep the
     // session usable, rather than aborting with a hard error.
-    Ok(TurnResult { content: content_blocks, stop_reason, usage })
+    Ok(TurnResult {
+        content: content_blocks,
+        stop_reason,
+        usage,
+    })
 }
 
 #[cfg(test)]
@@ -530,7 +621,9 @@ mod tests {
         events: Vec<AgentEvent>,
     }
     impl TestSink {
-        fn new() -> Self { TestSink { events: Vec::new() } }
+        fn new() -> Self {
+            TestSink { events: Vec::new() }
+        }
     }
     impl EventSink for TestSink {
         fn emit(&mut self, event: AgentEvent) {
@@ -610,7 +703,15 @@ mod tests {
         effort: &'a str,
         cancel: &'a AtomicBool,
     ) -> TurnRequest<'a> {
-        TurnRequest { system, tools, messages, max_tokens: 16000, no_thinking, effort, cancel }
+        TurnRequest {
+            system,
+            tools,
+            messages,
+            max_tokens: 16000,
+            no_thinking,
+            effort,
+            cancel,
+        }
     }
 
     #[test]
@@ -658,7 +759,10 @@ mod tests {
     fn empty_effort_omits_output_config() {
         let cancel = AtomicBool::new(false);
         let msgs = vec![Message::user("hello")];
-        let body = build_request_body(&req("SYS", &[], &msgs, false, "", &cancel), "claude-opus-4-8");
+        let body = build_request_body(
+            &req("SYS", &[], &msgs, false, "", &cancel),
+            "claude-opus-4-8",
+        );
         assert!(body.get("output_config").is_none());
         // thinking is still present when not disabled.
         assert_eq!(body["thinking"]["type"], "adaptive");
@@ -672,7 +776,10 @@ mod tests {
         let msgs = vec![
             Message::user("trace a flow"),
             Message::assistant(vec![
-                ContentBlock::Thinking { text: "let me think".into(), signature: "sig_abc".into() },
+                ContentBlock::Thinking {
+                    text: "let me think".into(),
+                    signature: "sig_abc".into(),
+                },
                 ContentBlock::ToolUse {
                     id: "tu_1".into(),
                     name: "atom_flows".into(),
@@ -681,7 +788,10 @@ mod tests {
             ]),
             Message::tool_result("tu_1", "{\"total\":2}", false),
         ];
-        let body = build_request_body(&req("SYS", &[], &msgs, false, "high", &cancel), "claude-opus-4-8");
+        let body = build_request_body(
+            &req("SYS", &[], &msgs, false, "high", &cancel),
+            "claude-opus-4-8",
+        );
         let assistant = &body["messages"][1];
         assert_eq!(assistant["role"], "assistant");
         let blocks = assistant["content"].as_array().unwrap();
@@ -703,12 +813,17 @@ mod tests {
         let msgs = vec![
             Message::user("analyze"),
             Message::assistant(vec![ContentBlock::ToolUse {
-                id: "tu_1".into(), name: "atom_query".into(), input: json!({"kind": "files"}),
+                id: "tu_1".into(),
+                name: "atom_query".into(),
+                input: json!({"kind": "files"}),
             }]),
             Message::tool_result("tu_1", "{\"total\":2}", false),
             Message::user("## Process Note\n**Confirmed:**\n  - SQLi in search"),
         ];
-        let body = build_request_body(&req("SYS", &[], &msgs, false, "high", &cancel), "claude-opus-4-8");
+        let body = build_request_body(
+            &req("SYS", &[], &msgs, false, "high", &cancel),
+            "claude-opus-4-8",
+        );
         let messages = body["messages"].as_array().unwrap();
         // user(analyze), assistant(tool_use), user(tool_result + note) = 3 turns, not 4.
         assert_eq!(messages.len(), 3, "consecutive user turns must be merged");
@@ -716,7 +831,12 @@ mod tests {
         let content = messages[2]["content"].as_array().unwrap();
         assert_eq!(content[0]["type"], "tool_result");
         assert_eq!(content[1]["type"], "text");
-        assert!(content[1]["text"].as_str().unwrap().contains("Process Note"));
+        assert!(
+            content[1]["text"]
+                .as_str()
+                .unwrap()
+                .contains("Process Note")
+        );
         // No two consecutive turns share a role.
         for w in messages.windows(2) {
             assert_ne!(w[0]["role"], w[1]["role"], "roles must alternate");
@@ -726,10 +846,14 @@ mod tests {
     #[test]
     fn thinking_block_without_signature_omits_field() {
         let cancel = AtomicBool::new(false);
-        let msgs = vec![Message::assistant(vec![
-            ContentBlock::Thinking { text: "t".into(), signature: String::new() },
-        ])];
-        let body = build_request_body(&req("SYS", &[], &msgs, false, "high", &cancel), "claude-opus-4-8");
+        let msgs = vec![Message::assistant(vec![ContentBlock::Thinking {
+            text: "t".into(),
+            signature: String::new(),
+        }])];
+        let body = build_request_body(
+            &req("SYS", &[], &msgs, false, "high", &cancel),
+            "claude-opus-4-8",
+        );
         let block = &body["messages"][0]["content"][0];
         assert_eq!(block["type"], "thinking");
         assert!(block.get("signature").is_none());
@@ -783,10 +907,25 @@ mod tests {
 
     #[test]
     fn normalize_url_various_inputs() {
-        assert_eq!(normalize_anthropic_url("https://api.deepseek.com"), "https://api.deepseek.com/v1/messages");
-        assert_eq!(normalize_anthropic_url("https://api.deepseek.com/anthropic"), "https://api.deepseek.com/anthropic/v1/messages");
-        assert_eq!(normalize_anthropic_url("https://api.deepseek.com/anthropic/v1/messages"), "https://api.deepseek.com/anthropic/v1/messages");
-        assert_eq!(normalize_anthropic_url("https://api.deepseek.com/v1"), "https://api.deepseek.com/v1/messages");
-        assert_eq!(normalize_anthropic_url("https://api.anthropic.com/v1/messages"), "https://api.anthropic.com/v1/messages");
+        assert_eq!(
+            normalize_anthropic_url("https://api.deepseek.com"),
+            "https://api.deepseek.com/v1/messages"
+        );
+        assert_eq!(
+            normalize_anthropic_url("https://api.deepseek.com/anthropic"),
+            "https://api.deepseek.com/anthropic/v1/messages"
+        );
+        assert_eq!(
+            normalize_anthropic_url("https://api.deepseek.com/anthropic/v1/messages"),
+            "https://api.deepseek.com/anthropic/v1/messages"
+        );
+        assert_eq!(
+            normalize_anthropic_url("https://api.deepseek.com/v1"),
+            "https://api.deepseek.com/v1/messages"
+        );
+        assert_eq!(
+            normalize_anthropic_url("https://api.anthropic.com/v1/messages"),
+            "https://api.anthropic.com/v1/messages"
+        );
     }
 }

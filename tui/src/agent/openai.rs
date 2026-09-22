@@ -5,16 +5,23 @@
 //! not already present in the URL.
 
 use super::provider::{
-    backoff_delay, interruptible_sleep, is_retryable_status, AgentEvent, ContentBlock, EventSink,
-    LlmProvider, Message, ProviderError, TurnRequest, TurnResult, MAX_SEND_ATTEMPTS,
+    AgentEvent, ContentBlock, EventSink, LlmProvider, MAX_SEND_ATTEMPTS, Message, ProviderError,
+    TurnRequest, TurnResult, backoff_delay, interruptible_sleep, is_retryable_status,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::io::{BufRead, BufReader, Read};
 use std::time::Duration;
 
 /// Parse a `Retry-After` header (delta-seconds form) into a duration.
 fn retry_after<T>(resp: &ureq::http::Response<T>) -> Option<Duration> {
-    let secs: u64 = resp.headers().get("retry-after")?.to_str().ok()?.trim().parse().ok()?;
+    let secs: u64 = resp
+        .headers()
+        .get("retry-after")?
+        .to_str()
+        .ok()?
+        .trim()
+        .parse()
+        .ok()?;
     Some(Duration::from_secs(secs.min(60)))
 }
 
@@ -35,7 +42,11 @@ impl OpenAIProvider {
     pub fn new(api_key: String, model: String, base_url: Option<String>) -> Self {
         let base_url = base_url.unwrap_or_else(|| "https://api.openai.com".into());
         let base_url = normalize_base_url(&base_url);
-        OpenAIProvider { api_key, model, base_url }
+        OpenAIProvider {
+            api_key,
+            model,
+            base_url,
+        }
     }
 }
 
@@ -54,9 +65,14 @@ fn normalize_base_url(url: &str) -> String {
 }
 
 impl LlmProvider for OpenAIProvider {
-    fn stream_turn(&self, req: &TurnRequest, sink: &mut dyn EventSink) -> Result<TurnResult, ProviderError> {
+    fn stream_turn(
+        &self,
+        req: &TurnRequest,
+        sink: &mut dyn EventSink,
+    ) -> Result<TurnResult, ProviderError> {
         let body = build_request_body(req, &self.model);
-        let body_bytes = serde_json::to_vec(&body).map_err(|e| ProviderError::Protocol(e.to_string()))?;
+        let body_bytes =
+            serde_json::to_vec(&body).map_err(|e| ProviderError::Protocol(e.to_string()))?;
 
         let agent: ureq::Agent = ureq::Agent::config_builder()
             .timeout_global(Some(HTTP_TIMEOUT))
@@ -104,7 +120,10 @@ impl LlmProvider for OpenAIProvider {
         if status_code >= 400 {
             let mut body = resp.into_body();
             let body_text = body.read_to_string().unwrap_or_default();
-            return Err(ProviderError::Api { status: status_code, body: body_text });
+            return Err(ProviderError::Api {
+                status: status_code,
+                body: body_text,
+            });
         }
 
         let reader = resp.into_body().into_reader();
@@ -117,7 +136,10 @@ fn build_request_body(req: &TurnRequest, model: &str) -> Value {
     let mut body = serde_json::Map::new();
 
     body.insert("model".into(), json!(model));
-    body.insert("max_tokens".into(), json!(req.max_tokens.max(DEFAULT_MAX_TOKENS)));
+    body.insert(
+        "max_tokens".into(),
+        json!(req.max_tokens.max(DEFAULT_MAX_TOKENS)),
+    );
     body.insert("stream".into(), json!(true));
 
     // Tools: convert from generic JSON Schema to OpenAI's function format.
@@ -156,54 +178,89 @@ fn message_to_openai(msg: &Message) -> Value {
     match msg.role.as_str() {
         "system" => {
             obj.insert("role".into(), json!("system"));
-            let text = msg.content.iter().filter_map(|b| match b {
-                ContentBlock::Text(t) => Some(t.as_str()),
-                _ => None,
-            }).collect::<Vec<_>>().join("\n");
+            let text = msg
+                .content
+                .iter()
+                .filter_map(|b| match b {
+                    ContentBlock::Text(t) => Some(t.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
             obj.insert("content".into(), json!(text));
         }
         "assistant" => {
             obj.insert("role".into(), json!("assistant"));
-            let text = msg.content.iter().filter_map(|b| match b {
-                ContentBlock::Text(t) => Some(t.as_str()),
-                _ => None,
-            }).collect::<Vec<_>>().join("");
-            obj.insert("content".into(), json!(if text.is_empty() { None::<String> } else { Some(text) }));
+            let text = msg
+                .content
+                .iter()
+                .filter_map(|b| match b {
+                    ContentBlock::Text(t) => Some(t.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("");
+            obj.insert(
+                "content".into(),
+                json!(if text.is_empty() {
+                    None::<String>
+                } else {
+                    Some(text)
+                }),
+            );
 
-            let tool_calls: Vec<Value> = msg.content.iter().filter_map(|b| match b {
-                ContentBlock::ToolUse { id, name, input } => Some(json!({
-                    "id": id,
-                    "type": "function",
-                    "function": {
-                        "name": name,
-                        "arguments": input.to_string(),
-                    }
-                })),
-                _ => None,
-            }).collect();
+            let tool_calls: Vec<Value> = msg
+                .content
+                .iter()
+                .filter_map(|b| match b {
+                    ContentBlock::ToolUse { id, name, input } => Some(json!({
+                        "id": id,
+                        "type": "function",
+                        "function": {
+                            "name": name,
+                            "arguments": input.to_string(),
+                        }
+                    })),
+                    _ => None,
+                })
+                .collect();
             if !tool_calls.is_empty() {
                 obj.insert("tool_calls".into(), json!(tool_calls));
             }
         }
         "tool_result" => {
             obj.insert("role".into(), json!("tool"));
-            let text = msg.content.iter().filter_map(|b| match b {
-                ContentBlock::Text(t) => Some(t.as_str()),
-                _ => None,
-            }).collect::<Vec<_>>().join("\n");
+            let text = msg
+                .content
+                .iter()
+                .filter_map(|b| match b {
+                    ContentBlock::Text(t) => Some(t.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
             // OpenAI's tool role has no `is_error` field, so signal failures
             // in-band — otherwise the model can't tell a failed call from an
             // empty success and won't self-correct.
-            let content = if msg.is_error { format!("ERROR: {text}") } else { text };
+            let content = if msg.is_error {
+                format!("ERROR: {text}")
+            } else {
+                text
+            };
             obj.insert("content".into(), json!(content));
             obj.insert("tool_call_id".into(), json!(msg.tool_call_id));
         }
         _ => {
             obj.insert("role".into(), json!(msg.role));
-            let text = msg.content.iter().filter_map(|b| match b {
-                ContentBlock::Text(t) => Some(t.as_str()),
-                _ => None,
-            }).collect::<Vec<_>>().join("\n");
+            let text = msg
+                .content
+                .iter()
+                .filter_map(|b| match b {
+                    ContentBlock::Text(t) => Some(t.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
             obj.insert("content".into(), json!(text));
         }
     }
@@ -253,7 +310,8 @@ fn parse_sse_stream<R: Read>(
         }
 
         line.clear();
-        let bytes_read = buf_reader.read_line(&mut line)
+        let bytes_read = buf_reader
+            .read_line(&mut line)
             .map_err(|e| ProviderError::Stream(e.to_string()))?;
         if bytes_read == 0 {
             break;
@@ -290,9 +348,10 @@ fn parse_sse_stream<R: Read>(
 
             // Role announcement (first chunk of an assistant turn).
             if let Some(role) = delta.get("role").and_then(Value::as_str)
-                && role == "assistant" {
-                    // Role marker; no text content yet.
-                }
+                && role == "assistant"
+            {
+                // Role marker; no text content yet.
+            }
 
             // Tool calls delta.
             if let Some(tcs) = delta.get("tool_calls").and_then(Value::as_array) {
@@ -317,16 +376,21 @@ fn parse_sse_stream<R: Read>(
 
             // Finish reason.
             if let Some(reason) = finish
-                && !reason.is_empty() && reason != "null" {
-                    stop_reason = reason.to_string();
-                    sink.emit(AgentEvent::StopReason(stop_reason.clone()));
-                }
+                && !reason.is_empty()
+                && reason != "null"
+            {
+                stop_reason = reason.to_string();
+                sink.emit(AgentEvent::StopReason(stop_reason.clone()));
+            }
         }
 
         // Usage info (may appear in the final chunk for some providers).
         if let Some(u) = chunk.get("usage") {
             let input_tokens = u.get("prompt_tokens").and_then(Value::as_u64).unwrap_or(0) as u32;
-            let output_tokens = u.get("completion_tokens").and_then(Value::as_u64).unwrap_or(0) as u32;
+            let output_tokens = u
+                .get("completion_tokens")
+                .and_then(Value::as_u64)
+                .unwrap_or(0) as u32;
             usage = Some((input_tokens, output_tokens));
             sink.emit(AgentEvent::Usage {
                 input_tokens,
@@ -359,10 +423,18 @@ fn parse_sse_stream<R: Read>(
     }
 
     if stop_reason.is_empty() {
-        stop_reason = if tool_calls.is_empty() { "stop".into() } else { "tool_calls".into() };
+        stop_reason = if tool_calls.is_empty() {
+            "stop".into()
+        } else {
+            "tool_calls".into()
+        };
     }
 
-    Ok(TurnResult { content, stop_reason, usage })
+    Ok(TurnResult {
+        content,
+        stop_reason,
+        usage,
+    })
 }
 
 #[cfg(test)]
@@ -373,7 +445,9 @@ mod tests {
         events: Vec<AgentEvent>,
     }
     impl TestSink {
-        fn new() -> Self { TestSink { events: Vec::new() } }
+        fn new() -> Self {
+            TestSink { events: Vec::new() }
+        }
     }
     impl EventSink for TestSink {
         fn emit(&mut self, event: AgentEvent) {
@@ -424,15 +498,36 @@ mod tests {
 
     #[test]
     fn normalize_base_url_handles_various_inputs() {
-        assert_eq!(normalize_base_url("https://api.openai.com"), "https://api.openai.com/v1/chat/completions");
-        assert_eq!(normalize_base_url("https://api.openai.com/v1"), "https://api.openai.com/v1/chat/completions");
-        assert_eq!(normalize_base_url("https://api.openai.com/v1/"), "https://api.openai.com/v1/chat/completions");
-        assert_eq!(normalize_base_url("https://api.openai.com/v1/chat/completions"), "https://api.openai.com/v1/chat/completions");
-        assert_eq!(normalize_base_url("http://localhost:11434/v1"), "http://localhost:11434/v1/chat/completions");
+        assert_eq!(
+            normalize_base_url("https://api.openai.com"),
+            "https://api.openai.com/v1/chat/completions"
+        );
+        assert_eq!(
+            normalize_base_url("https://api.openai.com/v1"),
+            "https://api.openai.com/v1/chat/completions"
+        );
+        assert_eq!(
+            normalize_base_url("https://api.openai.com/v1/"),
+            "https://api.openai.com/v1/chat/completions"
+        );
+        assert_eq!(
+            normalize_base_url("https://api.openai.com/v1/chat/completions"),
+            "https://api.openai.com/v1/chat/completions"
+        );
+        assert_eq!(
+            normalize_base_url("http://localhost:11434/v1"),
+            "http://localhost:11434/v1/chat/completions"
+        );
         // Non-`/v1` gateways: an explicit completions path is respected as-is.
-        assert_eq!(normalize_base_url("https://api.z.ai/api/coding/paas/v4/chat/completions"), "https://api.z.ai/api/coding/paas/v4/chat/completions");
+        assert_eq!(
+            normalize_base_url("https://api.z.ai/api/coding/paas/v4/chat/completions"),
+            "https://api.z.ai/api/coding/paas/v4/chat/completions"
+        );
         // A versioned base without a completions path still gets `/v1/chat/completions`.
-        assert_eq!(normalize_base_url("https://api.z.ai/api/coding/paas/v4"), "https://api.z.ai/api/coding/paas/v4/v1/chat/completions");
+        assert_eq!(
+            normalize_base_url("https://api.z.ai/api/coding/paas/v4"),
+            "https://api.z.ai/api/coding/paas/v4/v1/chat/completions"
+        );
     }
 
     #[test]
@@ -440,8 +535,17 @@ mod tests {
         let data = "data: {\"id\":\"1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hello\"},\"finish_reason\":null}]}\n";
         let reader = data.as_bytes();
         let mut sink = TestSink::new();
-        let result = parse_sse_stream(reader, &mut sink, &std::sync::atomic::AtomicBool::new(false)).unwrap();
-        assert!(sink.events.iter().any(|e| matches!(e, AgentEvent::TextDelta(t) if t == "Hello")));
+        let result = parse_sse_stream(
+            reader,
+            &mut sink,
+            &std::sync::atomic::AtomicBool::new(false),
+        )
+        .unwrap();
+        assert!(
+            sink.events
+                .iter()
+                .any(|e| matches!(e, AgentEvent::TextDelta(t) if t == "Hello"))
+        );
         assert_eq!(result.content.len(), 1);
         if let ContentBlock::Text(t) = &result.content[0] {
             assert_eq!(t, "Hello");
@@ -460,7 +564,12 @@ mod tests {
         );
         let reader = stream.as_bytes();
         let mut sink = TestSink::new();
-        let result = parse_sse_stream(reader, &mut sink, &std::sync::atomic::AtomicBool::new(false)).unwrap();
+        let result = parse_sse_stream(
+            reader,
+            &mut sink,
+            &std::sync::atomic::AtomicBool::new(false),
+        )
+        .unwrap();
         assert_eq!(result.stop_reason, "tool_calls");
         assert_eq!(result.content.len(), 1);
         if let ContentBlock::ToolUse { id, name, input } = &result.content[0] {
@@ -477,7 +586,12 @@ mod tests {
         let data = "data: [DONE]\n";
         let reader = data.as_bytes();
         let mut sink = TestSink::new();
-        let result = parse_sse_stream(reader, &mut sink, &std::sync::atomic::AtomicBool::new(false)).unwrap();
+        let result = parse_sse_stream(
+            reader,
+            &mut sink,
+            &std::sync::atomic::AtomicBool::new(false),
+        )
+        .unwrap();
         assert!(result.content.is_empty());
     }
 
@@ -489,7 +603,12 @@ mod tests {
                        data: {\"id\":\"1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n";
         let reader = stream.as_bytes();
         let mut sink = TestSink::new();
-        let result = parse_sse_stream(reader, &mut sink, &std::sync::atomic::AtomicBool::new(false)).unwrap();
+        let result = parse_sse_stream(
+            reader,
+            &mut sink,
+            &std::sync::atomic::AtomicBool::new(false),
+        )
+        .unwrap();
         assert_eq!(result.content.len(), 1);
         if let ContentBlock::Text(t) = &result.content[0] {
             assert_eq!(t, "Hello World");

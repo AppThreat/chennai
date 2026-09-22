@@ -17,7 +17,7 @@ pub use runner::{golem_report_path, run_golem};
 
 use crate::shared::backend::Backend;
 use crate::shared::make_tool;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// Context for golem analysis mode, holding the loaded report and analysis paths.
 #[derive(Clone)]
@@ -47,7 +47,9 @@ impl GolemCtx {
             "imports" => query::query_imports(&self.report.report, pattern, limit),
             "declarations" => query::query_declarations(&self.report.report, pattern, limit),
             "usages" => query::query_usages(&self.report.report, pattern, limit),
-            "security_signals" => query::query_security_signals(&self.report.report, pattern, limit),
+            "security_signals" => {
+                query::query_security_signals(&self.report.report, pattern, limit)
+            }
             "callgraph" => query::query_callgraph(&self.report.report, pattern, limit),
             "dataflow" => query::query_dataflow(&self.report.report, pattern, limit),
             "crypto" => query::query_crypto(&self.report.report, pattern),
@@ -56,7 +58,9 @@ impl GolemCtx {
             "sinks" => query::query_source_sink_categories(&self.report.report, "sinks"),
             "endpoints" | "api_endpoints" => query::query_endpoints(&self.report.report, pattern),
             "detail" => query::detail_declaration(&self.report.report, pattern.unwrap_or("")),
-            _ => format!("Unknown query kind '{kind}'. Valid kinds: packages, files, imports, declarations, usages, security_signals, callgraph, dataflow, crypto, flows, sources, sinks, endpoints, detail"),
+            _ => format!(
+                "Unknown query kind '{kind}'. Valid kinds: packages, files, imports, declarations, usages, security_signals, callgraph, dataflow, crypto, flows, sources, sinks, endpoints, detail"
+            ),
         }
     }
 
@@ -86,14 +90,30 @@ impl GolemCtx {
 }
 
 impl Backend for GolemCtx {
-    fn summary(&self) -> String { self.summary() }
-    fn query(&self, kind: &str, pattern: Option<&str>, limit: usize) -> String { self.query(kind, pattern, limit) }
-    fn backend_name(&self) -> &'static str { "golem" }
-    fn tool_definitions(&self) -> Vec<Value> { golem_tool_definitions() }
-    fn system_prompt(&self, summary_text: &str, bom_summary: Option<&str>, bom_components: Option<&str>, console_history: Option<&str>) -> String {
+    fn summary(&self) -> String {
+        self.summary()
+    }
+    fn query(&self, kind: &str, pattern: Option<&str>, limit: usize) -> String {
+        self.query(kind, pattern, limit)
+    }
+    fn backend_name(&self) -> &'static str {
+        "golem"
+    }
+    fn tool_definitions(&self) -> Vec<Value> {
+        golem_tool_definitions()
+    }
+    fn system_prompt(
+        &self,
+        summary_text: &str,
+        bom_summary: Option<&str>,
+        bom_components: Option<&str>,
+        console_history: Option<&str>,
+    ) -> String {
         build_golem_system_prompt(summary_text, bom_summary, bom_components, console_history)
     }
-    fn clone_box(&self) -> Box<dyn Backend> { Box::new(self.clone()) }
+    fn clone_box(&self) -> Box<dyn Backend> {
+        Box::new(self.clone())
+    }
 }
 
 /// Build the golem-specific system prompt for the LLM agent.

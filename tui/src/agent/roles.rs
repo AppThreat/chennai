@@ -57,7 +57,9 @@ pub fn project_roles_dir(base: &Path) -> PathBuf {
 
 /// Returns the user-global roles directory: `~/.config/chennai/agents/roles`.
 fn user_roles_dir() -> Option<PathBuf> {
-    let home = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")).ok()?;
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .ok()?;
     Some(
         PathBuf::from(home)
             .join(".config")
@@ -75,7 +77,11 @@ fn list_md_stems(dir: &Path) -> Vec<String> {
         for entry in entries.flatten() {
             let path = entry.path();
             let is_md = path.is_file() && path.extension().is_some_and(|ext| ext == "md");
-            if let Some(stem) = path.file_stem().and_then(|s| s.to_str()).filter(|s| is_md && is_valid_role_name(s)) {
+            if let Some(stem) = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .filter(|s| is_md && is_valid_role_name(s))
+            {
                 names.push(stem.to_string());
             }
         }
@@ -209,7 +215,10 @@ pub fn build_roles_section(base: &Path, role_subset: Option<&[String]>) -> Strin
     let discovered = discover_roles(base);
 
     let names: Vec<&String> = if let Some(subset) = role_subset {
-        subset.iter().filter(|n| discovered.contains_key(n.as_str())).collect()
+        subset
+            .iter()
+            .filter(|n| discovered.contains_key(n.as_str()))
+            .collect()
     } else {
         discovered.keys().collect()
     };
@@ -277,9 +286,18 @@ pub fn load_manifest(base: &Path) -> OrchestrateManifest {
     };
 
     OrchestrateManifest {
-        max_subagents: table.get("max_subagents").and_then(|v| v.as_integer()).map(|n| n as usize),
-        turn_budget: table.get("turn_budget").and_then(|v| v.as_integer()).map(|n| n as u64),
-        token_budget: table.get("token_budget").and_then(|v| v.as_integer()).map(|n| n as u64),
+        max_subagents: table
+            .get("max_subagents")
+            .and_then(|v| v.as_integer())
+            .map(|n| n as usize),
+        turn_budget: table
+            .get("turn_budget")
+            .and_then(|v| v.as_integer())
+            .map(|n| n as u64),
+        token_budget: table
+            .get("token_budget")
+            .and_then(|v| v.as_integer())
+            .map(|n| n as u64),
         roles: table.get("roles").and_then(|v| v.as_array()).map(|arr| {
             arr.iter()
                 .filter_map(|v| v.as_str().map(String::from))
@@ -483,7 +501,11 @@ mod tests {
         let project_dir = project_roles_dir(tmp.path());
         let _ = fs::create_dir_all(&project_dir);
         let project_file = project_dir.join("precedence-test.md");
-        fs::write(&project_file, "---\ntools: [atom_dsl_eval]\n---\nProject body").unwrap();
+        fs::write(
+            &project_file,
+            "---\ntools: [atom_dsl_eval]\n---\nProject body",
+        )
+        .unwrap();
 
         // Project-local should win.
         let role = resolve_role_impl(tmp.path(), "precedence-test", Some(user_dir.path())).unwrap();
@@ -628,7 +650,11 @@ orchestrator_prompt = "agents/orchestrator.md"
         assert_eq!(manifest.token_budget, Some(200_000));
         assert_eq!(
             manifest.roles,
-            Some(vec!["recon".into(), "sink-hunter".into(), "crypto-auditor".into()])
+            Some(vec![
+                "recon".into(),
+                "sink-hunter".into(),
+                "crypto-auditor".into()
+            ])
         );
         assert_eq!(
             manifest.orchestrator_prompt,
@@ -662,7 +688,11 @@ roles = ["recon", "BAD-NAME", "../traversal", "good-name"]
         let tmp = tempfile::tempdir().unwrap();
         let manifest_dir = tmp.path().join(".chen").join("agents");
         let _ = fs::create_dir_all(&manifest_dir);
-        fs::write(manifest_dir.join("orchestrate.toml"), "this is not [ valid toml {{{").unwrap();
+        fs::write(
+            manifest_dir.join("orchestrate.toml"),
+            "this is not [ valid toml {{{",
+        )
+        .unwrap();
 
         let manifest = load_manifest(tmp.path());
         assert!(manifest.max_subagents.is_none());

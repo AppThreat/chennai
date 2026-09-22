@@ -6,7 +6,7 @@ pub use loader::LoadedReport;
 pub use runner::{run_rusi, rusi_report_path};
 
 use crate::shared::backend::Backend;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 #[derive(Clone)]
 pub struct RusiCtx {
@@ -35,14 +35,18 @@ impl RusiCtx {
             "imports" => query::query_imports(&self.report.report, pattern, limit),
             "declarations" => query::query_declarations(&self.report.report, pattern, limit),
             "usages" => query::query_usages(&self.report.report, pattern, limit),
-            "security_signals" => query::query_security_signals(&self.report.report, pattern, limit),
+            "security_signals" => {
+                query::query_security_signals(&self.report.report, pattern, limit)
+            }
             "callgraph" => query::query_callgraph(&self.report.report, pattern, limit),
             "dataflow" => query::query_dataflow(&self.report.report, pattern, limit),
             "crypto" => query::query_crypto(&self.report.report, pattern),
             "detail" => query::detail_declaration(&self.report.report, pattern.unwrap_or("")),
             "flows" => query::query_dataflow(&self.report.report, pattern, limit),
             "endpoints" | "api_endpoints" => query::query_endpoints(&self.report.report, pattern),
-            _ => format!("Unknown query kind '{kind}'. Valid kinds: packages, files, imports, declarations, usages, security_signals, callgraph, dataflow, crypto, detail, flows, endpoints"),
+            _ => format!(
+                "Unknown query kind '{kind}'. Valid kinds: packages, files, imports, declarations, usages, security_signals, callgraph, dataflow, crypto, detail, flows, endpoints"
+            ),
         }
     }
 
@@ -68,14 +72,30 @@ impl RusiCtx {
 }
 
 impl Backend for RusiCtx {
-    fn summary(&self) -> String { self.summary() }
-    fn query(&self, kind: &str, pattern: Option<&str>, limit: usize) -> String { self.query(kind, pattern, limit) }
-    fn backend_name(&self) -> &'static str { "rusi" }
-    fn tool_definitions(&self) -> Vec<Value> { rusi_tool_definitions() }
-    fn system_prompt(&self, summary_text: &str, bom_summary: Option<&str>, bom_components: Option<&str>, console_history: Option<&str>) -> String {
+    fn summary(&self) -> String {
+        self.summary()
+    }
+    fn query(&self, kind: &str, pattern: Option<&str>, limit: usize) -> String {
+        self.query(kind, pattern, limit)
+    }
+    fn backend_name(&self) -> &'static str {
+        "rusi"
+    }
+    fn tool_definitions(&self) -> Vec<Value> {
+        rusi_tool_definitions()
+    }
+    fn system_prompt(
+        &self,
+        summary_text: &str,
+        bom_summary: Option<&str>,
+        bom_components: Option<&str>,
+        console_history: Option<&str>,
+    ) -> String {
         build_rusi_system_prompt(summary_text, bom_summary, bom_components, console_history)
     }
-    fn clone_box(&self) -> Box<dyn Backend> { Box::new(self.clone()) }
+    fn clone_box(&self) -> Box<dyn Backend> {
+        Box::new(self.clone())
+    }
 }
 
 /// Build the rusi-specific system prompt for the LLM agent.
@@ -552,13 +572,34 @@ mod tests {
 
     #[test]
     fn test_map_atom_to_rusi() {
-        assert_eq!(crate::app::map_atom_to_rusi_tool("atom_summary"), "rusi_summary");
-        assert_eq!(crate::app::map_atom_to_rusi_tool("atom_query"), "rusi_query");
-        assert_eq!(crate::app::map_atom_to_rusi_tool("atom_dsl_eval"), "rusi_query");
-        assert_eq!(crate::app::map_atom_to_rusi_tool("atom_flows"), "rusi_flows");
-        assert_eq!(crate::app::map_atom_to_rusi_tool("atom_flows_through"), "rusi_flows");
-        assert_eq!(crate::app::map_atom_to_rusi_tool("atom_detail"), "rusi_detail");
-        assert_eq!(crate::app::map_atom_to_rusi_tool("atom_algorithms"), "rusi_callgraph");
+        assert_eq!(
+            crate::app::map_atom_to_rusi_tool("atom_summary"),
+            "rusi_summary"
+        );
+        assert_eq!(
+            crate::app::map_atom_to_rusi_tool("atom_query"),
+            "rusi_query"
+        );
+        assert_eq!(
+            crate::app::map_atom_to_rusi_tool("atom_dsl_eval"),
+            "rusi_query"
+        );
+        assert_eq!(
+            crate::app::map_atom_to_rusi_tool("atom_flows"),
+            "rusi_flows"
+        );
+        assert_eq!(
+            crate::app::map_atom_to_rusi_tool("atom_flows_through"),
+            "rusi_flows"
+        );
+        assert_eq!(
+            crate::app::map_atom_to_rusi_tool("atom_detail"),
+            "rusi_detail"
+        );
+        assert_eq!(
+            crate::app::map_atom_to_rusi_tool("atom_algorithms"),
+            "rusi_callgraph"
+        );
         assert_eq!(crate::app::map_atom_to_rusi_tool("ripgrep"), "ripgrep");
     }
 
@@ -567,8 +608,12 @@ mod tests {
         // This test loads a real rusi report generated from the multi-file-app fixture.
         let report_path = std::path::Path::new("/tmp/multi-file-rusi.json");
         if !report_path.exists() {
-            eprintln!("Skipping integration test: /tmp/multi-file-rusi.json not found. Generate it with:");
-            eprintln!("  rusi analyze --dir rusi/fixtures/multi-file-app --callgraph static --dataflow security --out /tmp/multi-file-rusi.json --pretty");
+            eprintln!(
+                "Skipping integration test: /tmp/multi-file-rusi.json not found. Generate it with:"
+            );
+            eprintln!(
+                "  rusi analyze --dir rusi/fixtures/multi-file-app --callgraph static --dataflow security --out /tmp/multi-file-rusi.json --pretty"
+            );
             return;
         }
 

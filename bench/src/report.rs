@@ -157,7 +157,11 @@ impl ModeStats {
         };
 
         let total_wall: f64 = results.iter().map(|r| r.wall_secs).sum();
-        let mean_wall_secs = if num_cases > 0 { total_wall / num_cases as f64 } else { 0.0 };
+        let mean_wall_secs = if num_cases > 0 {
+            total_wall / num_cases as f64
+        } else {
+            0.0
+        };
 
         let total_turns: u64 = results.iter().map(|r| r.total_turns).sum();
         let mean_turns = if num_cases > 0 {
@@ -188,7 +192,14 @@ impl ModeStats {
 mod tests {
     use super::*;
 
-    fn make_score(case: &str, mode: &str, tp: usize, fp: usize, fn_count: usize, gt: usize) -> ScoreResult {
+    fn make_score(
+        case: &str,
+        mode: &str,
+        tp: usize,
+        fp: usize,
+        fn_count: usize,
+        gt: usize,
+    ) -> ScoreResult {
         ScoreResult {
             case: case.into(),
             mode: mode.into(),
@@ -198,7 +209,11 @@ mod tests {
             gt_total: gt,
             reported_total: tp + fp,
             recall: if gt > 0 { tp as f64 / gt as f64 } else { 1.0 },
-            fp_rate: if tp + fp > 0 { fp as f64 / (tp + fp) as f64 } else { 0.0 },
+            fp_rate: if tp + fp > 0 {
+                fp as f64 / (tp + fp) as f64
+            } else {
+                0.0
+            },
             tokens_per_confirmed: 100.0,
             total_tokens: 1000,
             total_turns: 10,

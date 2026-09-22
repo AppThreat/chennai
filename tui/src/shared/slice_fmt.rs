@@ -173,7 +173,11 @@ mod tests {
 
     #[test]
     fn test_make_tool() {
-        let tool = make_tool("test_tool", "A test tool", serde_json::json!({"type": "object", "properties": {}}));
+        let tool = make_tool(
+            "test_tool",
+            "A test tool",
+            serde_json::json!({"type": "object", "properties": {}}),
+        );
         assert_eq!(tool["name"].as_str(), Some("test_tool"));
         assert_eq!(tool["description"].as_str(), Some("A test tool"));
     }
@@ -195,13 +199,26 @@ mod tests {
 
     #[test]
     fn test_list_header_no_filter() {
-        let h = ListHeader { title: "Packages", total: 5, matched: 5, shown: 5 };
+        let h = ListHeader {
+            title: "Packages",
+            total: 5,
+            matched: 5,
+            shown: 5,
+        };
         assert_eq!(h.to_string(), "# Packages (5 total)");
     }
 
     #[test]
     fn test_list_header_filtered() {
-        let h = ListHeader { title: "Declarations", total: 100, matched: 10, shown: 10 };
-        assert_eq!(h.to_string(), "# Declarations (10 of 100 matched, showing first 10)");
+        let h = ListHeader {
+            title: "Declarations",
+            total: 100,
+            matched: 10,
+            shown: 10,
+        };
+        assert_eq!(
+            h.to_string(),
+            "# Declarations (10 of 100 matched, showing first 10)"
+        );
     }
 }

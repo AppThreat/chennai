@@ -94,7 +94,11 @@ impl Repl {
         if items.is_empty() {
             self.completion = None;
         } else {
-            self.completion = Some(Completion { items, selected: 0, start });
+            self.completion = Some(Completion {
+                items,
+                selected: 0,
+                start,
+            });
         }
     }
 
@@ -104,9 +108,10 @@ impl Repl {
 
     pub fn completion_down(&mut self) {
         if let Some(c) = &mut self.completion
-            && c.selected + 1 < c.items.len() {
-                c.selected += 1;
-            }
+            && c.selected + 1 < c.items.len()
+        {
+            c.selected += 1;
+        }
     }
 
     pub fn completion_up(&mut self) {
@@ -118,14 +123,15 @@ impl Repl {
     /// Accept the highlighted completion: replace the token `[start, cursor)` with the candidate.
     pub fn accept_completion(&mut self) {
         if let Some(c) = self.completion.take()
-            && let Some(item) = c.items.get(c.selected) {
-                let end = self.cursor.min(self.chars.len());
-                let start = c.start.min(end);
-                let replacement: Vec<char> = item.chars().collect();
-                self.chars.splice(start..end, replacement.iter().copied());
-                self.cursor = start + replacement.len();
-                self.hist_pos = None;
-            }
+            && let Some(item) = c.items.get(c.selected)
+        {
+            let end = self.cursor.min(self.chars.len());
+            let start = c.start.min(end);
+            let replacement: Vec<char> = item.chars().collect();
+            self.chars.splice(start..end, replacement.iter().copied());
+            self.cursor = start + replacement.len();
+            self.hist_pos = None;
+        }
     }
 
     /// Replace the current line, placing the cursor at the end.
@@ -153,7 +159,11 @@ impl Repl {
         if self.history.last().map(String::as_str) != Some(input) {
             self.history.push(input.to_string());
         }
-        self.entries.push(ReplEntry { input: input.to_string(), status, ok });
+        self.entries.push(ReplEntry {
+            input: input.to_string(),
+            status,
+            ok,
+        });
         self.hist_pos = None;
     }
 

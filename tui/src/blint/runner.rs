@@ -30,7 +30,10 @@ pub fn find_blint() -> Result<PathBuf, String> {
         return Ok(path);
     }
 
-    Err("blint CLI not found. Install with: uv tool install blint  or  pip install blint[extended]".to_string())
+    Err(
+        "blint CLI not found. Install with: uv tool install blint  or  pip install blint[extended]"
+            .to_string(),
+    )
 }
 
 /// Run blint analysis on a binary/APK/IPA file.
@@ -45,7 +48,11 @@ pub fn find_blint() -> Result<PathBuf, String> {
 /// `deep` analysis (disassembly, callgraph, SBOM) is slow and optional; set `deep` to
 /// `false` for a fast metadata-only scan.
 #[allow(dead_code)]
-pub fn run_blint(artifact_path: &Path, output_dir: &Path, deep: bool) -> Result<(PathBuf, Option<PathBuf>), String> {
+pub fn run_blint(
+    artifact_path: &Path,
+    output_dir: &Path,
+    deep: bool,
+) -> Result<(PathBuf, Option<PathBuf>), String> {
     let blint_bin = find_blint()?;
 
     std::fs::create_dir_all(output_dir)
@@ -89,7 +96,11 @@ pub fn run_blint(artifact_path: &Path, output_dir: &Path, deep: bool) -> Result<
             .status()
             .map(|s| s.success())
             .unwrap_or(false);
-        if ok && sbom_out.is_file() { Some(sbom_out) } else { None }
+        if ok && sbom_out.is_file() {
+            Some(sbom_out)
+        } else {
+            None
+        }
     } else {
         None
     };

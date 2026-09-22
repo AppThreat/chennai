@@ -65,12 +65,13 @@ impl CorpusCase {
     pub fn load(toml_path: &Path) -> Result<Self, Box<dyn std::error::Error>> {
         let content = std::fs::read_to_string(toml_path)
             .map_err(|e| format!("read {}: {e}", toml_path.display()))?;
-        let mut case: CorpusCase = toml::from_str(&content)
-            .map_err(|e| format!("parse {}: {e}", toml_path.display()))?;
+        let mut case: CorpusCase =
+            toml::from_str(&content).map_err(|e| format!("parse {}: {e}", toml_path.display()))?;
         // Derive the name from the parent directory if not set.
         if case.name.is_empty() {
             if let Some(parent) = toml_path.parent() {
-                case.name = parent.file_name()
+                case.name = parent
+                    .file_name()
                     .and_then(|n| n.to_str())
                     .unwrap_or("unknown")
                     .to_string();
@@ -134,10 +135,10 @@ mod tests {
 
     #[test]
     fn cwe_family_groups_injection_variants() {
-        assert_eq!(cwe_family("CWE-78"), "injection");  // OS Command
-        assert_eq!(cwe_family("CWE-89"), "injection");  // SQL
-        assert_eq!(cwe_family("CWE-90"), "injection");  // LDAP
-        assert_eq!(cwe_family("CWE-79"), "injection");   // XSS
+        assert_eq!(cwe_family("CWE-78"), "injection"); // OS Command
+        assert_eq!(cwe_family("CWE-89"), "injection"); // SQL
+        assert_eq!(cwe_family("CWE-90"), "injection"); // LDAP
+        assert_eq!(cwe_family("CWE-79"), "injection"); // XSS
     }
 
     #[test]

@@ -20,15 +20,30 @@ const fn cmd(
     pattern: Option<&'static str>,
     repl: &'static str,
 ) -> Command {
-    Command { label, kind, pattern, repl }
+    Command {
+        label,
+        kind,
+        pattern,
+        repl,
+    }
 }
 
 /// All commands, in the same order the summary rows are produced by the engine.
 pub const COMMANDS: &[Command] = &[
     cmd("Files", "files", None, "atom.file"),
     cmd("Methods", "methods", None, "atom.method"),
-    cmd("External methods", "externalMethods", None, "atom.method.external"),
-    cmd("Internal methods", "internalMethods", None, "atom.method.internal"),
+    cmd(
+        "External methods",
+        "externalMethods",
+        None,
+        "atom.method.external",
+    ),
+    cmd(
+        "Internal methods",
+        "internalMethods",
+        None,
+        "atom.method.internal",
+    ),
     cmd("Calls", "calls", None, "atom.call"),
     cmd("Namespaces", "namespaces", None, "atom.namespace"),
     cmd("Annotations", "annotations", None, "atom.annotation"),
@@ -41,16 +56,36 @@ pub const COMMANDS: &[Command] = &[
         Some("(validation|sanitization).*"),
         "atom.tag.name(\"(validation|sanitization).*\")",
     ),
-    cmd("Unique packages", "tags", Some("pkg.*"), "atom.tag.name(\"pkg.*\")"),
-    cmd("Framework tags", "tags", Some("framework.*"), "atom.tag.name(\"framework.*\")"),
+    cmd(
+        "Unique packages",
+        "tags",
+        Some("pkg.*"),
+        "atom.tag.name(\"pkg.*\")",
+    ),
+    cmd(
+        "Framework tags",
+        "tags",
+        Some("framework.*"),
+        "atom.tag.name(\"framework.*\")",
+    ),
     cmd(
         "Framework input",
         "tags",
         Some("framework-(input|route)"),
         "atom.tag.name(\"framework-(input|route)\")",
     ),
-    cmd("Framework output", "tags", Some("framework-output"), "atom.tag.name(\"framework-output\")"),
-    cmd("Crypto tags", "tags", Some("crypto.*"), "atom.tag.name(\"crypto.*\")"),
+    cmd(
+        "Framework output",
+        "tags",
+        Some("framework-output"),
+        "atom.tag.name(\"framework-output\")",
+    ),
+    cmd(
+        "Crypto tags",
+        "tags",
+        Some("crypto.*"),
+        "atom.tag.name(\"crypto.*\")",
+    ),
     cmd("Overlays", "overlays", None, "atom.metaData.overlays"),
 ];
 
@@ -97,19 +132,20 @@ pub fn parse(input: &str) -> Option<ResolvedQuery> {
 
     // Generic tag form: atom.tag.name("PATTERN")
     if let Some(rest) = s.strip_prefix("atom.tag.name(")
-        && let Some(inner) = rest.strip_suffix(')') {
-            let pattern = inner.trim().trim_matches('"').to_string();
-            return Some(ResolvedQuery {
-                kind: "tags".into(),
-                pattern: Some(pattern.clone()),
-                title: format!("Tags: {pattern}"),
-            });
-        }
+        && let Some(inner) = rest.strip_suffix(')')
+    {
+        let pattern = inner.trim().trim_matches('"').to_string();
+        return Some(ResolvedQuery {
+            kind: "tags".into(),
+            pattern: Some(pattern.clone()),
+            title: format!("Tags: {pattern}"),
+        });
+    }
 
     // Exact DSL / kind / label match against the registry.
-    let found = COMMANDS.iter().find(|c| {
-        c.repl == s || c.kind == s || c.label.eq_ignore_ascii_case(s)
-    });
+    let found = COMMANDS
+        .iter()
+        .find(|c| c.repl == s || c.kind == s || c.label.eq_ignore_ascii_case(s));
     found.map(|c| ResolvedQuery {
         kind: c.kind.to_string(),
         pattern: c.pattern.map(str::to_string),
@@ -131,7 +167,10 @@ mod tests {
 
     #[test]
     fn strips_trailing_dsl_suffixes() {
-        assert_eq!(parse("atom.method.external.toJson").unwrap().kind, "externalMethods");
+        assert_eq!(
+            parse("atom.method.external.toJson").unwrap().kind,
+            "externalMethods"
+        );
         assert_eq!(parse("atom.file.toList").unwrap().kind, "files");
         assert_eq!(parse("atom.call.l").unwrap().kind, "calls");
     }
@@ -170,7 +209,12 @@ mod tests {
         for c in COMMANDS {
             let q = parse(c.repl).unwrap_or_else(|| panic!("repl not parseable: {}", c.repl));
             assert_eq!(q.kind, c.kind, "kind mismatch for {}", c.label);
-            assert_eq!(q.pattern.as_deref(), c.pattern, "pattern mismatch for {}", c.label);
+            assert_eq!(
+                q.pattern.as_deref(),
+                c.pattern,
+                "pattern mismatch for {}",
+                c.label
+            );
         }
     }
 }

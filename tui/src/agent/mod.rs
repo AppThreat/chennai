@@ -8,19 +8,19 @@
 //! 4. Repeat until the model produces a final answer (end_turn / stop).
 
 pub mod anthropic;
+pub mod audit;
 pub mod debug_log;
+pub mod finding;
+pub mod memory;
 pub mod openai;
+pub mod orchestrator;
 pub mod process_note;
 pub mod provider;
 pub mod render;
+pub mod roles;
 pub mod shell;
 pub mod tools;
-pub mod finding;
-pub mod memory;
-pub mod audit;
-pub mod orchestrator;
 pub mod transcript;
-pub mod roles;
 pub use debug_log::DebugLogger;
 
 use crate::config::{Config, ProviderKind};
@@ -31,10 +31,10 @@ use process_note::ProcessNote;
 use provider::{
     AgentEvent, ChannelSink, ContentBlock, EventSink, LlmProvider, ProviderError, TurnRequest,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::path::Path;
-use std::sync::mpsc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use transcript::Transcript;
 
@@ -128,18 +128,27 @@ pub fn builtin_role(name: &str) -> Option<&'static str> {
 /// Read a user override role template if present.
 #[cfg(test)]
 fn user_override_role(name: &str) -> Option<String> {
-    let home = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")).ok()?;
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .ok()?;
     let path = std::path::Path::new(&home)
-        .join(".config").join("chennai").join("agents").join("roles")
+        .join(".config")
+        .join("chennai")
+        .join("agents")
+        .join("roles")
         .join(format!("{name}.md"));
     std::fs::read_to_string(path).ok()
 }
 
 /// Read a user override prompt file if present.
 fn user_override_prompt(cmd: &str) -> Option<String> {
-    let home = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")).ok()?;
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .ok()?;
     let path = std::path::Path::new(&home)
-        .join(".config").join("chennai").join("agents")
+        .join(".config")
+        .join("chennai")
+        .join("agents")
         .join(format!("{cmd}.md"));
     std::fs::read_to_string(path).ok()
 }
@@ -152,14 +161,29 @@ fn user_override_prompt(cmd: &str) -> Option<String> {
 /// Parsed frontmatter fields: `tools`, `effort`, `max_turns`, `description`.
 pub fn parse_frontmatter(raw: &str) -> SlashCommand {
     let trimmed = raw.trim_start_matches('\u{feff}');
-    let Some(rest) = trimmed.strip_prefix("---\n").or_else(|| trimmed.strip_prefix("---\r\n")) else {
-        return SlashCommand { body: raw.trim().to_string(), tools: None, effort: None, max_turns: None, description: None };
+    let Some(rest) = trimmed
+        .strip_prefix("---\n")
+        .or_else(|| trimmed.strip_prefix("---\r\n"))
+    else {
+        return SlashCommand {
+            body: raw.trim().to_string(),
+            tools: None,
+            effort: None,
+            max_turns: None,
+            description: None,
+        };
     };
 
     // Find the closing `---` delimiter line.
     let closing = rest.find("\n---").or_else(|| rest.find("\r\n---"));
     let Some(end) = closing else {
-        return SlashCommand { body: raw.trim().to_string(), tools: None, effort: None, max_turns: None, description: None };
+        return SlashCommand {
+            body: raw.trim().to_string(),
+            tools: None,
+            effort: None,
+            max_turns: None,
+            description: None,
+        };
     };
     let yaml_str = &rest[..end];
     let body_start = end + 4; // skip past "\n---" (or "\r\n---")
@@ -167,41 +191,72 @@ pub fn parse_frontmatter(raw: &str) -> SlashCommand {
 
     // Parse the YAML header with serde_yaml_ng.
     let Ok(yaml) = serde_yaml_ng::from_str::<serde_yaml_ng::Value>(yaml_str) else {
-        return SlashCommand { body, tools: None, effort: None, max_turns: None, description: None };
+        return SlashCommand {
+            body,
+            tools: None,
+            effort: None,
+            max_turns: None,
+            description: None,
+        };
     };
     let mapping = match yaml {
         serde_yaml_ng::Value::Mapping(ref m) => m,
-        _ => return SlashCommand { body, tools: None, effort: None, max_turns: None, description: None },
+        _ => {
+            return SlashCommand {
+                body,
+                tools: None,
+                effort: None,
+                max_turns: None,
+                description: None,
+            };
+        }
     };
 
-    let tools = mapping.get(serde_yaml_ng::Value::String("tools".into())).and_then(|v| {
-        let list: Vec<String> = match v {
-            serde_yaml_ng::Value::Sequence(seq) => {
-                seq.iter().filter_map(|item| item.as_str().map(|s| s.to_string())).collect()
-            }
-            serde_yaml_ng::Value::String(s) => {
-                // Fallback: parse inline YAML array syntax like "[a, b, c]"
-                let inner = s.trim_start_matches('[').trim_end_matches(']');
-                inner.split(',').map(|s| s.trim().trim_matches(['"', '\'']).to_string()).filter(|s| !s.is_empty()).collect()
-            }
-            _ => return None,
-        };
-        if list.is_empty() { None } else { Some(list) }
-    });
+    let tools = mapping
+        .get(serde_yaml_ng::Value::String("tools".into()))
+        .and_then(|v| {
+            let list: Vec<String> = match v {
+                serde_yaml_ng::Value::Sequence(seq) => seq
+                    .iter()
+                    .filter_map(|item| item.as_str().map(|s| s.to_string()))
+                    .collect(),
+                serde_yaml_ng::Value::String(s) => {
+                    // Fallback: parse inline YAML array syntax like "[a, b, c]"
+                    let inner = s.trim_start_matches('[').trim_end_matches(']');
+                    inner
+                        .split(',')
+                        .map(|s| s.trim().trim_matches(['"', '\'']).to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect()
+                }
+                _ => return None,
+            };
+            if list.is_empty() { None } else { Some(list) }
+        });
 
-    let effort = mapping.get(serde_yaml_ng::Value::String("effort".into())).and_then(|v| {
-        v.as_str().map(|s| s.to_string()).filter(|s| !s.is_empty())
-    });
+    let effort = mapping
+        .get(serde_yaml_ng::Value::String("effort".into()))
+        .and_then(|v| v.as_str().map(|s| s.to_string()).filter(|s| !s.is_empty()));
 
-    let max_turns = mapping.get(serde_yaml_ng::Value::String("max_turns".into())).and_then(|v| {
-        v.as_i64().and_then(|n| u32::try_from(n).ok()).filter(|&n| n > 0)
-    });
+    let max_turns = mapping
+        .get(serde_yaml_ng::Value::String("max_turns".into()))
+        .and_then(|v| {
+            v.as_i64()
+                .and_then(|n| u32::try_from(n).ok())
+                .filter(|&n| n > 0)
+        });
 
-    let description = mapping.get(serde_yaml_ng::Value::String("description".into())).and_then(|v| {
-        v.as_str().map(|s| s.to_string()).filter(|s| !s.is_empty())
-    });
+    let description = mapping
+        .get(serde_yaml_ng::Value::String("description".into()))
+        .and_then(|v| v.as_str().map(|s| s.to_string()).filter(|s| !s.is_empty()));
 
-    SlashCommand { body, tools, effort, max_turns, description }
+    SlashCommand {
+        body,
+        tools,
+        effort,
+        max_turns,
+        description,
+    }
 }
 
 /// Resolve the effective turn budget for a sub-agent role. The priority is:
@@ -251,22 +306,35 @@ pub const ROLE_TURN_DEFAULTS: &[(&str, u32)] = &[
 // Provider factory
 // ---------------------------------------------------------------------------
 
-pub fn create_provider(config: &Config) -> Result<Box<dyn LlmProvider + Send + Sync>, ProviderError> {
-    let key = config.api_key.as_ref().ok_or_else(|| ProviderError::Config(
-        "no API key configured; set ANTHROPIC_API_KEY or OPENAI_API_KEY".into()
-    ))?;
+pub fn create_provider(
+    config: &Config,
+) -> Result<Box<dyn LlmProvider + Send + Sync>, ProviderError> {
+    let key = config.api_key.as_ref().ok_or_else(|| {
+        ProviderError::Config(
+            "no API key configured; set ANTHROPIC_API_KEY or OPENAI_API_KEY".into(),
+        )
+    })?;
 
     match config.provider {
         ProviderKind::Anthropic => {
             if let Some(base_url) = &config.base_url {
-                Ok(Box::new(anthropic::AnthropicProvider::with_base_url(key.clone(), config.model.clone(), base_url.clone())))
+                Ok(Box::new(anthropic::AnthropicProvider::with_base_url(
+                    key.clone(),
+                    config.model.clone(),
+                    base_url.clone(),
+                )))
             } else {
-                Ok(Box::new(anthropic::AnthropicProvider::new(key.clone(), config.model.clone())))
+                Ok(Box::new(anthropic::AnthropicProvider::new(
+                    key.clone(),
+                    config.model.clone(),
+                )))
             }
         }
-        ProviderKind::OpenAI => {
-            Ok(Box::new(openai::OpenAIProvider::new(key.clone(), config.model.clone(), config.base_url.clone())))
-        }
+        ProviderKind::OpenAI => Ok(Box::new(openai::OpenAIProvider::new(
+            key.clone(),
+            config.model.clone(),
+            config.base_url.clone(),
+        ))),
     }
 }
 
@@ -364,7 +432,8 @@ impl AgentCtx {
         memory_index: Option<&str>,
         tags: Option<&str>,
     ) -> String {
-        let counts: String = summary_rows.iter()
+        let counts: String = summary_rows
+            .iter()
             .map(|r| format!("{}: {}", r.label, r.count))
             .collect::<Vec<_>>()
             .join("\n");
@@ -627,8 +696,10 @@ pub fn dispatch_tool(env: &ToolEnv, call_id: &str, name: &str, input: &Value) ->
                     // Nudge at the decision point: having just located call sites, the model tends
                     // to reach for read_file/ripgrep to "check reachability" by reading. Point it at
                     // the proof tool instead — a result-level hint lands better than a prompt rule.
-                    if name == "atom_callsites" && !res.is_error
-                        && let Some(n) = input.get("name").and_then(Value::as_str) {
+                    if name == "atom_callsites"
+                        && !res.is_error
+                        && let Some(n) = input.get("name").and_then(Value::as_str)
+                    {
                         res.content.push_str(&format!(
                             "\n\n_Next step to claim exploitability: PROVE reachability with \
                              atom_reaches {{name: {n:?}}} (or atom_flows_through). Do not infer \
@@ -637,7 +708,11 @@ pub fn dispatch_tool(env: &ToolEnv, call_id: &str, name: &str, input: &Value) ->
                     }
                     res
                 }
-                Err(msg) => ToolExecResult { call_id: call_id.into(), content: msg, is_error: true },
+                Err(msg) => ToolExecResult {
+                    call_id: call_id.into(),
+                    content: msg,
+                    is_error: true,
+                },
             }
         }
         // Reachability proof: compiles to `(sink).reachableByFlows(source)` and runs through the
@@ -645,12 +720,19 @@ pub fn dispatch_tool(env: &ToolEnv, call_id: &str, name: &str, input: &Value) ->
         "atom_reaches" => {
             match build_reaches_expr(input) {
                 Ok((expr, limit)) => {
-                    let mut res = engine_request(env, call_id, "flows", &json!({ "expr": expr, "limit": limit }));
+                    let mut res = engine_request(
+                        env,
+                        call_id,
+                        "flows",
+                        &json!({ "expr": expr, "limit": limit }),
+                    );
                     // An empty proof can mean "not reachable" OR "wrong source tags". The model
                     // tends to over-narrow sourceTags (e.g. only framework-input on a CLI app, where
                     // the untrusted source is cli-source). Before it concludes not-exploitable, point
                     // it at widening the source scope — but only when the caller actually narrowed it.
-                    let narrowed = input.get("sourceTags").and_then(Value::as_str)
+                    let narrowed = input
+                        .get("sourceTags")
+                        .and_then(Value::as_str)
                         .map(|t| !t.contains("cli-source") || !t.contains("framework-input"))
                         .unwrap_or(false);
                     if !res.is_error && narrowed && res.content.contains("0 flow(s) shown") {
@@ -663,31 +745,47 @@ pub fn dispatch_tool(env: &ToolEnv, call_id: &str, name: &str, input: &Value) ->
                     }
                     res
                 }
-                Err(msg) => ToolExecResult { call_id: call_id.into(), content: msg, is_error: true },
+                Err(msg) => ToolExecResult {
+                    call_id: call_id.into(),
+                    content: msg,
+                    is_error: true,
+                },
             }
         }
         "atom_detail" => engine_request(env, call_id, "detail", input),
         "atom_algorithms" => engine_request(env, call_id, "algo", input),
         "report_finding" => {
             if env.engine.is_none() {
-                ToolExecResult { call_id: call_id.into(), content: "engine not available for proof re-execution".into(), is_error: true }
+                ToolExecResult {
+                    call_id: call_id.into(),
+                    content: "engine not available for proof re-execution".into(),
+                    is_error: true,
+                }
             } else {
                 report_finding_dispatch(env, call_id, input)
             }
         }
         // Backend-specific tool dispatch: tools named <backend>_<command>
-        _ if name.starts_with("rusi_") => backend_dispatch(env, call_id, name.strip_prefix("rusi_").unwrap(), input),
-        _ if name.starts_with("golem_") => backend_dispatch(env, call_id, name.strip_prefix("golem_").unwrap(), input),
-        _ if name.starts_with("dosai_") => backend_dispatch(env, call_id, name.strip_prefix("dosai_").unwrap(), input),
-        _ if name.starts_with("blint_") => backend_dispatch(env, call_id, name.strip_prefix("blint_").unwrap(), input),
+        _ if name.starts_with("rusi_") => {
+            backend_dispatch(env, call_id, name.strip_prefix("rusi_").unwrap(), input)
+        }
+        _ if name.starts_with("golem_") => {
+            backend_dispatch(env, call_id, name.strip_prefix("golem_").unwrap(), input)
+        }
+        _ if name.starts_with("dosai_") => {
+            backend_dispatch(env, call_id, name.strip_prefix("dosai_").unwrap(), input)
+        }
+        _ if name.starts_with("blint_") => {
+            backend_dispatch(env, call_id, name.strip_prefix("blint_").unwrap(), input)
+        }
         "bom_query" => bom_query_dispatch(env, call_id, input),
         "project_memory" => memory::memory_dispatch(env.source_root, call_id, input),
         "process_note" => process_note_dispatch(env, call_id, input),
-        "ripgrep"   => wrap_result(call_id, shell::ripgrep(&source_root_path(env), input)),
+        "ripgrep" => wrap_result(call_id, shell::ripgrep(&source_root_path(env), input)),
         "read_file" => wrap_result(call_id, shell::read_file(&source_root_path(env), input)),
-        "git_diff"  => wrap_result(call_id, shell::git_diff(&source_root_path(env), input)),
-        "git_log"   => wrap_result(call_id, shell::git_log(&source_root_path(env), input)),
-        "git_show"  => wrap_result(call_id, shell::git_show(&source_root_path(env), input)),
+        "git_diff" => wrap_result(call_id, shell::git_diff(&source_root_path(env), input)),
+        "git_log" => wrap_result(call_id, shell::git_log(&source_root_path(env), input)),
+        "git_show" => wrap_result(call_id, shell::git_show(&source_root_path(env), input)),
         other => ToolExecResult {
             call_id: call_id.into(),
             content: format!("unknown tool: {other}"),
@@ -696,8 +794,9 @@ pub fn dispatch_tool(env: &ToolEnv, call_id: &str, name: &str, input: &Value) ->
     };
 
     if let Some(logger) = env.debug_logger
-        && DebugLogger::is_tracked(name) {
-            logger.log(name, input, &result.content, result.is_error);
+        && DebugLogger::is_tracked(name)
+    {
+        logger.log(name, input, &result.content, result.is_error);
     }
 
     result
@@ -722,7 +821,11 @@ fn backend_dispatch(env: &ToolEnv, call_id: &str, cmd: &str, input: &Value) -> T
                 cmd
             };
             let pattern = input.get("pattern").and_then(Value::as_str);
-            let limit = input.get("limit").and_then(Value::as_u64).unwrap_or(50).min(500) as usize;
+            let limit = input
+                .get("limit")
+                .and_then(Value::as_u64)
+                .unwrap_or(50)
+                .min(500) as usize;
             // For "detail", use pattern as the name lookup
             let name = input.get("name").and_then(Value::as_str);
             match name {
@@ -743,7 +846,11 @@ fn backend_dispatch(env: &ToolEnv, call_id: &str, cmd: &str, input: &Value) -> T
 fn traversal_docs_dispatch(call_id: &str, input: &Value) -> ToolExecResult {
     let root = input.get("root").and_then(Value::as_str).unwrap_or("all");
     let content = get_traversal_docs(root);
-    ToolExecResult { call_id: call_id.into(), content, is_error: false }
+    ToolExecResult {
+        call_id: call_id.into(),
+        content,
+        is_error: false,
+    }
 }
 
 /// Return the relevant documentation section for a given traversal root, step,
@@ -807,7 +914,10 @@ fn get_traversal_docs(root: &str) -> String {
         }
         // Fallback: return a snippet around the match.
         let end = (start + 200).min(DSL_OPERATIONS.len());
-        return format!("…{}\n\nUse `atom_traversal_docs` with a category name (e.g. `filter`, `repeat`) for the full reference.", DSL_OPERATIONS[start..end].trim());
+        return format!(
+            "…{}\n\nUse `atom_traversal_docs` with a category name (e.g. `filter`, `repeat`) for the full reference.",
+            DSL_OPERATIONS[start..end].trim()
+        );
     }
 
     format!(
@@ -860,14 +970,26 @@ fn bom_query_dispatch(env: &ToolEnv, call_id: &str, input: &Value) -> ToolExecRe
             }
             if store.loaded {
                 let mut lines: Vec<String> = Vec::new();
-                lines.push(format!("# BOM Components ({} total, {} filtered)", store.total_components, store.filtered_components_count()));
-                lines.push(format!("Dependencies: {} | Services: {}", store.total_dependencies, store.total_services));
+                lines.push(format!(
+                    "# BOM Components ({} total, {} filtered)",
+                    store.total_components,
+                    store.filtered_components_count()
+                ));
+                lines.push(format!(
+                    "Dependencies: {} | Services: {}",
+                    store.total_dependencies, store.total_services
+                ));
                 lines.push(String::new());
                 for idx in &store.filtered_component_indices {
                     if let Some(row) = store.components.get(*idx) {
-                        lines.push(format!("| {} | {} | {} | {} | {} |",
-                            row.type_display(), row.name_display(), row.version_display(),
-                            row.purl_display(), row.license_display()));
+                        lines.push(format!(
+                            "| {} | {} | {} | {} | {} |",
+                            row.type_display(),
+                            row.name_display(),
+                            row.version_display(),
+                            row.purl_display(),
+                            row.license_display()
+                        ));
                     }
                 }
                 lines.join("\n")
@@ -887,8 +1009,16 @@ fn bom_query_dispatch(env: &ToolEnv, call_id: &str, input: &Value) -> ToolExecRe
 
 fn wrap_result(call_id: &str, result: Result<String, String>) -> ToolExecResult {
     match result {
-        Ok(content) => ToolExecResult { call_id: call_id.into(), content, is_error: false },
-        Err(content) => ToolExecResult { call_id: call_id.into(), content, is_error: true },
+        Ok(content) => ToolExecResult {
+            call_id: call_id.into(),
+            content,
+            is_error: false,
+        },
+        Err(content) => ToolExecResult {
+            call_id: call_id.into(),
+            content,
+            is_error: true,
+        },
     }
 }
 
@@ -907,7 +1037,11 @@ fn dsl_str(pattern: &str) -> String {
 
 /// Read the `limit` argument (rows to return), clamped to a sane range with a default of 50.
 fn traversal_limit(input: &Value) -> i64 {
-    input.get("limit").and_then(Value::as_i64).unwrap_or(50).clamp(1, 1000)
+    input
+        .get("limit")
+        .and_then(Value::as_i64)
+        .unwrap_or(50)
+        .clamp(1, 1000)
 }
 
 /// Build the chen DSL expression for the `atom_callsites` / `atom_callgraph` / `atom_controlflow`
@@ -918,13 +1052,20 @@ fn traversal_limit(input: &Value) -> i64 {
 /// appends it) so results are bounded and free of duplicates.
 fn build_traversal_expr(tool: &str, input: &Value) -> Result<String, String> {
     let limit = traversal_limit(input);
-    let name = input.get("name").and_then(Value::as_str).filter(|s| !s.is_empty());
+    let name = input
+        .get("name")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty());
     match tool {
         "atom_callsites" => {
             // Call sites by callee short name (default) or by methodFullName.
             let expr = if let Some(n) = name {
                 format!("atom.call.name({})", dsl_str(n))
-            } else if let Some(fne) = input.get("fullName").and_then(Value::as_str).filter(|s| !s.is_empty()) {
+            } else if let Some(fne) = input
+                .get("fullName")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+            {
                 format!("atom.call.methodFullName({})", dsl_str(fne))
             } else {
                 return Err("atom_callsites requires 'name' (callee short name regex) or 'fullName' (methodFullName regex)".into());
@@ -939,24 +1080,38 @@ fn build_traversal_expr(tool: &str, input: &Value) -> Result<String, String> {
                 "callers" => "caller(using NoResolve)",
                 "callees" => "callee(using NoResolve)",
                 "calls" => "call",
-                other => return Err(format!(
-                    "atom_callgraph 'direction' must be callers|callees|calls, got '{other}'"
-                )),
+                other => {
+                    return Err(format!(
+                        "atom_callgraph 'direction' must be callers|callees|calls, got '{other}'"
+                    ));
+                }
             };
-            Ok(format!("atom.method.name({}).{step}.dedup.take({limit})", dsl_str(n)))
+            Ok(format!(
+                "atom.method.name({}).{step}.dedup.take({limit})",
+                dsl_str(n)
+            ))
         }
         "atom_controlflow" => {
             let relation = input.get("relation").and_then(Value::as_str).unwrap_or("");
             if !matches!(
                 relation,
-                "controls" | "controlledBy" | "dominates" | "dominatedBy" | "postDominates" | "postDominatedBy"
+                "controls"
+                    | "controlledBy"
+                    | "dominates"
+                    | "dominatedBy"
+                    | "postDominates"
+                    | "postDominatedBy"
             ) {
                 return Err(format!(
                     "atom_controlflow 'relation' must be controls|controlledBy|dominates|dominatedBy|postDominates|postDominatedBy, got '{relation}'"
                 ));
             }
             // Anchor the relation on a call matched by code (preferred) or by callee name.
-            let anchor = if let Some(code) = input.get("code").and_then(Value::as_str).filter(|s| !s.is_empty()) {
+            let anchor = if let Some(code) = input
+                .get("code")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+            {
                 format!("atom.call.code({})", dsl_str(code))
             } else if let Some(n) = name {
                 format!("atom.call.name({})", dsl_str(n))
@@ -977,13 +1132,28 @@ const DEFAULT_UNTRUSTED_TAGS: &str = "framework-input|framework-route|cli-source
 /// parameter/identifier/call nodes carrying any of the untrusted-source tags — mirroring the
 /// engine's own reachables collectors so a one-arg tool call proves a real taint path.
 fn build_reaches_expr(input: &Value) -> Result<(String, i64), String> {
-    let limit = input.get("limit").and_then(Value::as_i64).unwrap_or(20).clamp(1, 200);
-    let sink = if let Some(n) = input.get("name").and_then(Value::as_str).filter(|s| !s.is_empty()) {
+    let limit = input
+        .get("limit")
+        .and_then(Value::as_i64)
+        .unwrap_or(20)
+        .clamp(1, 200);
+    let sink = if let Some(n) = input
+        .get("name")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+    {
         format!("atom.call.name({})", dsl_str(n))
-    } else if let Some(code) = input.get("code").and_then(Value::as_str).filter(|s| !s.is_empty()) {
+    } else if let Some(code) = input
+        .get("code")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+    {
         format!("atom.call.code({})", dsl_str(code))
     } else {
-        return Err("atom_reaches requires 'name' (sink call name regex) or 'code' (sink call code regex)".into());
+        return Err(
+            "atom_reaches requires 'name' (sink call name regex) or 'code' (sink call code regex)"
+                .into(),
+        );
     };
     // Normalise a comma-delimited tag list to the regex-alternation the DSL expects.
     let tags_raw = input
@@ -1002,7 +1172,11 @@ fn build_reaches_expr(input: &Value) -> Result<(String, i64), String> {
 
 fn engine_request(env: &ToolEnv, call_id: &str, cmd: &str, input: &Value) -> ToolExecResult {
     let Some(engine_mutex) = env.engine else {
-        return ToolExecResult { call_id: call_id.into(), content: "engine not available".into(), is_error: true };
+        return ToolExecResult {
+            call_id: call_id.into(),
+            content: "engine not available".into(),
+            is_error: true,
+        };
     };
     let mut engine = engine_mutex.lock().unwrap();
     match engine.request::<Value>(cmd, input.clone()) {
@@ -1018,13 +1192,18 @@ fn engine_request(env: &ToolEnv, call_id: &str, cmd: &str, input: &Value) -> Too
             // JSON and it costs fewer tokens. Fall back to pretty JSON for shapes
             // the renderer doesn't model. The engine still receives `.toJson`
             // expressions; only the agent-facing rendering changes.
-            let text = render::render_engine_result(cmd, &data)
-                .unwrap_or_else(|| serde_json::to_string_pretty(&data).unwrap_or_else(|_| data.to_string()));
+            let text = render::render_engine_result(cmd, &data).unwrap_or_else(|| {
+                serde_json::to_string_pretty(&data).unwrap_or_else(|_| data.to_string())
+            });
             let mut content = truncate_content(&text, MAX_TOOL_RESULT_BYTES);
             if let Some(n) = note {
                 content = format!("{n}\n\n{content}");
             }
-            ToolExecResult { call_id: call_id.into(), content, is_error: false }
+            ToolExecResult {
+                call_id: call_id.into(),
+                content,
+                is_error: false,
+            }
         }
         Err(e) => {
             let mut content = redact_secrets(&format!("engine error: {e}"));
@@ -1035,7 +1214,11 @@ fn engine_request(env: &ToolEnv, call_id: &str, cmd: &str, input: &Value) -> Too
             if cmd == "eval" {
                 content.push_str(EVAL_ERROR_CHEATSHEET);
             }
-            ToolExecResult { call_id: call_id.into(), content, is_error: true }
+            ToolExecResult {
+                call_id: call_id.into(),
+                content,
+                is_error: true,
+            }
         }
     }
 }
@@ -1068,7 +1251,8 @@ fn analysis_unavailable_note(cmd: &str, data: &Value) -> Option<&'static str> {
     let empty_array = |v: &Value| v.as_array().map(|a| a.is_empty()).unwrap_or(false);
     let is_empty = match cmd {
         "flows" => {
-            empty_array(&data["flows"]) || empty_array(&data["rows"])
+            empty_array(&data["flows"])
+                || empty_array(&data["rows"])
                 || data.get("flows").is_none() && empty_array(&data["rows"])
         }
         "algo" => empty_array(&data["rows"]),
@@ -1083,13 +1267,19 @@ fn analysis_unavailable_note(cmd: &str, data: &Value) -> Option<&'static str> {
         return None;
     }
     Some(match cmd {
-        "flows" => "NOTE: No data-flow / reachability paths were found for this query. \
+        "flows" => {
+            "NOTE: No data-flow / reachability paths were found for this query. \
 This atom may lack data-flow analysis. Do NOT claim reachability you cannot trace — \
-present only source-text evidence and mark findings LOW confidence.",
-        "algo" => "NOTE: The graph algorithm returned no results (the relevant graph \
-projection appears empty). Do NOT infer structural/reachability properties from this.",
-        _ => "NOTE: No call-tree data is available for this node. Do NOT infer call \
-relationships you cannot ground in another tool result.",
+present only source-text evidence and mark findings LOW confidence."
+        }
+        "algo" => {
+            "NOTE: The graph algorithm returned no results (the relevant graph \
+projection appears empty). Do NOT infer structural/reachability properties from this."
+        }
+        _ => {
+            "NOTE: No call-tree data is available for this node. Do NOT infer call \
+relationships you cannot ground in another tool result."
+        }
     })
 }
 
@@ -1120,11 +1310,26 @@ pub fn redact_secrets(s: &str) -> String {
 /// secret suffix.  The check is case-insensitive.
 fn load_secret_env_values() -> Vec<String> {
     let suffixes = [
-        "token", "tokens",
-        "key", "keys", "api_key", "api_key_secret", "apikey",
-        "pass", "password", "passwd", "secret", "secrets",
-        "cred", "creds", "credential", "credentials",
-        "signing_key", "private_key", "access_key", "secret_key",
+        "token",
+        "tokens",
+        "key",
+        "keys",
+        "api_key",
+        "api_key_secret",
+        "apikey",
+        "pass",
+        "password",
+        "passwd",
+        "secret",
+        "secrets",
+        "cred",
+        "creds",
+        "credential",
+        "credentials",
+        "signing_key",
+        "private_key",
+        "access_key",
+        "secret_key",
     ];
     let mut values = Vec::new();
     for (name, val) in std::env::vars() {
@@ -1208,38 +1413,78 @@ fn floor_char_boundary(s: &str, max: usize) -> usize {
 fn report_finding_dispatch(env: &ToolEnv, call_id: &str, input: &Value) -> ToolExecResult {
     let findings_arc = match env.findings {
         Some(f) => f,
-        None => return ToolExecResult {
-            call_id: call_id.into(),
-            content: "findings accumulator not available".into(),
-            is_error: true,
-        },
+        None => {
+            return ToolExecResult {
+                call_id: call_id.into(),
+                content: "findings accumulator not available".into(),
+                is_error: true,
+            };
+        }
     };
 
-    let title = input.get("title").and_then(Value::as_str).unwrap_or("Untitled Finding");
-    let severity = finding::parse_severity(input.get("severity").and_then(Value::as_str).unwrap_or("Medium"));
+    let title = input
+        .get("title")
+        .and_then(Value::as_str)
+        .unwrap_or("Untitled Finding");
+    let severity = finding::parse_severity(
+        input
+            .get("severity")
+            .and_then(Value::as_str)
+            .unwrap_or("Medium"),
+    );
     let cwe = input.get("cwe").and_then(Value::as_str).map(String::from);
-    let mut confidence = finding::parse_confidence(input.get("confidence").and_then(Value::as_str).unwrap_or("Low"));
-    let remediation = input.get("remediation").and_then(Value::as_str).map(String::from);
-    let grounded_by = input.get("grounded_by").and_then(Value::as_str).map(String::from);
+    let mut confidence = finding::parse_confidence(
+        input
+            .get("confidence")
+            .and_then(Value::as_str)
+            .unwrap_or("Low"),
+    );
+    let remediation = input
+        .get("remediation")
+        .and_then(Value::as_str)
+        .map(String::from);
+    let grounded_by = input
+        .get("grounded_by")
+        .and_then(Value::as_str)
+        .map(String::from);
     // Accept sanitizers_checked as either a JSON array of strings or a single
     // comma/semicolon-separated string (the schema advertises a string).
     let sanitizers_checked: Vec<String> = match input.get("sanitizers_checked") {
-        Some(Value::Array(arr)) => arr.iter().filter_map(|v| v.as_str().map(String::from)).collect(),
-        Some(Value::String(s)) => s.split([',', ';'])
+        Some(Value::Array(arr)) => arr
+            .iter()
+            .filter_map(|v| v.as_str().map(String::from))
+            .collect(),
+        Some(Value::String(s)) => s
+            .split([',', ';'])
             .map(|p| p.trim().to_string())
             .filter(|p| !p.is_empty())
             .collect(),
         _ => Vec::new(),
     };
-    let proof_expr = input.get("proof_expr").and_then(Value::as_str).unwrap_or("");
+    let proof_expr = input
+        .get("proof_expr")
+        .and_then(Value::as_str)
+        .unwrap_or("");
 
     let source = match finding::parse_location(input.get("source")) {
         Ok(s) => s,
-        Err(e) => return ToolExecResult { call_id: call_id.into(), content: format!("bad source: {e}"), is_error: true },
+        Err(e) => {
+            return ToolExecResult {
+                call_id: call_id.into(),
+                content: format!("bad source: {e}"),
+                is_error: true,
+            };
+        }
     };
     let sink = match finding::parse_location(input.get("sink")) {
         Ok(s) => s,
-        Err(e) => return ToolExecResult { call_id: call_id.into(), content: format!("bad sink: {e}"), is_error: true },
+        Err(e) => {
+            return ToolExecResult {
+                call_id: call_id.into(),
+                content: format!("bad sink: {e}"),
+                is_error: true,
+            };
+        }
     };
 
     // ID generated deterministically so repeated submissions collide at dedupe.
@@ -1261,7 +1506,8 @@ fn report_finding_dispatch(env: &ToolEnv, call_id: &str, input: &Value) -> ToolE
             let engine = env.engine.filter(|_| !proof_expr.is_empty());
             if let Some(engine) = engine {
                 let mut eng = engine.lock().unwrap();
-                let engine_result = eng.request::<Value>("flows", json!({"expr": proof_expr, "limit": 5}));
+                let engine_result =
+                    eng.request::<Value>("flows", json!({"expr": proof_expr, "limit": 5}));
                 match engine_result {
                     Ok(data) => {
                         let count = finding::count_flow_paths(&data);
@@ -1325,18 +1571,24 @@ fn report_finding_dispatch(env: &ToolEnv, call_id: &str, input: &Value) -> ToolE
              do not claim a taint path the engine won't reproduce.",
         );
     }
-    ToolExecResult { call_id: call_id.into(), content, is_error: false }
+    ToolExecResult {
+        call_id: call_id.into(),
+        content,
+        is_error: false,
+    }
 }
 
 /// Dispatch a `process_note` tool call.
 fn process_note_dispatch(env: &ToolEnv, call_id: &str, input: &Value) -> ToolExecResult {
     let note_arc = match env.process_note {
         Some(n) => n,
-        None => return ToolExecResult {
-            call_id: call_id.into(),
-            content: "process_note not available".into(),
-            is_error: true,
-        },
+        None => {
+            return ToolExecResult {
+                call_id: call_id.into(),
+                content: "process_note not available".into(),
+                is_error: true,
+            };
+        }
     };
     let action = input.get("action").and_then(Value::as_str).unwrap_or("");
     let mut note = note_arc.lock().unwrap();
@@ -1348,31 +1600,65 @@ fn process_note_dispatch(env: &ToolEnv, call_id: &str, input: &Value) -> ToolExe
             } else {
                 rendered
             };
-            ToolExecResult { call_id: call_id.into(), content, is_error: false }
+            ToolExecResult {
+                call_id: call_id.into(),
+                content,
+                is_error: false,
+            }
         }
         "append" => {
             let field = input.get("field").and_then(Value::as_str).unwrap_or("");
-            let items: Vec<String> = input.get("items")
+            let items: Vec<String> = input
+                .get("items")
                 .and_then(Value::as_array)
-                .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect()
+                })
                 .unwrap_or_default();
             if items.is_empty() {
-                return ToolExecResult { call_id: call_id.into(), content: "'items' is required for append".into(), is_error: true };
+                return ToolExecResult {
+                    call_id: call_id.into(),
+                    content: "'items' is required for append".into(),
+                    is_error: true,
+                };
             }
             match note.append_to(field, &items) {
-                Ok(()) => ToolExecResult { call_id: call_id.into(), content: format!("Appended {} item(s) to '{}'.", items.len(), field), is_error: false },
-                Err(e) => ToolExecResult { call_id: call_id.into(), content: e, is_error: true },
+                Ok(()) => ToolExecResult {
+                    call_id: call_id.into(),
+                    content: format!("Appended {} item(s) to '{}'.", items.len(), field),
+                    is_error: false,
+                },
+                Err(e) => ToolExecResult {
+                    call_id: call_id.into(),
+                    content: e,
+                    is_error: true,
+                },
             }
         }
         "replace" => {
             let field = input.get("field").and_then(Value::as_str).unwrap_or("");
-            let items: Vec<String> = input.get("items")
+            let items: Vec<String> = input
+                .get("items")
                 .and_then(Value::as_array)
-                .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect()
+                })
                 .unwrap_or_default();
             match note.replace_field(field, &items) {
-                Ok(()) => ToolExecResult { call_id: call_id.into(), content: format!("Replaced '{}' with {} item(s).", field, items.len()), is_error: false },
-                Err(e) => ToolExecResult { call_id: call_id.into(), content: e, is_error: true },
+                Ok(()) => ToolExecResult {
+                    call_id: call_id.into(),
+                    content: format!("Replaced '{}' with {} item(s).", field, items.len()),
+                    is_error: false,
+                },
+                Err(e) => ToolExecResult {
+                    call_id: call_id.into(),
+                    content: e,
+                    is_error: true,
+                },
             }
         }
         other => ToolExecResult {
@@ -1384,7 +1670,9 @@ fn process_note_dispatch(env: &ToolEnv, call_id: &str, input: &Value) -> ToolExe
 }
 
 fn source_root_path(env: &ToolEnv) -> std::path::PathBuf {
-    env.source_root.map(std::path::PathBuf::from).unwrap_or_else(|| std::path::PathBuf::from("."))
+    env.source_root
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
 }
 
 /// An [`EventSink`] wrapper that records `AgentEvent::Usage` into a [`TokenLedger`]
@@ -1397,7 +1685,11 @@ struct TokenLedgerSink<S: EventSink> {
 
 impl<S: EventSink> EventSink for TokenLedgerSink<S> {
     fn emit(&mut self, event: AgentEvent) {
-        if let AgentEvent::Usage { input_tokens, output_tokens, cache_read_tokens } = &event
+        if let AgentEvent::Usage {
+            input_tokens,
+            output_tokens,
+            cache_read_tokens,
+        } = &event
             && let Ok(mut ledger) = self.ledger.lock()
         {
             ledger.record_usage(*input_tokens, *output_tokens, *cache_read_tokens);
@@ -1489,7 +1781,8 @@ pub fn run_agent(
         };
         if !note_text.is_empty() {
             // Remove any previous Process Note injection to avoid duplication.
-            transcript.remove_user_messages_starting_with(transcript::Transcript::PROCESS_NOTE_PREFIX);
+            transcript
+                .remove_user_messages_starting_with(transcript::Transcript::PROCESS_NOTE_PREFIX);
             transcript.push_user(&note_text);
         }
 
@@ -1529,14 +1822,19 @@ pub fn run_agent(
                 tx.send(AgentEvent::Error(
                     "The model declined this request. Security-adjacent prompts can trip a \
 safety classifier even for legitimate review — try rephrasing, e.g. frame it as an \
-authorized review of your own code.".into(),
-                )).ok();
+authorized review of your own code."
+                        .into(),
+                ))
+                .ok();
                 break;
             }
             "tool_use" | "tool_calls" => {
                 let tool_calls = transcript.last_tool_calls();
                 if tool_calls.is_empty() {
-                    tx.send(AgentEvent::Error("model requested tools but none found".into())).ok();
+                    tx.send(AgentEvent::Error(
+                        "model requested tools but none found".into(),
+                    ))
+                    .ok();
                     break;
                 }
 
@@ -1545,7 +1843,8 @@ authorized review of your own code.".into(),
                 // but shell tools (ripgrep, read_file, git) run fully concurrently.
                 let env = ctx.tool_env();
                 let results: Vec<ToolExecResult> = std::thread::scope(|scope| {
-                    tool_calls.iter()
+                    tool_calls
+                        .iter()
                         .filter(|_| !ctx.cancel.load(Ordering::Relaxed))
                         .map(|(call_id, name, input)| {
                             scope.spawn(|| dispatch_tool(&env, call_id, name, input))
@@ -1563,7 +1862,8 @@ authorized review of your own code.".into(),
                         id: result.call_id.clone(),
                         content: result.content.clone(),
                         is_error: result.is_error,
-                    }).ok();
+                    })
+                    .ok();
                 }
             }
             _ => {
@@ -1583,7 +1883,8 @@ authorized review of your own code.".into(),
     }
 
     // Persist the full transcript so the next prompt resumes with context.
-    tx.send(AgentEvent::History(transcript.messages().to_vec())).ok();
+    tx.send(AgentEvent::History(transcript.messages().to_vec()))
+        .ok();
     tx.send(AgentEvent::Done).ok();
 }
 
@@ -1609,11 +1910,18 @@ impl EventSink for HeadlessSink {
                 let input_str = serde_json::to_string(input).unwrap_or_default();
                 eprintln!("\n[TOOL CALL: {}({})]", name, input_str);
             }
-            AgentEvent::Usage { input_tokens, output_tokens, cache_read_tokens } => {
+            AgentEvent::Usage {
+                input_tokens,
+                output_tokens,
+                cache_read_tokens,
+            } => {
                 if let Ok(mut ledger) = self.ledger.lock() {
                     ledger.record_usage(*input_tokens, *output_tokens, *cache_read_tokens);
                 }
-                eprintln!("\n[Usage: {} in / {} out / {:?} cache]", input_tokens, output_tokens, cache_read_tokens);
+                eprintln!(
+                    "\n[Usage: {} in / {} out / {:?} cache]",
+                    input_tokens, output_tokens, cache_read_tokens
+                );
             }
             AgentEvent::StopReason(r) => {
                 eprintln!("\n[Stop reason: {}]", r);
@@ -1623,7 +1931,11 @@ impl EventSink for HeadlessSink {
     }
 }
 
-pub fn run_headless(ctx: &AgentCtx, input: &str, reports_dir: Option<&Path>) -> Result<String, Box<dyn std::error::Error>> {
+pub fn run_headless(
+    ctx: &AgentCtx,
+    input: &str,
+    reports_dir: Option<&Path>,
+) -> Result<String, Box<dyn std::error::Error>> {
     if ctx.orchestrate {
         return orchestrator::run_orchestrator(ctx, input, reports_dir);
     }
@@ -1649,7 +1961,9 @@ pub fn run_headless(ctx: &AgentCtx, input: &str, reports_dir: Option<&Path>) -> 
     let mut transcript = Transcript::new();
     transcript.push_user(input);
     let mut final_text = String::new();
-    let mut sink = HeadlessSink { ledger: ctx.token_ledger.clone() };
+    let mut sink = HeadlessSink {
+        ledger: ctx.token_ledger.clone(),
+    };
     let cancel: &AtomicBool = &ctx.cancel;
     let run_start = std::time::Instant::now();
 
@@ -1663,7 +1977,8 @@ pub fn run_headless(ctx: &AgentCtx, input: &str, reports_dir: Option<&Path>) -> 
             note.render()
         };
         if !note_text.is_empty() {
-            transcript.remove_user_messages_starting_with(transcript::Transcript::PROCESS_NOTE_PREFIX);
+            transcript
+                .remove_user_messages_starting_with(transcript::Transcript::PROCESS_NOTE_PREFIX);
             transcript.push_user(&note_text);
         }
 
@@ -1676,14 +1991,20 @@ pub fn run_headless(ctx: &AgentCtx, input: &str, reports_dir: Option<&Path>) -> 
                 no_thinking: ctx.no_thinking,
                 effort: &ctx.effort,
                 cancel,
-            }, &mut sink,
+            },
+            &mut sink,
         ) {
             Ok(r) => r,
-            Err(e) => { eprintln!("\n[Error: {e}]"); return Err(e.into()); }
+            Err(e) => {
+                eprintln!("\n[Error: {e}]");
+                return Err(e.into());
+            }
         };
 
         for block in &result.content {
-            if let ContentBlock::Text(t) = block { final_text.push_str(t); }
+            if let ContentBlock::Text(t) = block {
+                final_text.push_str(t);
+            }
         }
         transcript.push_assistant(result.content);
 
@@ -1737,7 +2058,9 @@ Be fast. Respond with ONLY a JSON array of objects {\"label\": button text <=80 
     struct CollectSink(String);
     impl EventSink for CollectSink {
         fn emit(&mut self, event: AgentEvent) {
-            if let AgentEvent::TextDelta(t) = event { self.0.push_str(&t); }
+            if let AgentEvent::TextDelta(t) = event {
+                self.0.push_str(&t);
+            }
         }
     }
     let mut sink = CollectSink(String::new());
@@ -1774,8 +2097,16 @@ fn parse_starter_questions(text: &str) -> Vec<(String, String)> {
     arr.iter()
         .take(4)
         .filter_map(|item| {
-            let label = item.get("label").and_then(Value::as_str).unwrap_or("").trim();
-            let command = item.get("command").and_then(Value::as_str).unwrap_or("").trim();
+            let label = item
+                .get("label")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .trim();
+            let command = item
+                .get("command")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .trim();
             (!label.is_empty() && !command.is_empty())
                 .then(|| (label.to_string(), command.to_string()))
         })
@@ -1804,13 +2135,14 @@ mod tests {
             &json!({"fullName": ".*os\\.system.*", "limit": 10}),
         )
         .unwrap();
-        assert_eq!(by_fn, "atom.call.methodFullName(\".*os\\\\.system.*\").dedup.take(10)");
+        assert_eq!(
+            by_fn,
+            "atom.call.methodFullName(\".*os\\\\.system.*\").dedup.take(10)"
+        );
         // name wins when both are present.
-        let both = build_traversal_expr(
-            "atom_callsites",
-            &json!({"name": "exec", "fullName": "x"}),
-        )
-        .unwrap();
+        let both =
+            build_traversal_expr("atom_callsites", &json!({"name": "exec", "fullName": "x"}))
+                .unwrap();
         assert!(both.starts_with("atom.call.name(\"exec\")"));
         // Missing both is an error.
         assert!(build_traversal_expr("atom_callsites", &json!({})).is_err());
@@ -1818,16 +2150,37 @@ mod tests {
 
     #[test]
     fn build_callgraph_injects_resolver_only_where_needed() {
-        let callers = build_traversal_expr("atom_callgraph", &json!({"name": "main", "direction": "callers"})).unwrap();
-        assert_eq!(callers, "atom.method.name(\"main\").caller(using NoResolve).dedup.take(50)");
-        let callees = build_traversal_expr("atom_callgraph", &json!({"name": "main", "direction": "callees"})).unwrap();
+        let callers = build_traversal_expr(
+            "atom_callgraph",
+            &json!({"name": "main", "direction": "callers"}),
+        )
+        .unwrap();
+        assert_eq!(
+            callers,
+            "atom.method.name(\"main\").caller(using NoResolve).dedup.take(50)"
+        );
+        let callees = build_traversal_expr(
+            "atom_callgraph",
+            &json!({"name": "main", "direction": "callees"}),
+        )
+        .unwrap();
         assert!(callees.contains("callee(using NoResolve)"));
         // `calls` (outgoing call sites) needs no resolver.
-        let calls = build_traversal_expr("atom_callgraph", &json!({"name": "main", "direction": "calls"})).unwrap();
+        let calls = build_traversal_expr(
+            "atom_callgraph",
+            &json!({"name": "main", "direction": "calls"}),
+        )
+        .unwrap();
         assert_eq!(calls, "atom.method.name(\"main\").call.dedup.take(50)");
         assert!(!calls.contains("NoResolve"));
         // Bad direction / missing name are errors.
-        assert!(build_traversal_expr("atom_callgraph", &json!({"name": "m", "direction": "bogus"})).is_err());
+        assert!(
+            build_traversal_expr(
+                "atom_callgraph",
+                &json!({"name": "m", "direction": "bogus"})
+            )
+            .is_err()
+        );
         assert!(build_traversal_expr("atom_callgraph", &json!({"direction": "callers"})).is_err());
     }
 
@@ -1838,17 +2191,31 @@ mod tests {
             &json!({"code": ".*strcmp.*", "relation": "controls"}),
         )
         .unwrap();
-        assert_eq!(by_code, "atom.call.code(\".*strcmp.*\").controls.dedup.take(50)");
+        assert_eq!(
+            by_code,
+            "atom.call.code(\".*strcmp.*\").controls.dedup.take(50)"
+        );
         // name anchor when code absent.
         let by_name = build_traversal_expr(
             "atom_controlflow",
             &json!({"name": "exit", "relation": "controlledBy"}),
         )
         .unwrap();
-        assert_eq!(by_name, "atom.call.name(\"exit\").controlledBy.dedup.take(50)");
+        assert_eq!(
+            by_name,
+            "atom.call.name(\"exit\").controlledBy.dedup.take(50)"
+        );
         // Invalid relation and missing anchor are errors.
-        assert!(build_traversal_expr("atom_controlflow", &json!({"code": "x", "relation": "nope"})).is_err());
-        assert!(build_traversal_expr("atom_controlflow", &json!({"relation": "controls"})).is_err());
+        assert!(
+            build_traversal_expr(
+                "atom_controlflow",
+                &json!({"code": "x", "relation": "nope"})
+            )
+            .is_err()
+        );
+        assert!(
+            build_traversal_expr("atom_controlflow", &json!({"relation": "controls"})).is_err()
+        );
     }
 
     #[test]
@@ -1857,7 +2224,11 @@ mod tests {
         assert_eq!(limit, 20);
         assert!(expr.starts_with("atom.call.name(\"(?i).*system\").reachableByFlows("));
         // Default untrusted tags, as a regex alternation, across parameter/identifier/call.
-        assert!(expr.contains("atom.tag.name(\"framework-input|framework-route|cli-source\").parameter"));
+        assert!(
+            expr.contains(
+                "atom.tag.name(\"framework-input|framework-route|cli-source\").parameter"
+            )
+        );
         assert!(expr.contains(".identifier"));
         assert!(expr.contains(".call"));
     }
@@ -1905,7 +2276,10 @@ mod tests {
 
     #[test]
     fn system_prompt_includes_summary_counts() {
-        let rows = vec![SummaryRow { label: "Files".into(), count: 42 }];
+        let rows = vec![SummaryRow {
+            label: "Files".into(),
+            count: 42,
+        }];
         let prompt = AgentCtx::build_system_prompt("C", "1.0", &rows, None, None, None, None, None);
         assert!(prompt.contains("Language: C"));
         assert!(prompt.contains("Files: 42"));
@@ -1914,9 +2288,18 @@ mod tests {
 
     #[test]
     fn system_prompt_includes_tags_section_when_provided() {
-        let rows = vec![SummaryRow { label: "Tags".into(), count: 10 }];
+        let rows = vec![SummaryRow {
+            label: "Tags".into(),
+            count: 10,
+        }];
         let prompt = AgentCtx::build_system_prompt(
-            "Python", "3.12", &rows, None, None, None, None,
+            "Python",
+            "3.12",
+            &rows,
+            None,
+            None,
+            None,
+            None,
             Some("cli-source(12)  framework-input(3)  sql(5)"),
         );
         assert!(prompt.contains("Tags present in THIS atom"));
@@ -1926,19 +2309,29 @@ mod tests {
 
     #[test]
     fn system_prompt_omits_tags_section_when_none() {
-        let rows = vec![SummaryRow { label: "Files".into(), count: 1 }];
+        let rows = vec![SummaryRow {
+            label: "Files".into(),
+            count: 1,
+        }];
         let prompt = AgentCtx::build_system_prompt("C", "1.0", &rows, None, None, None, None, None);
         assert!(!prompt.contains("Tags present in THIS atom"));
     }
 
     #[test]
     fn system_prompt_includes_bom_context() {
-        let rows = vec![SummaryRow { label: "Files".into(), count: 42 }];
+        let rows = vec![SummaryRow {
+            label: "Files".into(),
+            count: 42,
+        }];
         let prompt = AgentCtx::build_system_prompt(
-            "Python", "3.12", &rows,
+            "Python",
+            "3.12",
+            &rows,
             Some("components: 15 · dependencies: 42"),
             Some("  - library requests (2.31.0) pkg:pip/requests@2.31.0"),
-            None, None, None,
+            None,
+            None,
+            None,
         );
         assert!(prompt.contains("components: 15"));
         assert!(prompt.contains("Software Bill of Materials"));
@@ -1947,10 +2340,20 @@ mod tests {
 
     #[test]
     fn system_prompt_includes_memory_section_when_provided() {
-        let rows = vec![SummaryRow { label: "Files".into(), count: 42 }];
+        let rows = vec![SummaryRow {
+            label: "Files".into(),
+            count: 42,
+        }];
         let memory_index = "- [auth-boundary](auth-boundary.md) — auth in requireAuth\n- [sql-injection](sql-injection.md) — SQLi in search";
         let prompt = AgentCtx::build_system_prompt(
-            "Go", "1.21", &rows, None, None, None, Some(memory_index), None,
+            "Go",
+            "1.21",
+            &rows,
+            None,
+            None,
+            None,
+            Some(memory_index),
+            None,
         );
         assert!(prompt.contains("Project memory"));
         assert!(prompt.contains("auth-boundary"));
@@ -1960,18 +2363,24 @@ mod tests {
 
     #[test]
     fn system_prompt_omits_memory_section_when_none() {
-        let rows = vec![SummaryRow { label: "Files".into(), count: 42 }];
-        let prompt = AgentCtx::build_system_prompt(
-            "Go", "1.21", &rows, None, None, None, None, None,
-        );
+        let rows = vec![SummaryRow {
+            label: "Files".into(),
+            count: 42,
+        }];
+        let prompt =
+            AgentCtx::build_system_prompt("Go", "1.21", &rows, None, None, None, None, None);
         // The grounding rule mentions project memory but the section header should not appear.
         assert!(!prompt.contains("## Project memory (facts learned"));
     }
 
     #[test]
     fn system_prompt_includes_memory_grounding_rule() {
-        let rows = vec![SummaryRow { label: "Files".into(), count: 42 }];
-        let prompt = AgentCtx::build_system_prompt("Rust", "1.75", &rows, None, None, None, None, None);
+        let rows = vec![SummaryRow {
+            label: "Files".into(),
+            count: 42,
+        }];
+        let prompt =
+            AgentCtx::build_system_prompt("Rust", "1.75", &rows, None, None, None, None, None);
         assert!(prompt.contains("Project memory (facts stored under"));
         assert!(prompt.contains("re-verify every source ref"));
     }
@@ -1979,7 +2388,10 @@ mod tests {
     #[test]
     fn dispatch_tool_unknown_tool_returns_error() {
         let ctx = AgentCtx {
-            provider: Box::new(crate::agent::anthropic::AnthropicProvider::new("test".into(), "test".into())),
+            provider: Box::new(crate::agent::anthropic::AnthropicProvider::new(
+                "test".into(),
+                "test".into(),
+            )),
             engine: None,
             backend: None,
             source_root: None,
@@ -1999,7 +2411,12 @@ mod tests {
             turn_budget: 80,
             token_budget: 256_000,
         };
-        let result = dispatch_tool(&ctx.tool_env(), "id1", "nonexistent_tool", &serde_json::json!({}));
+        let result = dispatch_tool(
+            &ctx.tool_env(),
+            "id1",
+            "nonexistent_tool",
+            &serde_json::json!({}),
+        );
         assert!(result.is_error);
         assert!(result.content.contains("unknown tool"));
     }
@@ -2015,7 +2432,12 @@ mod tests {
             findings: None,
             process_note: Some(&note),
         };
-        let result = dispatch_tool(&env, "id1", "process_note", &serde_json::json!({"action": "get"}));
+        let result = dispatch_tool(
+            &env,
+            "id1",
+            "process_note",
+            &serde_json::json!({"action": "get"}),
+        );
         assert!(!result.is_error);
         assert!(result.content.contains("empty"));
     }
@@ -2031,13 +2453,23 @@ mod tests {
             findings: None,
             process_note: Some(&note),
         };
-        let append = dispatch_tool(&env, "id1", "process_note", &serde_json::json!({
-            "action": "append",
-            "field": "confirmed",
-            "items": ["SQL injection in search"]
-        }));
+        let append = dispatch_tool(
+            &env,
+            "id1",
+            "process_note",
+            &serde_json::json!({
+                "action": "append",
+                "field": "confirmed",
+                "items": ["SQL injection in search"]
+            }),
+        );
         assert!(!append.is_error, "{}", append.content);
-        let get = dispatch_tool(&env, "id2", "process_note", &serde_json::json!({"action": "get"}));
+        let get = dispatch_tool(
+            &env,
+            "id2",
+            "process_note",
+            &serde_json::json!({"action": "get"}),
+        );
         assert!(!get.is_error);
         assert!(get.content.contains("SQL injection in search"));
     }
@@ -2053,17 +2485,32 @@ mod tests {
             findings: None,
             process_note: Some(&note),
         };
-        dispatch_tool(&env, "id1", "process_note", &serde_json::json!({
-            "action": "append",
-            "field": "next_steps",
-            "items": ["old step"]
-        }));
-        dispatch_tool(&env, "id2", "process_note", &serde_json::json!({
-            "action": "replace",
-            "field": "next_steps",
-            "items": ["new step"]
-        }));
-        let get = dispatch_tool(&env, "id3", "process_note", &serde_json::json!({"action": "get"}));
+        dispatch_tool(
+            &env,
+            "id1",
+            "process_note",
+            &serde_json::json!({
+                "action": "append",
+                "field": "next_steps",
+                "items": ["old step"]
+            }),
+        );
+        dispatch_tool(
+            &env,
+            "id2",
+            "process_note",
+            &serde_json::json!({
+                "action": "replace",
+                "field": "next_steps",
+                "items": ["new step"]
+            }),
+        );
+        let get = dispatch_tool(
+            &env,
+            "id3",
+            "process_note",
+            &serde_json::json!({"action": "get"}),
+        );
         assert!(!get.is_error);
         assert!(get.content.contains("new step"));
         assert!(!get.content.contains("old step"));
@@ -2072,7 +2519,10 @@ mod tests {
     #[test]
     fn dispatch_tool_bom_query_without_source_returns_message() {
         let ctx = AgentCtx {
-            provider: Box::new(crate::agent::anthropic::AnthropicProvider::new("test".into(), "test".into())),
+            provider: Box::new(crate::agent::anthropic::AnthropicProvider::new(
+                "test".into(),
+                "test".into(),
+            )),
             engine: None,
             backend: None,
             source_root: None,
@@ -2092,7 +2542,12 @@ mod tests {
             turn_budget: 80,
             token_budget: 256_000,
         };
-        let result = dispatch_tool(&ctx.tool_env(), "id1", "bom_query", &serde_json::json!({"query": "express"}));
+        let result = dispatch_tool(
+            &ctx.tool_env(),
+            "id1",
+            "bom_query",
+            &serde_json::json!({"query": "express"}),
+        );
         assert!(!result.is_error);
         assert!(result.content.contains("BOM store not available"));
     }
@@ -2101,7 +2556,16 @@ mod tests {
     fn frontmatter_parsed_into_tools_and_effort() {
         let raw = "---\nname: security-review\ntools: [atom_summary, atom_flows, ripgrep]\neffort: xhigh\n---\n\n## Objective\nReview it.";
         let sc = parse_frontmatter(raw);
-        assert_eq!(sc.tools.as_deref(), Some(&["atom_summary".to_string(), "atom_flows".to_string(), "ripgrep".to_string()][..]));
+        assert_eq!(
+            sc.tools.as_deref(),
+            Some(
+                &[
+                    "atom_summary".to_string(),
+                    "atom_flows".to_string(),
+                    "ripgrep".to_string()
+                ][..]
+            )
+        );
         assert_eq!(sc.effort.as_deref(), Some("xhigh"));
         assert!(sc.body.starts_with("## Objective"));
         assert!(!sc.body.contains("name:"));
@@ -2119,7 +2583,16 @@ mod tests {
     fn frontmatter_supports_multi_line_yaml_lists() {
         let raw = "---\nname: security-review\ntools:\n  - atom_summary\n  - atom_flows\n  - ripgrep\neffort: xhigh\n---\n\n## Objective\nReview it.";
         let sc = parse_frontmatter(raw);
-        assert_eq!(sc.tools.as_deref(), Some(&["atom_summary".to_string(), "atom_flows".to_string(), "ripgrep".to_string()][..]));
+        assert_eq!(
+            sc.tools.as_deref(),
+            Some(
+                &[
+                    "atom_summary".to_string(),
+                    "atom_flows".to_string(),
+                    "ripgrep".to_string()
+                ][..]
+            )
+        );
         assert_eq!(sc.effort.as_deref(), Some("xhigh"));
         assert!(sc.body.starts_with("## Objective"));
     }
@@ -2129,7 +2602,10 @@ mod tests {
         // Format: tools:\n  [a, b, c] (inline array indented on next line)
         let raw = "---\ntools:\n  [atom_summary, atom_flows]\neffort: medium\n---\n\nBody.";
         let sc = parse_frontmatter(raw);
-        assert_eq!(sc.tools.as_deref(), Some(&["atom_summary".to_string(), "atom_flows".to_string()][..]));
+        assert_eq!(
+            sc.tools.as_deref(),
+            Some(&["atom_summary".to_string(), "atom_flows".to_string()][..])
+        );
         assert_eq!(sc.effort.as_deref(), Some("medium"));
     }
 
@@ -2137,17 +2613,32 @@ mod tests {
     fn builtin_slash_commands_parse() {
         // The compiled-in templates must have valid frontmatter.
         let sc = slash_command("security-review").expect("security-review exists");
-        assert!(sc.tools.as_ref().map(|t| t.contains(&"atom_flows".to_string())).unwrap_or(false));
+        assert!(
+            sc.tools
+                .as_ref()
+                .map(|t| t.contains(&"atom_flows".to_string()))
+                .unwrap_or(false)
+        );
         assert!(!sc.body.is_empty());
     }
 
     #[test]
     fn builtin_roles_parse_and_have_tools() {
-        for name in &["recon", "sink-hunter", "taint-prover", "auth-boundary", "supply-chain", "reporter"] {
+        for name in &[
+            "recon",
+            "sink-hunter",
+            "taint-prover",
+            "auth-boundary",
+            "supply-chain",
+            "reporter",
+        ] {
             let r = role(name).unwrap_or_else(|| panic!("role {name} should exist"));
             assert!(!r.body.is_empty(), "role {name} body must not be empty");
             assert!(r.tools.is_some(), "role {name} must have tools frontmatter");
-            assert!(!r.tools.as_ref().unwrap().is_empty(), "role {name} tools must not be empty");
+            assert!(
+                !r.tools.as_ref().unwrap().is_empty(),
+                "role {name} tools must not be empty"
+            );
             // Each role's tools must match the allowlist spec: verify recon has atom_query
             if *name == "recon" {
                 assert!(r.tools.as_ref().unwrap().contains(&"atom_query".into()));

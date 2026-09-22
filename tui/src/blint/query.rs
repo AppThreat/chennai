@@ -28,7 +28,7 @@
 //! | exports | `exports` / `symtab_symbols` | — | `exports` |
 //! | reviews wrapper | `reviews` array (not `capabilities`) | same | same |
 
-use crate::shared::{field_str, pattern_match, ListHeader};
+use crate::shared::{ListHeader, field_str, pattern_match};
 use serde_json::Value;
 
 /// Collect all symbols from `dynamic_symbols` and `symtab_symbols` (whichever exists).
@@ -81,16 +81,26 @@ fn collect_strings(metadata: &Value) -> Vec<(String, String)> {
 #[allow(dead_code)]
 fn binary_type(metadata: &Value) -> String {
     let bt = field_str(metadata, "binary_type");
-    if bt != "?" { return bt.to_string(); }
+    if bt != "?" {
+        return bt.to_string();
+    }
     let et = field_str(metadata, "exe_type");
-    if et != "?" { return et.to_string(); }
-    if metadata["callgraph"].is_object() { "binary".to_string() } else { "?".to_string() }
+    if et != "?" {
+        return et.to_string();
+    }
+    if metadata["callgraph"].is_object() {
+        "binary".to_string()
+    } else {
+        "?".to_string()
+    }
 }
 
 /// Extract the architecture string from flat metadata.
 fn architecture(metadata: &Value) -> String {
     let mt = field_str(metadata, "machine_type");
-    if mt != "?" { return mt.to_string(); }
+    if mt != "?" {
+        return mt.to_string();
+    }
     field_str(metadata, "cpu_type").to_string()
 }
 
@@ -106,14 +116,26 @@ pub fn extract_summary(
     let file_type = field_str(metadata, "file_type");
     let exe_type = field_str(metadata, "exe_type");
 
-    let funcs = metadata["functions"].as_array().map(|a| a.len()).unwrap_or(0);
+    let funcs = metadata["functions"]
+        .as_array()
+        .map(|a| a.len())
+        .unwrap_or(0);
     let imp_count = metadata["imports"].as_array().map(|a| a.len()).unwrap_or(0);
     let exp_count = metadata["exports"].as_array().map(|a| a.len()).unwrap_or(0);
     let syms = collect_symbols(metadata);
-    let dyn_entries = metadata["dynamic_entries"].as_array().map(|a| a.len()).unwrap_or(0);
+    let dyn_entries = metadata["dynamic_entries"]
+        .as_array()
+        .map(|a| a.len())
+        .unwrap_or(0);
     let strings_count = collect_strings(metadata).len();
-    let callgraph_nodes = metadata["callgraph"]["nodes"].as_array().map(|a| a.len()).unwrap_or(0);
-    let callgraph_edges = metadata["callgraph"]["edges"].as_array().map(|a| a.len()).unwrap_or(0);
+    let callgraph_nodes = metadata["callgraph"]["nodes"]
+        .as_array()
+        .map(|a| a.len())
+        .unwrap_or(0);
+    let callgraph_edges = metadata["callgraph"]["edges"]
+        .as_array()
+        .map(|a| a.len())
+        .unwrap_or(0);
 
     let mut lines: Vec<String> = Vec::new();
     lines.push(format!(
@@ -141,12 +163,17 @@ pub fn extract_summary(
     }
 
     // Android-specific
-    let behaviours = metadata["functions"].as_array().map(|a| {
-        a.iter().filter(|f| {
-            let name = f["name"].as_str().unwrap_or("");
-            name.contains("behaviour") || name.contains("permission")
-        }).count()
-    }).unwrap_or(0);
+    let behaviours = metadata["functions"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter(|f| {
+                    let name = f["name"].as_str().unwrap_or("");
+                    name.contains("behaviour") || name.contains("permission")
+                })
+                .count()
+        })
+        .unwrap_or(0);
     if behaviours > 0 {
         lines.push(format!("Behaviour-related functions: {behaviours}"));
     }
@@ -168,33 +195,59 @@ pub fn query_capabilities(reviews: &Option<Value>, pattern: Option<&str>, limit:
     if let Some(pat) = pattern {
         let pat_lower = pat.to_lowercase();
         matched.retain(|c| {
-            c["id"].as_str().unwrap_or("").to_lowercase().contains(&pat_lower)
-                || c["title"].as_str().unwrap_or("").to_lowercase().contains(&pat_lower)
-                || c["summary"].as_str().unwrap_or("").to_lowercase().contains(&pat_lower)
+            c["id"]
+                .as_str()
+                .unwrap_or("")
+                .to_lowercase()
+                .contains(&pat_lower)
+                || c["title"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_lowercase()
+                    .contains(&pat_lower)
+                || c["summary"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_lowercase()
+                    .contains(&pat_lower)
         });
     }
 
     let show = matched.iter().take(limit);
     let mut lines: Vec<String> = Vec::new();
-    lines.push(ListHeader { title: "Capabilities", total: caps.len(), matched: matched.len(), shown: show.len() }.to_string());
+    lines.push(
+        ListHeader {
+            title: "Capabilities",
+            total: caps.len(),
+            matched: matched.len(),
+            shown: show.len(),
+        }
+        .to_string(),
+    );
 
     for c in show {
         let id = field_str(c, "id");
         let title = field_str(c, "title");
         let severity = field_str(c, "severity");
         let summary = field_str(c, "summary");
-        let evidence = c["evidence"].as_array().map(|e| {
-            e.iter().filter_map(|v| {
-                let fn_name = v["function"].as_str();
-                let pattern = v["pattern"].as_str();
-                match (fn_name, pattern) {
-                    (Some(f), Some(p)) => Some(format!("{f} ({p})")),
-                    (Some(f), None) => Some(f.to_string()),
-                    (None, Some(p)) => Some(p.to_string()),
-                    _ => None,
-                }
-            }).collect::<Vec<_>>().join(", ")
-        }).unwrap_or_default();
+        let evidence = c["evidence"]
+            .as_array()
+            .map(|e| {
+                e.iter()
+                    .filter_map(|v| {
+                        let fn_name = v["function"].as_str();
+                        let pattern = v["pattern"].as_str();
+                        match (fn_name, pattern) {
+                            (Some(f), Some(p)) => Some(format!("{f} ({p})")),
+                            (Some(f), None) => Some(f.to_string()),
+                            (None, Some(p)) => Some(p.to_string()),
+                            _ => None,
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            })
+            .unwrap_or_default();
 
         lines.push(format!("  [{severity}] {id} — {title}"));
         if !summary.is_empty() && summary != "?" {
@@ -222,15 +275,35 @@ pub fn query_findings(findings: &Option<Value>, pattern: Option<&str>, limit: us
     if let Some(pat) = pattern {
         let pat_lower = pat.to_lowercase();
         matched.retain(|f| {
-            f["id"].as_str().unwrap_or("").to_lowercase().contains(&pat_lower)
-                || f["title"].as_str().unwrap_or("").to_lowercase().contains(&pat_lower)
-                || f["severity"].as_str().unwrap_or("").to_lowercase().contains(&pat_lower)
+            f["id"]
+                .as_str()
+                .unwrap_or("")
+                .to_lowercase()
+                .contains(&pat_lower)
+                || f["title"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_lowercase()
+                    .contains(&pat_lower)
+                || f["severity"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_lowercase()
+                    .contains(&pat_lower)
         });
     }
 
     let show = matched.iter().take(limit);
     let mut lines: Vec<String> = Vec::new();
-    lines.push(ListHeader { title: "Findings", total: finds.len(), matched: matched.len(), shown: show.len() }.to_string());
+    lines.push(
+        ListHeader {
+            title: "Findings",
+            total: finds.len(),
+            matched: matched.len(),
+            shown: show.len(),
+        }
+        .to_string(),
+    );
 
     for f in show {
         let id = field_str(f, "id");
@@ -241,7 +314,11 @@ pub fn query_findings(findings: &Option<Value>, pattern: Option<&str>, limit: us
         lines.push(format!("  [{severity}] {id} — {title}"));
         if !desc.is_empty() && desc != "?" {
             // Truncate long descriptions
-            let truncated = if desc.len() > 160 { format!("{}...", &desc[..157]) } else { desc.to_string() };
+            let truncated = if desc.len() > 160 {
+                format!("{}...", &desc[..157])
+            } else {
+                desc.to_string()
+            };
             lines.push(format!("         {truncated}"));
         }
     }
@@ -259,14 +336,30 @@ pub fn query_symbols(metadata: &Value, pattern: Option<&str>, limit: usize) -> S
     if let Some(pat) = pattern {
         let pat_lower = pat.to_lowercase();
         matched.retain(|s| {
-            s["name"].as_str().unwrap_or("").to_lowercase().contains(&pat_lower)
-                || s["type"].as_str().unwrap_or("").to_lowercase().contains(&pat_lower)
+            s["name"]
+                .as_str()
+                .unwrap_or("")
+                .to_lowercase()
+                .contains(&pat_lower)
+                || s["type"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_lowercase()
+                    .contains(&pat_lower)
         });
     }
 
     let show = matched.iter().take(limit);
     let mut lines: Vec<String> = Vec::new();
-    lines.push(ListHeader { title: "Symbols", total: matched.len(), matched: matched.len(), shown: show.len() }.to_string());
+    lines.push(
+        ListHeader {
+            title: "Symbols",
+            total: matched.len(),
+            matched: matched.len(),
+            shown: show.len(),
+        }
+        .to_string(),
+    );
 
     for s in show {
         let name = field_str(s, "name");
@@ -274,7 +367,13 @@ pub fn query_symbols(metadata: &Value, pattern: Option<&str>, limit: usize) -> S
         let binding = field_str(s, "binding");
         let is_imported = s["is_imported"].as_bool().unwrap_or(false);
         let is_exported = s["is_exported"].as_bool().unwrap_or(false);
-        let tag = if is_imported { "IMPORT" } else if is_exported { "EXPORT" } else { sym_type };
+        let tag = if is_imported {
+            "IMPORT"
+        } else if is_exported {
+            "EXPORT"
+        } else {
+            sym_type
+        };
         let addr = field_str(s, "address");
         lines.push(format!("  [{tag}] {name} @ {addr} ({binding})"));
     }
@@ -292,13 +391,22 @@ pub fn query_strings(metadata: &Value, pattern: Option<&str>, limit: usize) -> S
     if let Some(pat) = pattern {
         let pat_lower = pat.to_lowercase();
         matched.retain(|(value, category)| {
-            value.to_lowercase().contains(&pat_lower) || category.to_lowercase().contains(&pat_lower)
+            value.to_lowercase().contains(&pat_lower)
+                || category.to_lowercase().contains(&pat_lower)
         });
     }
 
     let show = matched.iter().take(limit);
     let mut lines: Vec<String> = Vec::new();
-    lines.push(ListHeader { title: "Strings", total: matched.len(), matched: matched.len(), shown: show.len() }.to_string());
+    lines.push(
+        ListHeader {
+            title: "Strings",
+            total: matched.len(),
+            matched: matched.len(),
+            shown: show.len(),
+        }
+        .to_string(),
+    );
 
     for (value, category) in show {
         lines.push(format!("  [{category}] {value}"));
@@ -321,15 +429,35 @@ pub fn query_components(sbom: &Option<Value>, pattern: Option<&str>, limit: usiz
     if let Some(pat) = pattern {
         let pat_lower = pat.to_lowercase();
         matched.retain(|c| {
-            c["name"].as_str().unwrap_or("").to_lowercase().contains(&pat_lower)
-                || c["purl"].as_str().unwrap_or("").to_lowercase().contains(&pat_lower)
-                || c["type"].as_str().unwrap_or("").to_lowercase().contains(&pat_lower)
+            c["name"]
+                .as_str()
+                .unwrap_or("")
+                .to_lowercase()
+                .contains(&pat_lower)
+                || c["purl"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_lowercase()
+                    .contains(&pat_lower)
+                || c["type"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_lowercase()
+                    .contains(&pat_lower)
         });
     }
 
     let show = matched.iter().take(limit);
     let mut lines: Vec<String> = Vec::new();
-    lines.push(ListHeader { title: "SBOM Components", total: comps.len(), matched: matched.len(), shown: show.len() }.to_string());
+    lines.push(
+        ListHeader {
+            title: "SBOM Components",
+            total: comps.len(),
+            matched: matched.len(),
+            shown: show.len(),
+        }
+        .to_string(),
+    );
 
     for c in show {
         let name = field_str(c, "name");
@@ -358,14 +486,14 @@ pub fn query_behaviours(sbom: &Option<Value>, pattern: Option<&str>, limit: usiz
         if let Some(props) = comp["properties"].as_array() {
             for prop in props {
                 if (prop["name"].as_str() == Some("internal:behaviours")
-                    || prop["name"].as_str().is_some_and(|n| n.contains("behaviour")))
+                    || prop["name"]
+                        .as_str()
+                        .is_some_and(|n| n.contains("behaviour")))
                     && let Some(val) = prop["value"].as_str()
-                        && pattern_match(val, pattern) {
-                            matched.push((
-                                field_str(comp, "name").to_string(),
-                                val.to_string(),
-                            ));
-                        }
+                    && pattern_match(val, pattern)
+                {
+                    matched.push((field_str(comp, "name").to_string(), val.to_string()));
+                }
             }
         }
     }
@@ -375,7 +503,10 @@ pub fn query_behaviours(sbom: &Option<Value>, pattern: Option<&str>, limit: usiz
     }
 
     let mut lines: Vec<String> = Vec::new();
-    lines.push(format!("# Detected Behaviours (showing first {})", limit.min(matched.len())));
+    lines.push(format!(
+        "# Detected Behaviours (showing first {})",
+        limit.min(matched.len())
+    ));
     for (comp, behaviour) in matched.iter().take(limit) {
         lines.push(format!("  {comp}: {behaviour}"));
     }
@@ -391,13 +522,50 @@ pub fn query_security_properties(metadata: &Value) -> String {
         None => {
             // Fallback: build from flat fields
             let flat: Vec<(&str, &str)> = vec![
-                ("nx", if metadata["has_nx"].as_bool() == Some(true) { "yes" } else if metadata["has_nx"].is_boolean() { "no" } else { "" }),
-                ("pie", if metadata["is_pie"].as_bool() == Some(true) { "yes" } else if metadata["is_pie"].is_boolean() { "no" } else { "" }),
+                (
+                    "nx",
+                    if metadata["has_nx"].as_bool() == Some(true) {
+                        "yes"
+                    } else if metadata["has_nx"].is_boolean() {
+                        "no"
+                    } else {
+                        ""
+                    },
+                ),
+                (
+                    "pie",
+                    if metadata["is_pie"].as_bool() == Some(true) {
+                        "yes"
+                    } else if metadata["is_pie"].is_boolean() {
+                        "no"
+                    } else {
+                        ""
+                    },
+                ),
                 ("relro", metadata["relro"].as_str().unwrap_or("")),
-                ("canary", if metadata["has_canary"].as_bool() == Some(true) { "yes" } else if metadata["has_canary"].is_boolean() { "no" } else { "" }),
-                ("stripped", if metadata["static"].as_bool() == Some(false) { "yes" } else if metadata["static"].is_boolean() { "no" } else { "" }),
+                (
+                    "canary",
+                    if metadata["has_canary"].as_bool() == Some(true) {
+                        "yes"
+                    } else if metadata["has_canary"].is_boolean() {
+                        "no"
+                    } else {
+                        ""
+                    },
+                ),
+                (
+                    "stripped",
+                    if metadata["static"].as_bool() == Some(false) {
+                        "yes"
+                    } else if metadata["static"].is_boolean() {
+                        "no"
+                    } else {
+                        ""
+                    },
+                ),
             ];
-            let filtered: Vec<(&str, &str)> = flat.into_iter().filter(|(_, v)| !v.is_empty()).collect();
+            let filtered: Vec<(&str, &str)> =
+                flat.into_iter().filter(|(_, v)| !v.is_empty()).collect();
             if filtered.is_empty() {
                 return "No security property data available.".to_string();
             }
@@ -434,7 +602,10 @@ fn node_id_key(v: &Value) -> Option<String> {
 }
 
 /// Resolve a node id to a human-readable label (`name @ address`, falling back to the id).
-fn resolve_node(id_map: &std::collections::HashMap<String, String>, edge_endpoint: &Value) -> String {
+fn resolve_node(
+    id_map: &std::collections::HashMap<String, String>,
+    edge_endpoint: &Value,
+) -> String {
     match node_id_key(edge_endpoint) {
         Some(k) => id_map.get(&k).cloned().unwrap_or(k),
         None => "?".to_string(),
@@ -443,7 +614,13 @@ fn resolve_node(id_map: &std::collections::HashMap<String, String>, edge_endpoin
 
 /// Render a single call graph (`{nodes, edges, external}`), resolving edge node-ids to
 /// names. `pattern` filters edges by either endpoint name; returns up to `limit` edges.
-fn render_callgraph(label: &str, cg: &Value, pattern: Option<&str>, limit: usize, out: &mut Vec<String>) {
+fn render_callgraph(
+    label: &str,
+    cg: &Value,
+    pattern: Option<&str>,
+    limit: usize,
+    out: &mut Vec<String>,
+) {
     let nodes = cg["nodes"].as_array().map(Vec::as_slice).unwrap_or(&[]);
     let edges = cg["edges"].as_array().map(Vec::as_slice).unwrap_or(&[]);
     let external = cg["external"].as_array().map(Vec::as_slice).unwrap_or(&[]);
@@ -463,7 +640,9 @@ fn render_callgraph(label: &str, cg: &Value, pattern: Option<&str>, limit: usize
 
     out.push(format!(
         "## {label} ({} nodes, {} edges, {} external)",
-        nodes.len(), edges.len(), external.len()
+        nodes.len(),
+        edges.len(),
+        external.len()
     ));
 
     let pat_lower = pattern.map(|p| p.to_lowercase());
@@ -473,7 +652,8 @@ fn render_callgraph(label: &str, cg: &Value, pattern: Option<&str>, limit: usize
         let src = resolve_node(&id_map, &edge["src"]);
         let dst = resolve_node(&id_map, &edge["dst"]);
         if let Some(ref pat) = pat_lower
-            && !src.to_lowercase().contains(pat) && !dst.to_lowercase().contains(pat)
+            && !src.to_lowercase().contains(pat)
+            && !dst.to_lowercase().contains(pat)
         {
             continue;
         }
@@ -484,15 +664,28 @@ fn render_callgraph(label: &str, cg: &Value, pattern: Option<&str>, limit: usize
         // Edge kind/confidence (direct/tailcall/indirect_hint) exist on native graphs,
         // not Dalvik; surface them only when present so triage can weight the evidence.
         let mut tags: Vec<String> = Vec::new();
-        if let Some(k) = edge["kind"].as_str() { tags.push(k.to_string()); }
-        if let Some(c) = edge["confidence"].as_str() { tags.push(c.to_string()); }
-        if let Some(cnt) = edge["count"].as_i64().filter(|&c| c > 1) { tags.push(format!("x{cnt}")); }
-        let suffix = if tags.is_empty() { String::new() } else { format!("  [{}]", tags.join(", ")) };
+        if let Some(k) = edge["kind"].as_str() {
+            tags.push(k.to_string());
+        }
+        if let Some(c) = edge["confidence"].as_str() {
+            tags.push(c.to_string());
+        }
+        if let Some(cnt) = edge["count"].as_i64().filter(|&c| c > 1) {
+            tags.push(format!("x{cnt}"));
+        }
+        let suffix = if tags.is_empty() {
+            String::new()
+        } else {
+            format!("  [{}]", tags.join(", "))
+        };
         out.push(format!("  {src} → {dst}{suffix}"));
         shown += 1;
     }
     if filtered > shown {
-        out.push(format!("  … {} more edges match (raise limit to see them)", filtered - shown));
+        out.push(format!(
+            "  … {} more edges match (raise limit to see them)",
+            filtered - shown
+        ));
     }
 
     // External (unresolved) call targets with their reason bucket — the systemic-miss view.
@@ -501,7 +694,10 @@ fn render_callgraph(label: &str, cg: &Value, pattern: Option<&str>, limit: usize
         for ext in external.iter().take(20) {
             let target = ext["target"].as_str().unwrap_or("?");
             let reason = ext["reason"].as_str().unwrap_or("unresolved");
-            let kind = ext["kind"].as_str().map(|k| format!(":{k}")).unwrap_or_default();
+            let kind = ext["kind"]
+                .as_str()
+                .map(|k| format!(":{k}"))
+                .unwrap_or_default();
             out.push(format!("    → {target} ({reason}{kind})"));
         }
     }
@@ -511,13 +707,21 @@ fn render_callgraph(label: &str, cg: &Value, pattern: Option<&str>, limit: usize
 /// surfaces edge kind/confidence (direct/tailcall/indirect_hint), and merges the
 /// Android Dalvik / iOS Mach-O sidecar graphs when present. `pattern` filters edges by
 /// either endpoint's function name.
-pub fn query_callgraph(metadata: &Value, extra: &[(String, Value)], pattern: Option<&str>, limit: usize) -> String {
+pub fn query_callgraph(
+    metadata: &Value,
+    extra: &[(String, Value)],
+    pattern: Option<&str>,
+    limit: usize,
+) -> String {
     let mut lines: Vec<String> = Vec::new();
 
     // Sidecars are the disassembly graphs for apk/ipa; when present prefer them over the
     // inline metadata["callgraph"] (which, for apk, duplicates the Dalvik sidecar).
     if !extra.is_empty() {
-        lines.push(format!("# Call Graphs from {} disassembled binary/binaries", extra.len()));
+        lines.push(format!(
+            "# Call Graphs from {} disassembled binary/binaries",
+            extra.len()
+        ));
         for (label, cg) in extra {
             render_callgraph(label, cg, pattern, limit, &mut lines);
         }
@@ -546,11 +750,18 @@ pub fn query_disassembly(metadata: &Value, pattern: Option<&str>, limit: usize) 
     }
 
     let pat_lower = pattern.map(|p| p.to_lowercase());
-    let mut matched: Vec<(&String, &Value)> = funcs.iter()
+    let mut matched: Vec<(&String, &Value)> = funcs
+        .iter()
         .filter(|(k, v)| {
-            let Some(ref pat) = pat_lower else { return true };
+            let Some(ref pat) = pat_lower else {
+                return true;
+            };
             k.to_lowercase().contains(pat)
-                || v["name"].as_str().unwrap_or("").to_lowercase().contains(pat)
+                || v["name"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_lowercase()
+                    .contains(pat)
         })
         .collect();
     // Most-instructions-first puts the substantive functions at the top.
@@ -558,7 +769,11 @@ pub fn query_disassembly(metadata: &Value, pattern: Option<&str>, limit: usize) 
 
     let total = matched.len();
     let mut lines: Vec<String> = Vec::new();
-    lines.push(format!("# Disassembled functions ({} total, {} shown)", total, total.min(limit)));
+    lines.push(format!(
+        "# Disassembled functions ({} total, {} shown)",
+        total,
+        total.min(limit)
+    ));
 
     for (_, f) in matched.into_iter().take(limit) {
         let name = f["name"].as_str().unwrap_or("?");
@@ -575,23 +790,34 @@ pub fn query_disassembly(metadata: &Value, pattern: Option<&str>, limit: usize) 
             ("has_loop", "loop"),
             ("has_pac", "pac"),
         ] {
-            if f[key].as_bool().unwrap_or(false) { flags.push(tag); }
+            if f[key].as_bool().unwrap_or(false) {
+                flags.push(tag);
+            }
         }
 
         let mut header = format!("  {name} @ {addr} ({icount} instr)");
-        if let Some(t) = ftype { header.push_str(&format!(" [{t}]")); }
-        if !flags.is_empty() { header.push_str(&format!(" {{{}}}", flags.join(", "))); }
+        if let Some(t) = ftype {
+            header.push_str(&format!(" [{t}]"));
+        }
+        if !flags.is_empty() {
+            header.push_str(&format!(" {{{}}}", flags.join(", ")));
+        }
         lines.push(header);
 
         // Resolved direct callees — the per-function edge list, useful even without the
         // top-level callgraph (e.g. when only a few functions were disassembled).
-        let callees: Vec<&str> = f["direct_calls"].as_array()
+        let callees: Vec<&str> = f["direct_calls"]
+            .as_array()
             .map(|a| a.iter().filter_map(|c| c.as_str()).collect())
             .unwrap_or_default();
         if !callees.is_empty() {
             let head: Vec<&str> = callees.iter().take(8).copied().collect();
             let more = callees.len().saturating_sub(head.len());
-            let suffix = if more > 0 { format!(", +{more} more") } else { String::new() };
+            let suffix = if more > 0 {
+                format!(", +{more} more")
+            } else {
+                String::new()
+            };
             lines.push(format!("      calls: {}{}", head.join(", "), suffix));
         }
     }
@@ -704,7 +930,12 @@ mod tests {
 
     #[test]
     fn test_extract_summary_native() {
-        let summary = extract_summary(&native_metadata(), &Some(test_findings()), &Some(test_reviews()), Some(&test_sbom()));
+        let summary = extract_summary(
+            &native_metadata(),
+            &Some(test_findings()),
+            &Some(test_reviews()),
+            Some(&test_sbom()),
+        );
         assert!(summary.contains("ELF"));
         assert!(summary.contains("AARCH64"));
         assert!(summary.contains("Symbols: 2"));
@@ -809,7 +1040,10 @@ mod tests {
         // Edge src=1 resolves to node 1's name ("Foo::bar"); dst=2 is unknown -> raw id.
         let result = query_callgraph(&dex_metadata(), &[], None, 50);
         assert!(result.contains("Call Graph"));
-        assert!(result.contains("Foo::bar → 2"), "edge ids should resolve to names: {result}");
+        assert!(
+            result.contains("Foo::bar → 2"),
+            "edge ids should resolve to names: {result}"
+        );
     }
 
     #[test]
@@ -825,7 +1059,10 @@ mod tests {
         let extra = vec![("com.example.apk".to_string(), dex)];
         let result = query_callgraph(&metadata, &extra, None, 50);
         assert!(result.contains("com.example.apk"));
-        assert!(result.contains("La/A;->caller()V → Lb/B;->callee()V"), "{result}");
+        assert!(
+            result.contains("La/A;->caller()V → Lb/B;->callee()V"),
+            "{result}"
+        );
     }
 
     #[test]

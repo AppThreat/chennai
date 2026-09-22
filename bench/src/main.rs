@@ -19,7 +19,10 @@ use std::time::Instant;
 
 /// Benchmark harness for chennai.
 #[derive(Parser, Debug)]
-#[command(name = "chennai-bench", about = "Benchmark harness for chennai analysis quality")]
+#[command(
+    name = "chennai-bench",
+    about = "Benchmark harness for chennai analysis quality"
+)]
 struct Args {
     #[command(subcommand)]
     command: Command,
@@ -291,10 +294,7 @@ fn cmd_run(
                             error: if output.status.success() {
                                 None
                             } else {
-                                Some(format!(
-                                    "exit code {}",
-                                    output.status.code().unwrap_or(-1)
-                                ))
+                                Some(format!("exit code {}", output.status.code().unwrap_or(-1)))
                             },
                         }
                     }
@@ -335,10 +335,11 @@ fn cmd_score(
         .map(|p| p.join("corpus"))
         .unwrap_or_else(|| PathBuf::from("./corpus"));
     eprintln!("Loading corpus from {}...", corpus_root.display());
-    let cases: std::collections::HashMap<String, CorpusCase> = CorpusCase::discover_all(&corpus_root)
-        .into_iter()
-        .map(|c| (c.name.clone(), c))
-        .collect();
+    let cases: std::collections::HashMap<String, CorpusCase> =
+        CorpusCase::discover_all(&corpus_root)
+            .into_iter()
+            .map(|c| (c.name.clone(), c))
+            .collect();
     if cases.is_empty() {
         return Err("no corpus cases found".into());
     }
@@ -395,7 +396,15 @@ fn cmd_score(
         let findings = parse_findings_from_v1(json_val);
         let (tokens, turns, confirmed, _elapsed) = parse_totals_from_v1(json_val);
 
-        let score = score_run(case, &raw.mode, &findings, tokens, turns, confirmed, raw.wall_secs);
+        let score = score_run(
+            case,
+            &raw.mode,
+            &findings,
+            tokens,
+            turns,
+            confirmed,
+            raw.wall_secs,
+        );
         scores.push(score);
     }
 
@@ -449,7 +458,9 @@ mod tests {
     fn clap_args_parse_score() {
         let args = Args::parse_from(["chennai-bench", "score", "--results-dir", "/tmp/results"]);
         match args.command {
-            Command::Score { results_dir, .. } => assert_eq!(results_dir, PathBuf::from("/tmp/results")),
+            Command::Score { results_dir, .. } => {
+                assert_eq!(results_dir, PathBuf::from("/tmp/results"))
+            }
             _ => panic!("expected Score subcommand"),
         }
     }

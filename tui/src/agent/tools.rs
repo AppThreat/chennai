@@ -3,7 +3,7 @@
 //! The LLM sees these schemas and can request tool calls. [`dispatch_tool`] routes each call to
 //! either the engine (NDJSON) or a local shell command, enforcing access controls and timeouts.
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// Return the tool definitions for a given backend (shell + backend-specific).
 #[allow(clippy::borrowed_box)]
@@ -18,13 +18,18 @@ pub fn backend_tool_definitions(backend: &Box<dyn crate::shared::backend::Backen
 /// tools are appended. The shared shell/BOM tools (already in `all_tool_definitions`)
 /// are filtered out of the backend set so they aren't duplicated.
 #[allow(clippy::borrowed_box)]
-pub fn atom_plus_backend_tool_definitions(backend: &Box<dyn crate::shared::backend::Backend>) -> Vec<Value> {
+pub fn atom_plus_backend_tool_definitions(
+    backend: &Box<dyn crate::shared::backend::Backend>,
+) -> Vec<Value> {
     let mut tools = all_tool_definitions();
     let shared = non_atom_tool_definitions();
     let shared_names: std::collections::HashSet<&str> =
         shared.iter().filter_map(|t| t["name"].as_str()).collect();
     for t in backend.tool_definitions() {
-        let dup = t["name"].as_str().map(|n| shared_names.contains(n)).unwrap_or(false);
+        let dup = t["name"]
+            .as_str()
+            .map(|n| shared_names.contains(n))
+            .unwrap_or(false);
         if !dup {
             tools.push(t);
         }
@@ -612,14 +617,14 @@ fn project_memory() -> Value {
     json!({
         "name": "project_memory",
         "description": "Persistent per-project memory of durable facts (architecture, entrypoints, \
-auth boundaries, confirmed/refuted findings, user corrections). The index of known facts is \
-ALREADY in your system prompt — call this only to (a) read a full fact body by name \
-('recall'), (b) search bodies for a keyword ('search'), or (c) save a NEW durable fact, or \
-UPDATE an existing one by reusing its name, that you just learned and verified ('save'). Save \
-sparingly and prefer facts grounded in CALLGRAPH or DATAFLOW results (atom_flows / \
-atom_algorithms / rusi_flows / golem_dataflow / blint_dataflow) — proven reachability, \
-taint paths, entrypoints, auth boundaries. Do NOT save facts grounded only in a ripgrep/text \
-match. A recalled fact is a HINT; re-verify it before reporting.",
+    auth boundaries, confirmed/refuted findings, user corrections). The index of known facts is \
+    ALREADY in your system prompt — call this only to (a) read a full fact body by name \
+    ('recall'), (b) search bodies for a keyword ('search'), or (c) save a NEW durable fact, or \
+    UPDATE an existing one by reusing its name, that you just learned and verified ('save'). Save \
+    sparingly and prefer facts grounded in CALLGRAPH or DATAFLOW results (atom_flows / \
+    atom_algorithms / rusi_flows / golem_dataflow / blint_dataflow) — proven reachability, \
+    taint paths, entrypoints, auth boundaries. Do NOT save facts grounded only in a ripgrep/text \
+    match. A recalled fact is a HINT; re-verify it before reporting.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -680,20 +685,20 @@ fn process_note_tool() -> Value {
     json!({
         "name": "process_note",
         "description": "Manage the Process Note — durable working memory for this analysis session. \
-Use this to record confirmed findings, ruled-out leads, open questions, entrypoints, candidate \
-dangerous sink call sites, and next steps as you progress. The note is re-injected before every \
-turn so you always see your own progress. Ruling something out here prevents re-investigation.\n\
-  - action: 'get' → return the current note\n\
-  - action: 'append' → add items to a field (no duplicates)\n\
-  - action: 'replace' → overwrite a field entirely\n\
-Fields:\n\
-  - confirmed: verified findings\n\
-  - ruled_out: leads ruled out\n\
-  - open_questions: still investigating\n\
-  - entrypoints: actual program entrypoints/tags\n\
-  - candidate_sinks: candidate dangerous sink call sites (structured: \"file:line sink_api\", e.g. \
-\"commoncode/command.py:42 subprocess.Popen(shell=True)\") — NOT general entrypoints\n\
-  - next_steps: planned next actions",
+    Use this to record confirmed findings, ruled-out leads, open questions, entrypoints, candidate \
+    dangerous sink call sites, and next steps as you progress. The note is re-injected before every \
+    turn so you always see your own progress. Ruling something out here prevents re-investigation.\n\
+    - action: 'get' → return the current note\n\
+    - action: 'append' → add items to a field (no duplicates)\n\
+    - action: 'replace' → overwrite a field entirely\n\
+    Fields:\n\
+    - confirmed: verified findings\n\
+    - ruled_out: leads ruled out\n\
+    - open_questions: still investigating\n\
+    - entrypoints: actual program entrypoints/tags\n\
+    - candidate_sinks: candidate dangerous sink call sites (structured: \"file:line sink_api\", e.g. \
+    \"commoncode/command.py:42 subprocess.Popen(shell=True)\") — NOT general entrypoints\n\
+    - next_steps: planned next actions",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -726,14 +731,14 @@ fn report_finding_tool() -> Value {
     json!({
         "name": "report_finding",
         "description": "Submit a structured security finding with deterministic proof re-execution. \
-Provide the finding details (title, severity, confidence, cwe, source, sink) and a chen DSL \
-expression (proof_expr) that PROVES reachability — typically the expression you would pass to \
-atom_reaches or atom_flows. The tool RE-RUNS the expression against the engine: if ≥1 flow path \
-resolves, the finding is marked verified and keeps its confidence; if 0 paths resolve (or the \
-engine errors), confidence is demoted to LOW with a warning note to not claim an unproven taint \
-path. Use this to conclude a finding chain: after atom_callsites + atom_reaches prove a real \
-source→sink path, call report_finding to record it. Do NOT report a finding as HIGH/Confirmed \
-unless the proof re-executed successfully.",
+    Provide the finding details (title, severity, confidence, cwe, source, sink) and a chen DSL \
+    expression (proof_expr) that PROVES reachability — typically the expression you would pass to \
+    atom_reaches or atom_flows. The tool RE-RUNS the expression against the engine: if ≥1 flow path \
+    resolves, the finding is marked verified and keeps its confidence; if 0 paths resolve (or the \
+    engine errors), confidence is demoted to LOW with a warning note to not claim an unproven taint \
+    path. Use this to conclude a finding chain: after atom_callsites + atom_reaches prove a real \
+    source→sink path, call report_finding to record it. Do NOT report a finding as HIGH/Confirmed \
+    unless the proof re-executed successfully.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -803,7 +808,7 @@ pub fn spawn_subagent_tool() -> Value {
     json!({
         "name": "spawn_subagent",
         "description": "Dispatch a focused sub-agent with its own toolset and context, \
-returning its plain-text summary. The sub-agent shares the same findings pool and process note.",
+    returning its plain-text summary. The sub-agent shares the same findings pool and process note.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -851,9 +856,13 @@ mod tests {
     fn spawn_subagent_not_in_standard_toolsets() {
         let all = all_tool_definitions();
         let names: Vec<&str> = all.iter().filter_map(|t| t["name"].as_str()).collect();
-        assert!(!names.contains(&"spawn_subagent"), "spawn_subagent must not be in all_tool_definitions");
+        assert!(
+            !names.contains(&"spawn_subagent"),
+            "spawn_subagent must not be in all_tool_definitions"
+        );
         let non_atom = non_atom_tool_definitions();
-        let non_atom_names: Vec<&str> = non_atom.iter().filter_map(|t| t["name"].as_str()).collect();
+        let non_atom_names: Vec<&str> =
+            non_atom.iter().filter_map(|t| t["name"].as_str()).collect();
         assert!(!non_atom_names.contains(&"spawn_subagent"));
     }
     use super::*;
@@ -862,22 +871,41 @@ mod tests {
     fn report_finding_tool_is_in_all_definitions() {
         let defs = all_tool_definitions();
         let names: Vec<&str> = defs.iter().filter_map(|t| t["name"].as_str()).collect();
-        assert!(names.contains(&"report_finding"), "report_finding should be in all_tool_definitions");
-        let rf: &Value = defs.iter().find(|t| t["name"].as_str() == Some("report_finding")).unwrap();
-        assert!(rf["input_schema"]["required"].as_array().map(|a| a.len()).unwrap_or(0) >= 5);
+        assert!(
+            names.contains(&"report_finding"),
+            "report_finding should be in all_tool_definitions"
+        );
+        let rf: &Value = defs
+            .iter()
+            .find(|t| t["name"].as_str() == Some("report_finding"))
+            .unwrap();
+        assert!(
+            rf["input_schema"]["required"]
+                .as_array()
+                .map(|a| a.len())
+                .unwrap_or(0)
+                >= 5
+        );
     }
 
     #[test]
     fn atom_plus_backend_merges_without_duplicating_shared_tools() {
-        let backend: Box<dyn crate::shared::backend::Backend> =
-            Box::new(crate::blint::BlintCtx {
-                reports: crate::blint::BlintReports {
-                    metadata: crate::shared::LoadedReport { report: serde_json::json!({}), report_path: String::new() },
-                    findings: None, reviews: None, fuzzables: None, sbom: None,
-                    callgraph_path: None, extra_callgraphs: Vec::new(), artifact_type: "apk".into(),
+        let backend: Box<dyn crate::shared::backend::Backend> = Box::new(crate::blint::BlintCtx {
+            reports: crate::blint::BlintReports {
+                metadata: crate::shared::LoadedReport {
+                    report: serde_json::json!({}),
+                    report_path: String::new(),
                 },
-                artifact_path: "app.apk".into(),
-            });
+                findings: None,
+                reviews: None,
+                fuzzables: None,
+                sbom: None,
+                callgraph_path: None,
+                extra_callgraphs: Vec::new(),
+                artifact_type: "apk".into(),
+            },
+            artifact_path: "app.apk".into(),
+        });
 
         let combined = atom_plus_backend_tool_definitions(&backend);
         let names: Vec<&str> = combined.iter().filter_map(|t| t["name"].as_str()).collect();

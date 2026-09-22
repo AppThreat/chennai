@@ -18,12 +18,18 @@ pub struct Transcript {
 
 impl Transcript {
     pub fn new() -> Self {
-        Transcript { messages: Vec::new(), compaction_threshold: 19_200 } // ~60% of 128k tokens as chars/4
+        Transcript {
+            messages: Vec::new(),
+            compaction_threshold: 19_200,
+        } // ~60% of 128k tokens as chars/4
     }
 
     #[allow(dead_code)]
     pub fn with_initial(initial: Vec<Message>) -> Self {
-        Transcript { messages: initial, compaction_threshold: 19_200 }
+        Transcript {
+            messages: initial,
+            compaction_threshold: 19_200,
+        }
     }
 
     pub fn messages(&self) -> &[Message] {
@@ -44,7 +50,8 @@ impl Transcript {
     }
 
     pub fn push_tool_result(&mut self, call_id: &str, content: &str, is_error: bool) {
-        self.messages.push(Message::tool_result(call_id, content, is_error));
+        self.messages
+            .push(Message::tool_result(call_id, content, is_error));
     }
 
     /// Push multiple tool results as separate `tool_result` messages, each with its own
@@ -61,14 +68,23 @@ impl Transcript {
     /// Estimate the token count of all messages using a cheap `chars/4` heuristic.
     /// No tokenizer dependency is required.
     pub fn estimated_tokens(&self) -> usize {
-        self.messages.iter().map(|m| {
-            m.content.iter().map(|b| match b {
-                ContentBlock::Text(t) => t.len(),
-                ContentBlock::Thinking { text, .. } => text.len(),
-                ContentBlock::RedactedThinking { data } => data.len(),
-                ContentBlock::ToolUse { name, input, .. } => name.len() + input.to_string().len(),
-            }).sum::<usize>()
-        }).sum::<usize>() / 4
+        self.messages
+            .iter()
+            .map(|m| {
+                m.content
+                    .iter()
+                    .map(|b| match b {
+                        ContentBlock::Text(t) => t.len(),
+                        ContentBlock::Thinking { text, .. } => text.len(),
+                        ContentBlock::RedactedThinking { data } => data.len(),
+                        ContentBlock::ToolUse { name, input, .. } => {
+                            name.len() + input.to_string().len()
+                        }
+                    })
+                    .sum::<usize>()
+            })
+            .sum::<usize>()
+            / 4
     }
 
     /// The Process Note marker prefix — user messages whose text starts with this
@@ -103,11 +119,27 @@ impl Transcript {
                     continue;
                 }
                 let call_id = msg.tool_call_id.as_deref().unwrap_or("?");
-                let total_bytes: usize = msg.content.iter()
-                    .filter_map(|b| if let ContentBlock::Text(t) = b { Some(t.len()) } else { None })
+                let total_bytes: usize = msg
+                    .content
+                    .iter()
+                    .filter_map(|b| {
+                        if let ContentBlock::Text(t) = b {
+                            Some(t.len())
+                        } else {
+                            None
+                        }
+                    })
                     .sum();
-                let preview: String = msg.content.iter()
-                    .filter_map(|b| if let ContentBlock::Text(t) = b { Some(t.chars().take(120).collect::<String>()) } else { None })
+                let preview: String = msg
+                    .content
+                    .iter()
+                    .filter_map(|b| {
+                        if let ContentBlock::Text(t) = b {
+                            Some(t.chars().take(120).collect::<String>())
+                        } else {
+                            None
+                        }
+                    })
                     .collect::<Vec<_>>()
                     .join(" ");
                 entries.push(format!("{call_id} → {total_bytes}B, {preview}"));
@@ -122,7 +154,10 @@ impl Transcript {
         // 1. Parse into ordered segments (cycles and pass-through messages).
         enum Segment {
             PassThrough(Message),
-            Cycle { assistant: Message, tool_results: Vec<Message> },
+            Cycle {
+                assistant: Message,
+                tool_results: Vec<Message>,
+            },
         }
         let mut segments: Vec<Segment> = Vec::new();
         let mut i = 0;
@@ -135,7 +170,10 @@ impl Transcript {
                     tool_results.push(self.messages[i].clone());
                     i += 1;
                 }
-                segments.push(Segment::Cycle { assistant, tool_results });
+                segments.push(Segment::Cycle {
+                    assistant,
+                    tool_results,
+                });
             } else {
                 segments.push(Segment::PassThrough(self.messages[i].clone()));
                 i += 1;
@@ -143,7 +181,10 @@ impl Transcript {
         }
 
         // 2. The last `keep_recent_cycles` cycles are kept; earlier cycles are compacted.
-        let total_cycles = segments.iter().filter(|s| matches!(s, Segment::Cycle { .. })).count();
+        let total_cycles = segments
+            .iter()
+            .filter(|s| matches!(s, Segment::Cycle { .. }))
+            .count();
         let keep_count = keep_recent_cycles.min(total_cycles);
         let compact_before = total_cycles - keep_count;
 
@@ -153,7 +194,10 @@ impl Transcript {
         for seg in segments {
             match seg {
                 Segment::PassThrough(m) => new_messages.push(m),
-                Segment::Cycle { assistant, tool_results } => {
+                Segment::Cycle {
+                    assistant,
+                    tool_results,
+                } => {
                     if cycle_idx < compact_before {
                         new_messages.push(Message::user(&cycle_synopsis(&tool_results)));
                     } else {
@@ -186,12 +230,22 @@ impl Transcript {
     /// Returns `true` when pairing holds.
     #[allow(dead_code)]
     pub fn check_pairing_invariant(&self) -> bool {
-        let tool_use_ids: std::collections::BTreeSet<&str> = self.messages.iter()
+        let tool_use_ids: std::collections::BTreeSet<&str> = self
+            .messages
+            .iter()
             .filter(|m| m.role == "assistant")
             .flat_map(|m| m.content.iter())
-            .filter_map(|b| if let ContentBlock::ToolUse { id, .. } = b { Some(id.as_str()) } else { None })
+            .filter_map(|b| {
+                if let ContentBlock::ToolUse { id, .. } = b {
+                    Some(id.as_str())
+                } else {
+                    None
+                }
+            })
             .collect();
-        let tool_result_ids: std::collections::BTreeSet<&str> = self.messages.iter()
+        let tool_result_ids: std::collections::BTreeSet<&str> = self
+            .messages
+            .iter()
             .filter(|m| m.role == "tool_result")
             .filter_map(|m| m.tool_call_id.as_deref())
             .collect();
@@ -201,19 +255,29 @@ impl Transcript {
     /// Serialize to the Anthropic Messages API wire format.
     #[allow(dead_code)]
     pub fn to_anthropic_json(&self) -> Vec<Value> {
-        self.messages.iter()
+        self.messages
+            .iter()
             .filter(|m| m.role != "system")
             .map(|m| {
                 let mut obj = serde_json::Map::new();
-                let role = if m.role == "tool_result" { "user" } else { m.role.as_str() };
+                let role = if m.role == "tool_result" {
+                    "user"
+                } else {
+                    m.role.as_str()
+                };
                 obj.insert("role".into(), Value::String(role.into()));
 
                 if m.role == "tool_result" {
                     let mut content = Vec::new();
-                    let text = m.content.iter().filter_map(|b| match b {
-                        ContentBlock::Text(t) => Some(t.as_str()),
-                        _ => None,
-                    }).collect::<Vec<_>>().join("\n");
+                    let text = m
+                        .content
+                        .iter()
+                        .filter_map(|b| match b {
+                            ContentBlock::Text(t) => Some(t.as_str()),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n");
                     content.push(serde_json::json!({
                         "type": "tool_result",
                         "tool_use_id": m.tool_call_id,
@@ -222,20 +286,27 @@ impl Transcript {
                     }));
                     obj.insert("content".into(), Value::Array(content));
                 } else {
-                    let blocks: Vec<Value> = m.content.iter().map(|b| match b {
-                        ContentBlock::Text(t) => serde_json::json!({ "type": "text", "text": t }),
-                        ContentBlock::Thinking { text, signature } => serde_json::json!({
-                            "type": "thinking", "thinking": text, "signature": signature,
-                        }),
-                        ContentBlock::RedactedThinking { data } =>
-                            serde_json::json!({ "type": "redacted_thinking", "data": data }),
-                        ContentBlock::ToolUse { id, name, input } => serde_json::json!({
-                            "type": "tool_use",
-                            "id": id,
-                            "name": name,
-                            "input": input,
-                        }),
-                    }).collect();
+                    let blocks: Vec<Value> = m
+                        .content
+                        .iter()
+                        .map(|b| match b {
+                            ContentBlock::Text(t) => {
+                                serde_json::json!({ "type": "text", "text": t })
+                            }
+                            ContentBlock::Thinking { text, signature } => serde_json::json!({
+                                "type": "thinking", "thinking": text, "signature": signature,
+                            }),
+                            ContentBlock::RedactedThinking { data } => {
+                                serde_json::json!({ "type": "redacted_thinking", "data": data })
+                            }
+                            ContentBlock::ToolUse { id, name, input } => serde_json::json!({
+                                "type": "tool_use",
+                                "id": id,
+                                "name": name,
+                                "input": input,
+                            }),
+                        })
+                        .collect();
                     obj.insert("content".into(), Value::Array(blocks));
                 }
                 Value::Object(obj)
@@ -246,49 +317,78 @@ impl Transcript {
     /// Serialize to the OpenAI Chat Completions API wire format.
     #[allow(dead_code)]
     pub fn to_openai_json(&self) -> Vec<Value> {
-        self.messages.iter()
+        self.messages
+            .iter()
             .map(|m| {
                 let mut obj = serde_json::Map::new();
-                let role = if m.role == "tool_result" { "tool" } else { m.role.as_str() };
+                let role = if m.role == "tool_result" {
+                    "tool"
+                } else {
+                    m.role.as_str()
+                };
                 obj.insert("role".into(), Value::String(role.into()));
 
                 match m.role.as_str() {
                     "assistant" => {
-                        let text = m.content.iter().filter_map(|b| match b {
-                            ContentBlock::Text(t) => Some(t.clone()),
-                            _ => None,
-                        }).collect::<Vec<_>>().join("");
+                        let text = m
+                            .content
+                            .iter()
+                            .filter_map(|b| match b {
+                                ContentBlock::Text(t) => Some(t.clone()),
+                                _ => None,
+                            })
+                            .collect::<Vec<_>>()
+                            .join("");
                         if !text.is_empty() {
                             obj.insert("content".into(), Value::String(text));
                         }
-                        let tool_calls: Vec<Value> = m.content.iter().filter_map(|b| match b {
-                            ContentBlock::ToolUse { id, name, input } => Some(serde_json::json!({
-                                "id": id,
-                                "type": "function",
-                                "function": {
-                                    "name": name,
-                                    "arguments": input.to_string(),
+                        let tool_calls: Vec<Value> = m
+                            .content
+                            .iter()
+                            .filter_map(|b| match b {
+                                ContentBlock::ToolUse { id, name, input } => {
+                                    Some(serde_json::json!({
+                                        "id": id,
+                                        "type": "function",
+                                        "function": {
+                                            "name": name,
+                                            "arguments": input.to_string(),
+                                        }
+                                    }))
                                 }
-                            })),
-                            _ => None,
-                        }).collect();
+                                _ => None,
+                            })
+                            .collect();
                         if !tool_calls.is_empty() {
                             obj.insert("tool_calls".into(), Value::Array(tool_calls));
                         }
                     }
                     "tool" => {
-                        let text = m.content.iter().filter_map(|b| match b {
-                            ContentBlock::Text(t) => Some(t.as_str()),
-                            _ => None,
-                        }).collect::<Vec<_>>().join("\n");
+                        let text = m
+                            .content
+                            .iter()
+                            .filter_map(|b| match b {
+                                ContentBlock::Text(t) => Some(t.as_str()),
+                                _ => None,
+                            })
+                            .collect::<Vec<_>>()
+                            .join("\n");
                         obj.insert("content".into(), Value::String(text));
-                        obj.insert("tool_call_id".into(), Value::String(m.tool_call_id.clone().unwrap_or_default()));
+                        obj.insert(
+                            "tool_call_id".into(),
+                            Value::String(m.tool_call_id.clone().unwrap_or_default()),
+                        );
                     }
                     _ => {
-                        let text = m.content.iter().filter_map(|b| match b {
-                            ContentBlock::Text(t) => Some(t.as_str()),
-                            _ => None,
-                        }).collect::<Vec<_>>().join("\n");
+                        let text = m
+                            .content
+                            .iter()
+                            .filter_map(|b| match b {
+                                ContentBlock::Text(t) => Some(t.as_str()),
+                                _ => None,
+                            })
+                            .collect::<Vec<_>>()
+                            .join("\n");
                         obj.insert("content".into(), Value::String(text));
                     }
                 }
@@ -299,20 +399,29 @@ impl Transcript {
 
     /// Extract tool_use content blocks from the last assistant message.
     pub fn last_tool_calls(&self) -> Vec<(String, String, Value)> {
-        self.messages.iter().rev().find(|m| m.role == "assistant")
+        self.messages
+            .iter()
+            .rev()
+            .find(|m| m.role == "assistant")
             .map(|m| {
-                m.content.iter().filter_map(|b| match b {
-                    ContentBlock::ToolUse { id, name, input } =>
-                        Some((id.clone(), name.clone(), input.clone())),
-                    _ => None,
-                }).collect()
+                m.content
+                    .iter()
+                    .filter_map(|b| match b {
+                        ContentBlock::ToolUse { id, name, input } => {
+                            Some((id.clone(), name.clone(), input.clone()))
+                        }
+                        _ => None,
+                    })
+                    .collect()
             })
             .unwrap_or_default()
     }
 }
 
 impl Default for Transcript {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[cfg(test)]
@@ -330,9 +439,11 @@ mod tests {
     fn anthropic_tool_result_has_correct_shape() {
         let mut t = Transcript::new();
         t.push_user("hello");
-        t.push_assistant(vec![
-            ContentBlock::ToolUse { id: "tu_1".into(), name: "atom_query".into(), input: serde_json::json!({"kind": "files"}) },
-        ]);
+        t.push_assistant(vec![ContentBlock::ToolUse {
+            id: "tu_1".into(),
+            name: "atom_query".into(),
+            input: serde_json::json!({"kind": "files"}),
+        }]);
         t.push_tool_result("tu_1", r#"{"total":5}"#, false);
 
         let json = t.to_anthropic_json();
@@ -345,9 +456,11 @@ mod tests {
     fn openai_tool_result_has_correct_role() {
         let mut t = Transcript::new();
         t.push_user("hello");
-        t.push_assistant(vec![
-            ContentBlock::ToolUse { id: "call_1".into(), name: "atom_query".into(), input: serde_json::json!({"kind": "methods"}) },
-        ]);
+        t.push_assistant(vec![ContentBlock::ToolUse {
+            id: "call_1".into(),
+            name: "atom_query".into(),
+            input: serde_json::json!({"kind": "methods"}),
+        }]);
         t.push_tool_result("call_1", r#"{"total":3}"#, false);
 
         let json = t.to_openai_json();
@@ -368,10 +481,17 @@ mod tests {
         t.push_user("Analyze this codebase for security issues.");
         for i in 0..cycles {
             t.push_assistant(vec![
-                ContentBlock::Thinking { text: format!("Let me think about cycle {i}…"), signature: "sig".into() },
+                ContentBlock::Thinking {
+                    text: format!("Let me think about cycle {i}…"),
+                    signature: "sig".into(),
+                },
                 ContentBlock::ToolUse {
                     id: format!("tu_{i}"),
-                    name: if i % 2 == 0 { "atom_query".into() } else { "ripgrep".into() },
+                    name: if i % 2 == 0 {
+                        "atom_query".into()
+                    } else {
+                        "ripgrep".into()
+                    },
                     input: serde_json::json!({"kind": "files"}),
                 },
             ]);
@@ -387,9 +507,16 @@ mod tests {
         t.compaction_threshold = 100_000;
         let before = t.messages.len();
         t.compact(1);
-        assert_eq!(t.messages.len(), before, "under-budget transcript must not be changed");
+        assert_eq!(
+            t.messages.len(),
+            before,
+            "under-budget transcript must not be changed"
+        );
         // First user message unchanged.
-        assert_eq!(t.messages[0].content[0], ContentBlock::Text("Analyze this codebase for security issues.".into()));
+        assert_eq!(
+            t.messages[0].content[0],
+            ContentBlock::Text("Analyze this codebase for security issues.".into())
+        );
     }
 
     #[test]
@@ -401,16 +528,28 @@ mod tests {
         // There should be: 1 initial user + (5-2)=3 compacted synopses + 2 recent cycles
         // Each recent cycle = 1 assistant + 1 tool_result = 2 messages
         let expected_len = 1 + 3 + (2 * 2);
-        assert_eq!(t.messages.len(), expected_len, "wrong message count after compact");
+        assert_eq!(
+            t.messages.len(),
+            expected_len,
+            "wrong message count after compact"
+        );
 
         // The recent cycles should be verbatim (assistant with Thinking + ToolUse, then tool_result).
         let last_assistant = &t.messages[t.messages.len() - 4]; // second-to-last cycle assistant
-        let last_tool_use = last_assistant.content.iter()
+        let last_tool_use = last_assistant
+            .content
+            .iter()
             .find(|b| matches!(b, ContentBlock::ToolUse { .. }))
             .unwrap();
-        assert_eq!(last_tool_use, &ContentBlock::ToolUse {
-            id: "tu_3".into(), name: "ripgrep".into(), input: serde_json::json!({"kind": "files"}),
-        }, "recent cycle tool_use should be intact");
+        assert_eq!(
+            last_tool_use,
+            &ContentBlock::ToolUse {
+                id: "tu_3".into(),
+                name: "ripgrep".into(),
+                input: serde_json::json!({"kind": "files"}),
+            },
+            "recent cycle tool_use should be intact"
+        );
     }
 
     #[test]
@@ -427,8 +566,14 @@ mod tests {
             ContentBlock::Text(t) => t.as_str(),
             _ => "wrong block type",
         };
-        assert!(text.starts_with("[compacted:"), "old cycle should be a compacted synopsis, got: {text}");
-        assert!(text.contains("tu_0"), "synopsis should include tool call id");
+        assert!(
+            text.starts_with("[compacted:"),
+            "old cycle should be a compacted synopsis, got: {text}"
+        );
+        assert!(
+            text.contains("tu_0"),
+            "synopsis should include tool call id"
+        );
     }
 
     #[test]
@@ -437,8 +582,10 @@ mod tests {
         t.compaction_threshold = 0;
         t.compact(2);
 
-        assert!(t.check_pairing_invariant(),
-            "every tool_use id must match a tool_result id after compaction");
+        assert!(
+            t.check_pairing_invariant(),
+            "every tool_use id must match a tool_result id after compaction"
+        );
     }
 
     #[test]
@@ -448,9 +595,11 @@ mod tests {
         t.push_user("Analyze this.");
         // The Process Note is a user message whose text starts with the prefix.
         t.push_user("## Process Note\n**Confirmed:**\n  - SQL injection in search\n**Next steps:**\n  - Verify auth check");
-        t.push_assistant(vec![
-            ContentBlock::ToolUse { id: "tu_0".into(), name: "atom_query".into(), input: serde_json::json!({"kind": "files"}) },
-        ]);
+        t.push_assistant(vec![ContentBlock::ToolUse {
+            id: "tu_0".into(),
+            name: "atom_query".into(),
+            input: serde_json::json!({"kind": "files"}),
+        }]);
         t.push_tool_result("tu_0", "x".repeat(5000).as_str(), false);
 
         t.compact(1);
@@ -474,12 +623,16 @@ mod tests {
         t.compaction_threshold = 0; // force compaction
         t.push_user("first question");
         t.push_assistant(vec![ContentBlock::ToolUse {
-            id: "tu_0".into(), name: "atom_query".into(), input: serde_json::json!({}),
+            id: "tu_0".into(),
+            name: "atom_query".into(),
+            input: serde_json::json!({}),
         }]);
         t.push_tool_result("tu_0", &"x".repeat(3000), false);
         t.push_user("SECOND question"); // mid-transcript user turn
         t.push_assistant(vec![ContentBlock::ToolUse {
-            id: "tu_1".into(), name: "ripgrep".into(), input: serde_json::json!({}),
+            id: "tu_1".into(),
+            name: "ripgrep".into(),
+            input: serde_json::json!({}),
         }]);
         t.push_tool_result("tu_1", &"y".repeat(3000), false);
 
@@ -494,8 +647,15 @@ mod tests {
             }
         };
         assert_eq!(text_at(0), "first question");
-        assert!(text_at(1).starts_with("[compacted:"), "first cycle should be compacted");
-        assert_eq!(text_at(2), "SECOND question", "mid-transcript user turn must keep its position");
+        assert!(
+            text_at(1).starts_with("[compacted:"),
+            "first cycle should be compacted"
+        );
+        assert_eq!(
+            text_at(2),
+            "SECOND question",
+            "mid-transcript user turn must keep its position"
+        );
         assert!(t.check_pairing_invariant());
     }
 
@@ -513,7 +673,11 @@ mod tests {
         let mut t = Transcript::new();
         t.compaction_threshold = 100_000;
         t.push_user("hello");
-        t.push_assistant(vec![ContentBlock::ToolUse { id: "t1".into(), name: "atom_query".into(), input: serde_json::json!({}) }]);
+        t.push_assistant(vec![ContentBlock::ToolUse {
+            id: "t1".into(),
+            name: "atom_query".into(),
+            input: serde_json::json!({}),
+        }]);
         t.push_tool_result("t1", "ok", false);
         let before_len = t.messages.len();
         t.compact(1);
@@ -531,14 +695,21 @@ mod tests {
         // Big text should estimate proportionally.
         t.push_user(&"x".repeat(4000));
         let est2 = t.estimated_tokens();
-        assert!(est2 > 900, "~4000 chars should estimate ~1000 tokens, got {est2}");
+        assert!(
+            est2 > 900,
+            "~4000 chars should estimate ~1000 tokens, got {est2}"
+        );
     }
 
     #[test]
     fn pairing_invariant_false_when_unmatched() {
         let mut t = Transcript::new();
         t.push_user("query");
-        t.push_assistant(vec![ContentBlock::ToolUse { id: "tu_1".into(), name: "atom_query".into(), input: serde_json::json!({}) }]);
+        t.push_assistant(vec![ContentBlock::ToolUse {
+            id: "tu_1".into(),
+            name: "atom_query".into(),
+            input: serde_json::json!({}),
+        }]);
         // No tool_result for tu_1.
         assert!(!t.check_pairing_invariant());
     }
@@ -547,7 +718,11 @@ mod tests {
     fn pairing_invariant_true_when_matched() {
         let mut t = Transcript::new();
         t.push_user("query");
-        t.push_assistant(vec![ContentBlock::ToolUse { id: "tu_1".into(), name: "atom_query".into(), input: serde_json::json!({}) }]);
+        t.push_assistant(vec![ContentBlock::ToolUse {
+            id: "tu_1".into(),
+            name: "atom_query".into(),
+            input: serde_json::json!({}),
+        }]);
         t.push_tool_result("tu_1", "result", false);
         assert!(t.check_pairing_invariant());
     }

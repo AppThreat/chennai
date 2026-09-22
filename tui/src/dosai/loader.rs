@@ -19,9 +19,8 @@ impl DosaiReports {
     /// required; `methods` and `crypto` are optional.
     pub fn load(source_dir: &Path) -> Result<Self, String> {
         let df_path = source_dir.join("dosai-dataflows.json");
-        let dataflows = crate::shared::LoadedReport::from_file(&df_path).map_err(|e| {
-            format!("failed to load dosai dataflows report: {e}")
-        })?;
+        let dataflows = crate::shared::LoadedReport::from_file(&df_path)
+            .map_err(|e| format!("failed to load dosai dataflows report: {e}"))?;
 
         let methods_path = source_dir.join("dosai-methods.json");
         let methods = if methods_path.is_file() {
@@ -37,7 +36,11 @@ impl DosaiReports {
             None
         };
 
-        Ok(DosaiReports { dataflows, methods, crypto })
+        Ok(DosaiReports {
+            dataflows,
+            methods,
+            crypto,
+        })
     }
 }
 
@@ -54,7 +57,10 @@ mod tests {
         )
         .unwrap();
         let reports = DosaiReports::load(dir.path()).unwrap();
-        assert_eq!(reports.dataflows.report["Metadata"]["Tool"].as_str(), Some("Dosai"));
+        assert_eq!(
+            reports.dataflows.report["Metadata"]["Tool"].as_str(),
+            Some("Dosai")
+        );
         assert!(reports.methods.is_none());
         assert!(reports.crypto.is_none());
     }
@@ -62,8 +68,16 @@ mod tests {
     #[test]
     fn test_dosai_loader_all_reports() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("dosai-dataflows.json"), r#"{"Statistics":{"NodeCount":5}}"#).unwrap();
-        std::fs::write(dir.path().join("dosai-methods.json"), r#"{"Methods":[{"Name":"Main"}]}"#).unwrap();
+        std::fs::write(
+            dir.path().join("dosai-dataflows.json"),
+            r#"{"Statistics":{"NodeCount":5}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("dosai-methods.json"),
+            r#"{"Methods":[{"Name":"Main"}]}"#,
+        )
+        .unwrap();
         std::fs::write(dir.path().join("dosai-crypto.json"), r#"{"findings":[]}"#).unwrap();
         let reports = DosaiReports::load(dir.path()).unwrap();
         assert!(reports.methods.is_some());

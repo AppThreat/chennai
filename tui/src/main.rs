@@ -13,17 +13,20 @@ mod rusi;
 mod shared;
 mod ui;
 
-use agent::{finding::FindingSet, finding::RunProfile, finding::TokenLedger, process_note::ProcessNote, AgentCtx, DebugLogger};
-use app::{App, BgStatus, BgTaskInfo, InitPhase, Panel};
-use bom::{find_existing_boms, BomStore};
-use config::Config;
-use engine::Engine;
-use model::{OpenInfo, Summary};
 use crate::shared::backend::Backend as AnalysisBackend;
+use agent::{
+    AgentCtx, DebugLogger, finding::FindingSet, finding::RunProfile, finding::TokenLedger,
+    process_note::ProcessNote,
+};
+use app::{App, BgStatus, BgTaskInfo, InitPhase, Panel};
 use blint::{BlintCtx, BlintReports};
+use bom::{BomStore, find_existing_boms};
+use config::Config;
 #[allow(unused_imports)]
 use dosai::{DosaiCtx, DosaiReports};
+use engine::Engine;
 use golem::GolemCtx;
+use model::{OpenInfo, Summary};
 use rusi::RusiCtx;
 use ui::theme::Theme;
 
@@ -34,7 +37,7 @@ use crossterm::{
         KeyModifiers, MouseButton, MouseEventKind,
     },
     execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use ratatui::backend::CrosstermBackend;
 use serde_json::json;
@@ -259,15 +262,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                          _  _  _  _  __
  _ |_  _ __ __  _  o    |_ / \/ \/ \  /|_|
 (_ | |(/_| || |(_| |    |_)\_/\_/\_/ /   |
-        "#);
+        "#
+    );
 
     // Load custom system prompt if provided.
     let custom_system_prompt = match &args.system_prompt {
         Some(p) => {
-        let content = std::fs::read_to_string(p)
-            .map_err(|e| format!("failed to read system prompt file '{}': {e}", p.display()))?;
-        debug_eprintln!(args.debug, "Using custom system prompt from: {}", p.display());
-        Some(content)
+            let content = std::fs::read_to_string(p)
+                .map_err(|e| format!("failed to read system prompt file '{}': {e}", p.display()))?;
+            debug_eprintln!(
+                args.debug,
+                "Using custom system prompt from: {}",
+                p.display()
+            );
+            Some(content)
         }
         None => None,
     };
@@ -283,26 +291,53 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let path_buf = std::fs::canonicalize(&path_buf).unwrap_or(path_buf);
     let path = &path_buf;
 
-    let mut config = Config::load_with_base_url(args.provider.as_deref(), args.model.as_deref(), args.api_key.as_deref(), args.base_url.as_deref(), args.no_thinking, args.effort.as_deref(), args.orchestrate, args.max_subagents, args.turn_budget, args.token_budget);
+    let mut config = Config::load_with_base_url(
+        args.provider.as_deref(),
+        args.model.as_deref(),
+        args.api_key.as_deref(),
+        args.base_url.as_deref(),
+        args.no_thinking,
+        args.effort.as_deref(),
+        args.orchestrate,
+        args.max_subagents,
+        args.turn_budget,
+        args.token_budget,
+    );
     config.debug = args.debug;
-    let theme = match args.theme.as_str() { "light" => Theme::light(), _ => Theme::dark() };
+    let theme = match args.theme.as_str() {
+        "light" => Theme::light(),
+        _ => Theme::dark(),
+    };
     let source_root = args.source.clone();
 
     // Detect the language to decide the analysis mode.
     // For file targets, check if it is a binary artifact (APK, IPA, ELF, PE, etc.).
-    let source_dir = source_root.as_ref().map(PathBuf::from).unwrap_or_else(|| path.to_path_buf());
+    let source_dir = source_root
+        .as_ref()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| path.to_path_buf());
     let is_binary_artifact = path.is_file() && is_binary_file(path);
     let language = if is_binary_artifact {
         Some("binary".to_string())
     } else {
         bom::detect_language(&source_dir)
     };
-    let is_non_atom = matches!(language.as_deref(), Some("rust" | "go" | "dotnet" | "binary"));
+    let is_non_atom = matches!(
+        language.as_deref(),
+        Some("rust" | "go" | "dotnet" | "binary")
+    );
 
     if is_non_atom {
         return run_non_atom_mode(
-            path, &source_root, &source_dir, &language, &config, &theme,
-            custom_system_prompt, args.ask.clone(), args.reports_dir.clone(),
+            path,
+            &source_root,
+            &source_dir,
+            &language,
+            &config,
+            &theme,
+            custom_system_prompt,
+            args.ask.clone(),
+            args.reports_dir.clone(),
         );
     }
 
@@ -320,7 +355,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         let open_args = match &source_root {
             Some(src) => json!({ "path": atom_str, "sourceRoot": src }),
-            None      => json!({ "path": atom_str }),
+            None => json!({ "path": atom_str }),
         };
         let _open: OpenInfo = eng.request("open", open_args)?;
         let summary: Summary = eng.request("summary", json!({}))?;
@@ -329,16 +364,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if let Some(question) = args.ask {
             // Fall back to the atom's parent directory when --source is not provided,
             // so the memory store and other source-root-dependent features work.
-            let atom_dir = existing_atom.parent().unwrap_or(Path::new(".")).to_string_lossy().to_string();
-            let agent_source_root = source_root.clone()
-                .or(Some(atom_dir));
+            let atom_dir = existing_atom
+                .parent()
+                .unwrap_or(Path::new("."))
+                .to_string_lossy()
+                .to_string();
+            let agent_source_root = source_root.clone().or(Some(atom_dir));
             let reports_dir = args.reports_dir.unwrap_or_else(|| {
                 let base = source_root.clone().unwrap_or_else(|| {
-                    existing_atom.parent().map(|p| p.to_string_lossy().to_string()).unwrap_or_else(|| ".".into())
+                    existing_atom
+                        .parent()
+                        .map(|p| p.to_string_lossy().to_string())
+                        .unwrap_or_else(|| ".".into())
                 });
                 PathBuf::from(base).join(".chen").join("chennai-reports")
             });
-            return run_headless_agent(config, eng, agent_source_root, summary, question, reports_dir, args.json);
+            return run_headless_agent(
+                config,
+                eng,
+                agent_source_root,
+                summary,
+                question,
+                reports_dir,
+                args.json,
+            );
         }
 
         let engine_arc = Arc::new(Mutex::new(eng));
@@ -346,20 +395,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let source_path = source_root.as_ref().map(PathBuf::from);
         let reports_dir = args.reports_dir.unwrap_or_else(|| {
             let base = source_root.clone().unwrap_or_else(|| {
-                existing_atom.parent().map(|p| p.to_string_lossy().to_string()).unwrap_or_else(|| ".".into())
+                existing_atom
+                    .parent()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_else(|| ".".into())
             });
             PathBuf::from(base).join(".chen").join("chennai-reports")
         });
 
         let bom_store = find_existing_boms(reports_dir.as_path());
-        let mut bom_store = if bom_store.loaded { bom_store } else {
+        let mut bom_store = if bom_store.loaded {
+            bom_store
+        } else {
             find_existing_boms(source_path.as_deref().unwrap_or(Path::new(".")))
         };
 
         let mut bom_tip = String::new();
         if !bom_store.loaded {
-            let has_cdx_config = engine_arc.lock().unwrap()
-                .request::<serde_json::Value>("eval", json!({"expr": "atom.configFiles.name(\".*cdx\\\\.json\").toJson"}))
+            let has_cdx_config = engine_arc
+                .lock()
+                .unwrap()
+                .request::<serde_json::Value>(
+                    "eval",
+                    json!({"expr": "atom.configFiles.name(\".*cdx\\\\.json\").toJson"}),
+                )
                 .map(|r| r.get("total").and_then(|v| v.as_i64()).unwrap_or(0) > 0)
                 .unwrap_or(false);
 
@@ -367,27 +426,41 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let sdir = source_path.as_deref().unwrap_or(Path::new("."));
                 let odir = reports_dir.as_path();
                 let language = bom::detect_language(sdir);
-                let supported = language.as_deref().map(|l| matches!(l, "java" | "js" | "py" | "php" | "rb")).unwrap_or(false);
+                let supported = language
+                    .as_deref()
+                    .map(|l| matches!(l, "java" | "js" | "py" | "php" | "rb"))
+                    .unwrap_or(false);
                 let mut generated = false;
                 if !supported {
                     bom_tip = "Auto SBOM generation is not available for this language. Generate manually with: cdxgen -o sbom.cdx.json <source_dir>".into();
                 }
                 if supported {
                     for lifecycle in bom::LIFECYCLES {
-                        if let Ok(path) = bom::generate_bom(sdir, odir, lifecycle, language.as_deref()) {
+                        if let Ok(path) =
+                            bom::generate_bom(sdir, odir, lifecycle, language.as_deref())
+                        {
                             let mut store = BomStore::new();
                             if store.load_path(&path).is_ok() {
                                 let bom_str = path.to_string_lossy().to_string();
-                                match engine_arc.lock().unwrap().request::<serde_json::Value>(
-                                    "enrich", json!({"bom": bom_str}),
-                                ) {
+                                match engine_arc
+                                    .lock()
+                                    .unwrap()
+                                    .request::<serde_json::Value>("enrich", json!({"bom": bom_str}))
+                                {
                                     Ok(resp) => {
-                                        if resp.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
-                                            debug_eprintln!(config.debug, "Atom enriched with SBOM dependency data");
+                                        if resp.get("ok").and_then(|v| v.as_bool()).unwrap_or(false)
+                                        {
+                                            debug_eprintln!(
+                                                config.debug,
+                                                "Atom enriched with SBOM dependency data"
+                                            );
                                         }
                                     }
                                     Err(e) => {
-                                        debug_eprintln!(config.debug, "Warning: failed to enrich atom with SBOM data: {e}");
+                                        debug_eprintln!(
+                                            config.debug,
+                                            "Warning: failed to enrich atom with SBOM data: {e}"
+                                        );
                                     }
                                 }
                                 bom_store = store;
@@ -407,26 +480,49 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // The agent's BOM tool reconstructs the SBOM store from `source_root`. Fall back to
         // the project directory when `--source` wasn't passed (matching the non-atom paths),
         // otherwise `bom_query` reports "no source root configured" even when an SBOM exists.
-        let agent_source_root = source_root.clone()
+        let agent_source_root = source_root
+            .clone()
             .or_else(|| Some(source_dir.to_string_lossy().to_string()));
 
         // If this atom (e.g. an APK/JAR) also has a blint report nearby, expose blint_* tools too.
-        let atom_dir = existing_atom.parent().unwrap_or(Path::new(".")).to_path_buf();
+        let atom_dir = existing_atom
+            .parent()
+            .unwrap_or(Path::new("."))
+            .to_path_buf();
         let aux_backend: Option<BackendCtx> =
-            find_aux_blint_backend(&[atom_dir.as_path(), reports_dir.as_path()], config.debug).map(|c| Box::new(c) as BackendCtx);
+            find_aux_blint_backend(&[atom_dir.as_path(), reports_dir.as_path()], config.debug)
+                .map(|c| Box::new(c) as BackendCtx);
 
         let agent_ctx = if config.enabled {
-            let bom_summary = if bom_store.loaded { bom_store.summary() } else { String::new() };
+            let bom_summary = if bom_store.loaded {
+                bom_store.summary()
+            } else {
+                String::new()
+            };
             let bom_components = if bom_store.loaded && !bom_store.components.is_empty() {
-                let top: Vec<String> = bom_store.components.iter().take(20).map(|r| {
-                    format!("  - {} {} ({}) {}", r.type_display(), r.name_display(), r.version_display(), r.purl_display())
-                }).collect();
+                let top: Vec<String> = bom_store
+                    .components
+                    .iter()
+                    .take(20)
+                    .map(|r| {
+                        format!(
+                            "  - {} {} ({}) {}",
+                            r.type_display(),
+                            r.name_display(),
+                            r.version_display(),
+                            r.purl_display()
+                        )
+                    })
+                    .collect();
                 Some(top.join("\n"))
-            } else { None };
+            } else {
+                None
+            };
             match agent::create_provider(&config) {
                 Ok(provider) => {
-                    let memory_index = crate::agent::memory::FactStore::open(agent_source_root.as_deref())
-                        .map(|s| s.index_markdown());
+                    let memory_index =
+                        crate::agent::memory::FactStore::open(agent_source_root.as_deref())
+                            .map(|s| s.index_markdown());
                     let memory_section = memory_index.as_deref().filter(|s| *s != "none yet").map(|idx| {
                         format!(
                             "\n## Project memory (facts learned in previous sessions — HINTS, re-verify before reporting)\n\
@@ -436,15 +532,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }).unwrap_or_default();
                     let system_prompt = match &custom_system_prompt {
                         Some(sp) => format!("{sp}{memory_section}"),
-                        None => {
-                            AgentCtx::build_system_prompt(
-                                &summary.language, &summary.version, &summary.rows,
-                                Some(&bom_summary), bom_components.as_deref(), None,
-                                memory_index.as_deref(), atom_tags.as_deref(),
-                            )
-                        }
+                        None => AgentCtx::build_system_prompt(
+                            &summary.language,
+                            &summary.version,
+                            &summary.rows,
+                            Some(&bom_summary),
+                            bom_components.as_deref(),
+                            None,
+                            memory_index.as_deref(),
+                            atom_tags.as_deref(),
+                        ),
                     };
-                    debug_eprintln!(config.debug, "AI agent enabled: {} ({})", config.provider, config.model);
+                    debug_eprintln!(
+                        config.debug,
+                        "AI agent enabled: {} ({})",
+                        config.provider,
+                        config.model
+                    );
                     Some(AgentCtx {
                         provider,
                         engine: Some(engine_arc.clone()),
@@ -457,18 +561,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         allowed_tools: None,
                         orchestrate: config.orchestrate,
                         cancel: Arc::new(AtomicBool::new(false)),
-                        debug_logger: if config.debug { DebugLogger::new(agent_source_root.as_deref()) } else { None },
+                        debug_logger: if config.debug {
+                            DebugLogger::new(agent_source_root.as_deref())
+                        } else {
+                            None
+                        },
                         findings: Arc::new(Mutex::new(FindingSet::new())),
-            token_ledger: Arc::new(Mutex::new(TokenLedger::default())),
-            process_note: Arc::new(Mutex::new(ProcessNote::default())),
-            run_profile: Arc::new(Mutex::new(RunProfile::new())),
-            max_subagents: config.max_subagents,
-            turn_budget: config.turn_budget,
-            token_budget: config.token_budget,
-        })
+                        token_ledger: Arc::new(Mutex::new(TokenLedger::default())),
+                        process_note: Arc::new(Mutex::new(ProcessNote::default())),
+                        run_profile: Arc::new(Mutex::new(RunProfile::new())),
+                        max_subagents: config.max_subagents,
+                        turn_budget: config.turn_budget,
+                        token_budget: config.token_budget,
+                    })
                 }
                 Err(e) => {
-                    debug_eprintln!(config.debug, "Warning: failed to create LLM provider: {e}. Agent disabled.");
+                    debug_eprintln!(
+                        config.debug,
+                        "Warning: failed to create LLM provider: {e}. Agent disabled."
+                    );
                     None
                 }
             }
@@ -476,7 +587,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             None
         };
 
-        let mut app = App::new(Some(engine_arc), atom_str, summary, agent_source_root.clone());
+        let mut app = App::new(
+            Some(engine_arc),
+            atom_str,
+            summary,
+            agent_source_root.clone(),
+        );
         // Keep the aux blint backend on the app so the agent-context recreation path
         // (which reads app.backend) preserves blint_* tools across runs.
         app.backend = aux_backend;
@@ -487,7 +603,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if bom_store.loaded {
             app.bom_store = Some(bom_store);
             app.bom_generated = false;
-            app.status = format!("BOM loaded ({} components) — type 'bom' to view", app.bom_store.as_ref().map(|s| s.total_components).unwrap_or(0));
+            app.status = format!(
+                "BOM loaded ({} components) — type 'bom' to view",
+                app.bom_store
+                    .as_ref()
+                    .map(|s| s.total_components)
+                    .unwrap_or(0)
+            );
             debug_eprintln!(config.debug, "{}", app.status);
         } else if !bom_tip.is_empty() {
             app.status = bom_tip;
@@ -500,10 +622,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let backend = CrosstermBackend::new(stdout);
         let mut terminal = ratatui::Terminal::new(backend)?;
 
-        let result = run_app(&mut terminal, &mut app, &theme, agent_ctx, config, source_root, reports_dir, custom_system_prompt);
+        let result = run_app(
+            &mut terminal,
+            &mut app,
+            &theme,
+            agent_ctx,
+            config,
+            source_root,
+            reports_dir,
+            custom_system_prompt,
+        );
 
         disable_raw_mode()?;
-        execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
+        execute!(
+            terminal.backend_mut(),
+            LeaveAlternateScreen,
+            DisableMouseCapture
+        )?;
         terminal.show_cursor()?;
 
         return result.map_err(|e| Box::new(e) as Box<dyn std::error::Error>);
@@ -515,10 +650,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             return Err(format!(
                 "no .atom file in {} — generate one first with: atom --with-data-deps <source_dir>",
                 path.display()
-            ).into());
+            )
+            .into());
         }
 
-        let source_dir = source_root.as_ref().map(PathBuf::from).unwrap_or_else(|| path.to_path_buf());
+        let source_dir = source_root
+            .as_ref()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| path.to_path_buf());
 
         // Tools availability + auto-install prompt.
         let has_atom = bom::find_atom().is_ok();
@@ -533,7 +672,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 d = path.display()
             );
             if !bom::prompt_yes_no(&msg) {
-                eprintln!("Tip: install manually: npm install -g @cyclonedx/cdxgen @appthreat/atom @appthreat/atom-parsetools");
+                eprintln!(
+                    "Tip: install manually: npm install -g @cyclonedx/cdxgen @appthreat/atom @appthreat/atom-parsetools"
+                );
                 return Err("atom generation cancelled by user".into());
             }
             eprint!("Installing cdxgen, atom, and atom-parsetools... ");
@@ -551,7 +692,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             return Err(format!(
                 "no .atom file in {} and {missing} is required for generation",
                 path.display()
-            ).into());
+            )
+            .into());
         }
 
         // Generation prompt.
@@ -572,7 +714,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let language = bom::atom_gen::detect_language(&source_dir).map(|s| s.to_string());
         let language_for_atom = language.as_deref().unwrap_or("all").to_string();
         let reports_dir = args.reports_dir.unwrap_or_else(|| {
-            PathBuf::from(&source_dir).join(".chen").join("chennai-reports")
+            PathBuf::from(&source_dir)
+                .join(".chen")
+                .join("chennai-reports")
         });
         let atom_path = bom::atom_output_path(&source_dir);
         let engine_cmd = Engine::resolve_command(args.engine.as_deref()).ok_or(
@@ -584,7 +728,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // cdxgen task.
         {
-            bg_progress.lock().unwrap().push(BgTaskInfo { name: "cdxgen".into(), status: BgStatus::Running });
+            bg_progress.lock().unwrap().push(BgTaskInfo {
+                name: "cdxgen".into(),
+                status: BgStatus::Running,
+            });
             let progress = bg_progress.clone();
             let sdir = source_dir.clone();
             let lang = language.clone();
@@ -612,7 +759,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // atom task (waits for cdxgen to complete).
         {
-            bg_progress.lock().unwrap().push(BgTaskInfo { name: "atom".into(), status: BgStatus::Running });
+            bg_progress.lock().unwrap().push(BgTaskInfo {
+                name: "atom".into(),
+                status: BgStatus::Running,
+            });
             let progress = bg_progress.clone();
             let sdir = source_dir.clone();
             let apath = atom_path.clone();
@@ -622,7 +772,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 loop {
                     let cdxgen_done = {
                         let tasks = progress.lock().unwrap();
-                        tasks.iter().find(|t| t.name == "cdxgen")
+                        tasks
+                            .iter()
+                            .find(|t| t.name == "cdxgen")
                             .map(|t| t.status != BgStatus::Running)
                             .unwrap_or(true)
                     };
@@ -649,7 +801,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         // Create App with deferred init.
-        let mut app = App::new(None, "generating...".into(), Summary::default(), source_root.clone());
+        let mut app = App::new(
+            None,
+            "generating...".into(),
+            Summary::default(),
+            source_root.clone(),
+        );
         app.bg_progress = bg_progress;
         app.init_phase = InitPhase::Starting;
         app.deferred_atom_path = Some(atom_path.to_string_lossy().to_string());
@@ -658,13 +815,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // See the fast-path note: fall back to the project directory so the agent's
         // BOM tool can locate the SBOM when `--source` wasn't passed.
-        let agent_source_root = source_root.clone()
+        let agent_source_root = source_root
+            .clone()
             .or_else(|| Some(source_dir.to_string_lossy().to_string()));
 
         let agent_ctx = if config.enabled {
             match agent::create_provider(&config) {
                 Ok(provider) => {
-                    debug_eprintln!(config.debug, "AI agent enabled: {} ({})", config.provider, config.model);
+                    debug_eprintln!(
+                        config.debug,
+                        "AI agent enabled: {} ({})",
+                        config.provider,
+                        config.model
+                    );
                     Some(AgentCtx {
                         provider,
                         engine: None,
@@ -677,18 +840,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         allowed_tools: None,
                         orchestrate: config.orchestrate,
                         cancel: Arc::new(AtomicBool::new(false)),
-                        debug_logger: if config.debug { DebugLogger::new(agent_source_root.as_deref()) } else { None },
+                        debug_logger: if config.debug {
+                            DebugLogger::new(agent_source_root.as_deref())
+                        } else {
+                            None
+                        },
                         findings: Arc::new(Mutex::new(FindingSet::new())),
-            token_ledger: Arc::new(Mutex::new(TokenLedger::default())),
-            process_note: Arc::new(Mutex::new(ProcessNote::default())),
-            run_profile: Arc::new(Mutex::new(RunProfile::new())),
-            max_subagents: config.max_subagents,
-            turn_budget: config.turn_budget,
-            token_budget: config.token_budget,
-        })
+                        token_ledger: Arc::new(Mutex::new(TokenLedger::default())),
+                        process_note: Arc::new(Mutex::new(ProcessNote::default())),
+                        run_profile: Arc::new(Mutex::new(RunProfile::new())),
+                        max_subagents: config.max_subagents,
+                        turn_budget: config.turn_budget,
+                        token_budget: config.token_budget,
+                    })
                 }
                 Err(e) => {
-                    debug_eprintln!(config.debug, "Warning: failed to create LLM provider: {e}. Agent disabled.");
+                    debug_eprintln!(
+                        config.debug,
+                        "Warning: failed to create LLM provider: {e}. Agent disabled."
+                    );
                     None
                 }
             }
@@ -707,10 +877,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let backend = CrosstermBackend::new(stdout);
         let mut terminal = ratatui::Terminal::new(backend)?;
 
-        let result = run_app(&mut terminal, &mut app, &theme, agent_ctx, config, agent_source_root, reports_dir, custom_system_prompt);
+        let result = run_app(
+            &mut terminal,
+            &mut app,
+            &theme,
+            agent_ctx,
+            config,
+            agent_source_root,
+            reports_dir,
+            custom_system_prompt,
+        );
 
         disable_raw_mode()?;
-        execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
+        execute!(
+            terminal.backend_mut(),
+            LeaveAlternateScreen,
+            DisableMouseCapture
+        )?;
         terminal.show_cursor()?;
 
         result.map_err(|e| Box::new(e) as Box<dyn std::error::Error>)
@@ -730,10 +913,14 @@ fn run_non_atom_mode(
     reports_dir_cli: Option<PathBuf>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let reports_dir = reports_dir_cli.unwrap_or_else(|| {
-        PathBuf::from(source_dir).join(".chen").join("chennai-reports")
+        PathBuf::from(source_dir)
+            .join(".chen")
+            .join("chennai-reports")
     });
     let bom_store = find_existing_boms(&reports_dir);
-    let mut bom_store = if bom_store.loaded { bom_store } else {
+    let mut bom_store = if bom_store.loaded {
+        bom_store
+    } else {
         find_existing_boms(source_dir)
     };
 
@@ -741,7 +928,9 @@ fn run_non_atom_mode(
     let existing_backend: Option<BackendCtx> = match language.as_deref() {
         Some("rust") => {
             locate_report_dir(rusi::runner::RUSI_REPORT_FILENAME, &reports_dir, source_dir)
-                .and_then(|dir| rusi::loader::LoadedReport::from_file(&rusi::rusi_report_path(&dir)).ok())
+                .and_then(|dir| {
+                    rusi::loader::LoadedReport::from_file(&rusi::rusi_report_path(&dir)).ok()
+                })
                 .map(|report| {
                     Box::new(RusiCtx {
                         report,
@@ -751,30 +940,36 @@ fn run_non_atom_mode(
                     }) as BackendCtx
                 })
         }
-        Some("go") => {
-            locate_report_dir(golem::runner::GOLEM_REPORT_FILENAME, &reports_dir, source_dir)
-                .and_then(|dir| golem::loader::LoadedReport::from_file(&golem::golem_report_path(&dir)).ok())
-                .map(|report| {
-                    Box::new(GolemCtx {
-                        report,
-                        source_root: source_dir.to_string_lossy().to_string(),
-                        callgraph_path: None,
-                        dataflow_path: None,
-                    }) as BackendCtx
-                })
-        }
-        Some("dotnet") => {
-            locate_report_dir(dosai::runner::DOSAI_DATAFLOWS_FILENAME, &reports_dir, source_dir)
-                .and_then(|dir| dosai::loader::DosaiReports::load(&dir).ok())
-                .map(|reports| {
-                    Box::new(DosaiCtx {
-                        dataflows: reports.dataflows,
-                        methods: reports.methods,
-                        crypto: reports.crypto,
-                        source_root: source_dir.to_string_lossy().to_string(),
-                    }) as BackendCtx
-                })
-        }
+        Some("go") => locate_report_dir(
+            golem::runner::GOLEM_REPORT_FILENAME,
+            &reports_dir,
+            source_dir,
+        )
+        .and_then(|dir| {
+            golem::loader::LoadedReport::from_file(&golem::golem_report_path(&dir)).ok()
+        })
+        .map(|report| {
+            Box::new(GolemCtx {
+                report,
+                source_root: source_dir.to_string_lossy().to_string(),
+                callgraph_path: None,
+                dataflow_path: None,
+            }) as BackendCtx
+        }),
+        Some("dotnet") => locate_report_dir(
+            dosai::runner::DOSAI_DATAFLOWS_FILENAME,
+            &reports_dir,
+            source_dir,
+        )
+        .and_then(|dir| dosai::loader::DosaiReports::load(&dir).ok())
+        .map(|reports| {
+            Box::new(DosaiCtx {
+                dataflows: reports.dataflows,
+                methods: reports.methods,
+                crypto: reports.crypto,
+                source_root: source_dir.to_string_lossy().to_string(),
+            }) as BackendCtx
+        }),
         Some("binary") => {
             load_blint_backend(source_dir, &reports_dir).map(|ctx| Box::new(ctx) as BackendCtx)
         }
@@ -783,12 +978,23 @@ fn run_non_atom_mode(
 
     // Fast path: all data already exists — proceed synchronously as before.
     let bom_ready = bom_store.loaded;
-    let backend_ready = existing_backend.is_some() || !matches!(language.as_deref(), Some("rust" | "go" | "dotnet" | "binary"));
+    let backend_ready = existing_backend.is_some()
+        || !matches!(
+            language.as_deref(),
+            Some("rust" | "go" | "dotnet" | "binary")
+        );
     if bom_ready && backend_ready {
         return finish_non_atom_startup(
-            source_dir, source_root, language, config, theme,
-            custom_system_prompt, ask, reports_dir,
-            bom_store, existing_backend,
+            source_dir,
+            source_root,
+            language,
+            config,
+            theme,
+            custom_system_prompt,
+            ask,
+            reports_dir,
+            bom_store,
+            existing_backend,
         );
     }
 
@@ -796,7 +1002,9 @@ fn run_non_atom_mode(
     if ask.is_some() {
         if !bom_store.loaded {
             for lifecycle in bom::LIFECYCLES {
-                if let Ok(path) = bom::generate_bom(source_dir, &reports_dir, lifecycle, language.as_deref()) {
+                if let Ok(path) =
+                    bom::generate_bom(source_dir, &reports_dir, lifecycle, language.as_deref())
+                {
                     let mut store = BomStore::new();
                     if store.load_path(&path).is_ok() {
                         bom_store = store;
@@ -806,26 +1014,46 @@ fn run_non_atom_mode(
             }
         }
         let backend: Option<BackendCtx> = match language.as_deref() {
-            Some("rust") => load_or_generate_rusi(source_dir, &reports_dir, true, config.debug).ok().map(|ctx| Box::new(ctx) as BackendCtx),
-            Some("go") => load_or_generate_golem(source_dir, &reports_dir, true, config.debug).ok().map(|ctx| Box::new(ctx) as BackendCtx),
-            Some("dotnet") => load_or_generate_dosai(source_dir, &reports_dir, true, config.debug).ok().map(|ctx| Box::new(ctx) as BackendCtx),
-            Some("binary") => load_blint_backend(source_dir, &reports_dir).map(|ctx| Box::new(ctx) as BackendCtx),
+            Some("rust") => load_or_generate_rusi(source_dir, &reports_dir, true, config.debug)
+                .ok()
+                .map(|ctx| Box::new(ctx) as BackendCtx),
+            Some("go") => load_or_generate_golem(source_dir, &reports_dir, true, config.debug)
+                .ok()
+                .map(|ctx| Box::new(ctx) as BackendCtx),
+            Some("dotnet") => load_or_generate_dosai(source_dir, &reports_dir, true, config.debug)
+                .ok()
+                .map(|ctx| Box::new(ctx) as BackendCtx),
+            Some("binary") => {
+                load_blint_backend(source_dir, &reports_dir).map(|ctx| Box::new(ctx) as BackendCtx)
+            }
             _ => None,
         };
         return finish_non_atom_startup(
-            source_dir, source_root, language, config, theme,
-            custom_system_prompt, ask, reports_dir,
-            bom_store, backend,
+            source_dir,
+            source_root,
+            language,
+            config,
+            theme,
+            custom_system_prompt,
+            ask,
+            reports_dir,
+            bom_store,
+            backend,
         );
     }
 
     // Slow path: spawn background tasks for cdxgen and/or analysis tool.
-    let source_root_str = source_root.clone().unwrap_or_else(|| source_dir.to_string_lossy().to_string());
+    let source_root_str = source_root
+        .clone()
+        .unwrap_or_else(|| source_dir.to_string_lossy().to_string());
     let bg_progress = Arc::new(Mutex::new(Vec::new()));
 
     // cdxgen task (if no BOM loaded).
     if !bom_store.loaded {
-        bg_progress.lock().unwrap().push(BgTaskInfo { name: "cdxgen".into(), status: BgStatus::Running });
+        bg_progress.lock().unwrap().push(BgTaskInfo {
+            name: "cdxgen".into(),
+            status: BgStatus::Running,
+        });
         let progress = bg_progress.clone();
         let sdir = source_dir.to_path_buf();
         let lang = language.clone();
@@ -855,67 +1083,70 @@ fn run_non_atom_mode(
     if existing_backend.is_none() {
         match language.as_deref() {
             Some("rust") => {
-                bg_progress.lock().unwrap().push(BgTaskInfo { name: "rusi".into(), status: BgStatus::Running });
+                bg_progress.lock().unwrap().push(BgTaskInfo {
+                    name: "rusi".into(),
+                    status: BgStatus::Running,
+                });
                 let progress = bg_progress.clone();
                 let sdir = source_dir.to_path_buf();
                 let rdir = reports_dir.clone();
-                thread::spawn(move || {
-                    match rusi::run_rusi(&sdir, &rdir) {
-                        Ok(_) => {
-                            let mut tasks = progress.lock().unwrap();
-                            if let Some(t) = tasks.iter_mut().find(|t| t.name == "rusi") {
-                                t.status = BgStatus::Done;
-                            }
+                thread::spawn(move || match rusi::run_rusi(&sdir, &rdir) {
+                    Ok(_) => {
+                        let mut tasks = progress.lock().unwrap();
+                        if let Some(t) = tasks.iter_mut().find(|t| t.name == "rusi") {
+                            t.status = BgStatus::Done;
                         }
-                        Err(e) => {
-                            let mut tasks = progress.lock().unwrap();
-                            if let Some(t) = tasks.iter_mut().find(|t| t.name == "rusi") {
-                                t.status = BgStatus::Failed(e);
-                            }
+                    }
+                    Err(e) => {
+                        let mut tasks = progress.lock().unwrap();
+                        if let Some(t) = tasks.iter_mut().find(|t| t.name == "rusi") {
+                            t.status = BgStatus::Failed(e);
                         }
                     }
                 });
             }
             Some("go") => {
-                bg_progress.lock().unwrap().push(BgTaskInfo { name: "golem".into(), status: BgStatus::Running });
+                bg_progress.lock().unwrap().push(BgTaskInfo {
+                    name: "golem".into(),
+                    status: BgStatus::Running,
+                });
                 let progress = bg_progress.clone();
                 let sdir = source_dir.to_path_buf();
                 let rdir = reports_dir.clone();
-                thread::spawn(move || {
-                    match golem::run_golem(&sdir, &rdir) {
-                        Ok(_) => {
-                            let mut tasks = progress.lock().unwrap();
-                            if let Some(t) = tasks.iter_mut().find(|t| t.name == "golem") {
-                                t.status = BgStatus::Done;
-                            }
+                thread::spawn(move || match golem::run_golem(&sdir, &rdir) {
+                    Ok(_) => {
+                        let mut tasks = progress.lock().unwrap();
+                        if let Some(t) = tasks.iter_mut().find(|t| t.name == "golem") {
+                            t.status = BgStatus::Done;
                         }
-                        Err(e) => {
-                            let mut tasks = progress.lock().unwrap();
-                            if let Some(t) = tasks.iter_mut().find(|t| t.name == "golem") {
-                                t.status = BgStatus::Failed(e);
-                            }
+                    }
+                    Err(e) => {
+                        let mut tasks = progress.lock().unwrap();
+                        if let Some(t) = tasks.iter_mut().find(|t| t.name == "golem") {
+                            t.status = BgStatus::Failed(e);
                         }
                     }
                 });
             }
             Some("dotnet") => {
-                bg_progress.lock().unwrap().push(BgTaskInfo { name: "dosai".into(), status: BgStatus::Running });
+                bg_progress.lock().unwrap().push(BgTaskInfo {
+                    name: "dosai".into(),
+                    status: BgStatus::Running,
+                });
                 let progress = bg_progress.clone();
                 let sdir = source_dir.to_path_buf();
                 let rdir = reports_dir.clone();
-                thread::spawn(move || {
-                    match dosai::run_dosai(&sdir, &rdir) {
-                        Ok(_) => {
-                            let mut tasks = progress.lock().unwrap();
-                            if let Some(t) = tasks.iter_mut().find(|t| t.name == "dosai") {
-                                t.status = BgStatus::Done;
-                            }
+                thread::spawn(move || match dosai::run_dosai(&sdir, &rdir) {
+                    Ok(_) => {
+                        let mut tasks = progress.lock().unwrap();
+                        if let Some(t) = tasks.iter_mut().find(|t| t.name == "dosai") {
+                            t.status = BgStatus::Done;
                         }
-                        Err(e) => {
-                            let mut tasks = progress.lock().unwrap();
-                            if let Some(t) = tasks.iter_mut().find(|t| t.name == "dosai") {
-                                t.status = BgStatus::Failed(e);
-                            }
+                    }
+                    Err(e) => {
+                        let mut tasks = progress.lock().unwrap();
+                        if let Some(t) = tasks.iter_mut().find(|t| t.name == "dosai") {
+                            t.status = BgStatus::Failed(e);
                         }
                     }
                 });
@@ -925,7 +1156,12 @@ fn run_non_atom_mode(
     }
 
     // Create App with deferred init.
-    let mut app = App::new(None, source_dir.to_string_lossy().to_string(), Summary::default(), source_root.clone());
+    let mut app = App::new(
+        None,
+        source_dir.to_string_lossy().to_string(),
+        Summary::default(),
+        source_root.clone(),
+    );
     app.non_atom = true;
     app.project_language = language.clone();
     app.focus = Panel::Repl;
@@ -945,7 +1181,12 @@ fn run_non_atom_mode(
     let agent_ctx = if config.enabled {
         match agent::create_provider(config) {
             Ok(provider) => {
-                debug_eprintln!(config.debug, "AI agent enabled: {} ({})", config.provider, config.model);
+                debug_eprintln!(
+                    config.debug,
+                    "AI agent enabled: {} ({})",
+                    config.provider,
+                    config.model
+                );
                 Some(AgentCtx {
                     provider,
                     engine: None,
@@ -958,7 +1199,11 @@ fn run_non_atom_mode(
                     allowed_tools: None,
                     orchestrate: config.orchestrate,
                     cancel: Arc::new(AtomicBool::new(false)),
-                    debug_logger: if config.debug { DebugLogger::new(Some(&source_root_str)) } else { None },
+                    debug_logger: if config.debug {
+                        DebugLogger::new(Some(&source_root_str))
+                    } else {
+                        None
+                    },
                     findings: Arc::new(Mutex::new(FindingSet::new())),
                     token_ledger: Arc::new(Mutex::new(TokenLedger::default())),
                     process_note: Arc::new(Mutex::new(ProcessNote::default())),
@@ -969,7 +1214,10 @@ fn run_non_atom_mode(
                 })
             }
             Err(e) => {
-                debug_eprintln!(config.debug, "Warning: failed to create LLM provider: {e}. Agent disabled.");
+                debug_eprintln!(
+                    config.debug,
+                    "Warning: failed to create LLM provider: {e}. Agent disabled."
+                );
                 None
             }
         }
@@ -987,10 +1235,23 @@ fn run_non_atom_mode(
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = ratatui::Terminal::new(backend)?;
 
-    let result = run_app(&mut terminal, &mut app, theme, agent_ctx, config.clone(), Some(source_root_str), reports_dir, None);
+    let result = run_app(
+        &mut terminal,
+        &mut app,
+        theme,
+        agent_ctx,
+        config.clone(),
+        Some(source_root_str),
+        reports_dir,
+        None,
+    );
 
     disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
+    execute!(
+        terminal.backend_mut(),
+        LeaveAlternateScreen,
+        DisableMouseCapture
+    )?;
     terminal.show_cursor()?;
 
     result.map_err(|e| Box::new(e) as Box<dyn std::error::Error>)
@@ -1025,18 +1286,40 @@ fn finish_non_atom_startup(
     bom_store: BomStore,
     backend: Option<BackendCtx>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let source_root_str = source_root.clone().unwrap_or_else(|| source_dir.to_string_lossy().to_string());
-    let bom_summary = if bom_store.loaded { bom_store.summary() } else { String::new() };
+    let source_root_str = source_root
+        .clone()
+        .unwrap_or_else(|| source_dir.to_string_lossy().to_string());
+    let bom_summary = if bom_store.loaded {
+        bom_store.summary()
+    } else {
+        String::new()
+    };
     let bom_components = if bom_store.loaded && !bom_store.components.is_empty() {
-        let top: Vec<String> = bom_store.components.iter().take(20).map(|r| {
-            format!("  - {} {} ({}) {}", r.type_display(), r.name_display(), r.version_display(), r.purl_display())
-        }).collect();
+        let top: Vec<String> = bom_store
+            .components
+            .iter()
+            .take(20)
+            .map(|r| {
+                format!(
+                    "  - {} {} ({}) {}",
+                    r.type_display(),
+                    r.name_display(),
+                    r.version_display(),
+                    r.purl_display()
+                )
+            })
+            .collect();
         Some(top.join("\n"))
-    } else { None };
+    } else {
+        None
+    };
 
     let summary_text = match &backend {
         Some(ctx) => ctx.summary(),
-        None => format!("Language: {lang}\nNo structured analysis available. Use ripgrep/read_file to explore the codebase.", lang = language.as_deref().unwrap_or("unknown")),
+        None => format!(
+            "Language: {lang}\nNo structured analysis available. Use ripgrep/read_file to explore the codebase.",
+            lang = language.as_deref().unwrap_or("unknown")
+        ),
     };
 
     let memory_index = crate::agent::memory::FactStore::open(Some(&source_root_str))
@@ -1053,18 +1336,46 @@ fn finish_non_atom_startup(
     let system_prompt = match custom_system_prompt {
         Some(sp) => format!("{sp}{memory_section}"),
         None => match &backend {
-            Some(ctx) => format!("{}{memory_section}", ctx.system_prompt(&summary_text, Some(&bom_summary), bom_components.as_deref(), None)),
+            Some(ctx) => format!(
+                "{}{memory_section}",
+                ctx.system_prompt(
+                    &summary_text,
+                    Some(&bom_summary),
+                    bom_components.as_deref(),
+                    None
+                )
+            ),
             None => {
-                format!("{}{memory_section}", build_agent_only_prompt(language.as_deref().unwrap_or("unknown"), &summary_text, &bom_summary, bom_components.as_deref()))
+                format!(
+                    "{}{memory_section}",
+                    build_agent_only_prompt(
+                        language.as_deref().unwrap_or("unknown"),
+                        &summary_text,
+                        &bom_summary,
+                        bom_components.as_deref()
+                    )
+                )
             }
         },
     };
 
     if let Some(question) = ask {
-        return run_headless_agent_non_atom(config, backend, source_root_str, system_prompt, question, reports_dir);
+        return run_headless_agent_non_atom(
+            config,
+            backend,
+            source_root_str,
+            system_prompt,
+            question,
+            reports_dir,
+        );
     }
 
-    let mut app = App::new(None, source_dir.to_string_lossy().to_string(), Summary::default(), source_root.clone());
+    let mut app = App::new(
+        None,
+        source_dir.to_string_lossy().to_string(),
+        Summary::default(),
+        source_root.clone(),
+    );
     app.non_atom = true;
     app.project_language = language.clone();
     app.focus = Panel::Repl;
@@ -1076,7 +1387,10 @@ fn finish_non_atom_startup(
         app.bom_generated = false;
         app.status = format!(
             "BOM loaded ({} components). AI agent is your primary interface.",
-            app.bom_store.as_ref().map(|s| s.total_components).unwrap_or(0)
+            app.bom_store
+                .as_ref()
+                .map(|s| s.total_components)
+                .unwrap_or(0)
         );
         debug_eprintln!(config.debug, "{}", app.status);
     } else {
@@ -1089,7 +1403,12 @@ fn finish_non_atom_startup(
     let agent_ctx = if config.enabled {
         match agent::create_provider(config) {
             Ok(provider) => {
-                debug_eprintln!(config.debug, "AI agent enabled: {} ({})", config.provider, config.model);
+                debug_eprintln!(
+                    config.debug,
+                    "AI agent enabled: {} ({})",
+                    config.provider,
+                    config.model
+                );
                 Some(AgentCtx {
                     provider,
                     engine: None,
@@ -1102,7 +1421,11 @@ fn finish_non_atom_startup(
                     allowed_tools: None,
                     orchestrate: config.orchestrate,
                     cancel: Arc::new(AtomicBool::new(false)),
-                    debug_logger: if config.debug { DebugLogger::new(Some(&source_root_str)) } else { None },
+                    debug_logger: if config.debug {
+                        DebugLogger::new(Some(&source_root_str))
+                    } else {
+                        None
+                    },
                     findings: Arc::new(Mutex::new(FindingSet::new())),
                     token_ledger: Arc::new(Mutex::new(TokenLedger::default())),
                     process_note: Arc::new(Mutex::new(ProcessNote::default())),
@@ -1113,7 +1436,10 @@ fn finish_non_atom_startup(
                 })
             }
             Err(e) => {
-                debug_eprintln!(config.debug, "Warning: failed to create LLM provider: {e}. Agent disabled.");
+                debug_eprintln!(
+                    config.debug,
+                    "Warning: failed to create LLM provider: {e}. Agent disabled."
+                );
                 None
             }
         }
@@ -1131,10 +1457,23 @@ fn finish_non_atom_startup(
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = ratatui::Terminal::new(backend)?;
 
-    let result = run_app(&mut terminal, &mut app, theme, agent_ctx, config.clone(), Some(source_root_str), reports_dir, None);
+    let result = run_app(
+        &mut terminal,
+        &mut app,
+        theme,
+        agent_ctx,
+        config.clone(),
+        Some(source_root_str),
+        reports_dir,
+        None,
+    );
 
     disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
+    execute!(
+        terminal.backend_mut(),
+        LeaveAlternateScreen,
+        DisableMouseCapture
+    )?;
     terminal.show_cursor()?;
 
     result.map_err(|e| Box::new(e) as Box<dyn std::error::Error>)
@@ -1142,18 +1481,37 @@ fn finish_non_atom_startup(
 
 /// Try to load an existing rusi report or run rusi to generate one.
 /// When `headless` is true, skip interactive prompts and auto-run rusi.
-fn load_or_generate_rusi(source_dir: &Path, reports_dir: &Path, headless: bool, debug: bool) -> Result<RusiCtx, String> {
+fn load_or_generate_rusi(
+    source_dir: &Path,
+    reports_dir: &Path,
+    headless: bool,
+    debug: bool,
+) -> Result<RusiCtx, String> {
     let make = |report: rusi::loader::LoadedReport, dir: &Path| RusiCtx {
         report,
         source_root: source_dir.to_string_lossy().to_string(),
-        callgraph_path: Some(dir.join(rusi::runner::RUSI_CALLGRAPH_FILENAME).to_string_lossy().to_string()),
-        dataflow_path: Some(dir.join(rusi::runner::RUSI_DATAFLOW_FILENAME).to_string_lossy().to_string()),
+        callgraph_path: Some(
+            dir.join(rusi::runner::RUSI_CALLGRAPH_FILENAME)
+                .to_string_lossy()
+                .to_string(),
+        ),
+        dataflow_path: Some(
+            dir.join(rusi::runner::RUSI_DATAFLOW_FILENAME)
+                .to_string_lossy()
+                .to_string(),
+        ),
     };
 
     // If a report already exists (reports dir preferred, then source dir), load it.
-    if let Some(dir) = locate_report_dir(rusi::runner::RUSI_REPORT_FILENAME, reports_dir, source_dir) {
+    if let Some(dir) =
+        locate_report_dir(rusi::runner::RUSI_REPORT_FILENAME, reports_dir, source_dir)
+    {
         let report_path = rusi::rusi_report_path(&dir);
-        debug_eprintln!(debug, "Loading existing rusi report: {}", report_path.display());
+        debug_eprintln!(
+            debug,
+            "Loading existing rusi report: {}",
+            report_path.display()
+        );
         let report = rusi::loader::LoadedReport::from_file(&report_path)?;
         return Ok(make(report, &dir));
     }
@@ -1170,7 +1528,10 @@ fn load_or_generate_rusi(source_dir: &Path, reports_dir: &Path, headless: bool, 
         eprint!("Running rusi analysis... ");
         let _ = std::io::stderr().flush();
     } else {
-        debug_eprintln!(debug, "No rusi report found. Running rusi analysis (headless)...");
+        debug_eprintln!(
+            debug,
+            "No rusi report found. Running rusi analysis (headless)..."
+        );
     }
 
     let out_path = rusi::run_rusi(source_dir, reports_dir)?;
@@ -1226,7 +1587,9 @@ fn find_aux_blint_backend(dirs: &[&Path], debug: bool) -> Option<BlintCtx> {
 
 /// Immediate (one-level) subdirectories of `dir`, sorted for deterministic scan order.
 fn immediate_subdirs(dir: &Path) -> Vec<PathBuf> {
-    let Ok(entries) = std::fs::read_dir(dir) else { return Vec::new() };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
     let mut subs: Vec<PathBuf> = entries
         .flatten()
         .map(|e| e.path())
@@ -1240,24 +1603,48 @@ fn immediate_subdirs(dir: &Path) -> Vec<PathBuf> {
 /// is found. A `*-metadata.json` qualifies only if it carries blint markers (so an atom or
 /// other tool's metadata file isn't mistaken for blint output).
 fn scan_dir_for_blint(dir: &Path, debug: bool) -> Option<BlintCtx> {
-    let Ok(entries) = std::fs::read_dir(dir) else { return None };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return None;
+    };
     let mut metas: Vec<PathBuf> = entries
         .flatten()
         .map(|e| e.path())
-        .filter(|p| p.file_name().and_then(|n| n.to_str()).map(|n| n.ends_with("-metadata.json")).unwrap_or(false))
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .map(|n| n.ends_with("-metadata.json"))
+                .unwrap_or(false)
+        })
         .collect();
     metas.sort();
     for meta in metas {
-        let Ok(report) = crate::shared::LoadedReport::from_file(&meta) else { continue };
+        let Ok(report) = crate::shared::LoadedReport::from_file(&meta) else {
+            continue;
+        };
         let r = &report.report;
-        let is_blint = r.get("exe_type").is_some() || r.get("binary_type").is_some()
+        let is_blint = r.get("exe_type").is_some()
+            || r.get("binary_type").is_some()
             || r.get("disassembled_functions").is_some()
             || r.get("callgraph").map(|c| c.is_object()).unwrap_or(false);
-        if !is_blint { continue; }
-        let Some(base) = meta.file_name().and_then(|n| n.to_str()).map(|n| n.trim_end_matches("-metadata.json")) else { continue };
+        if !is_blint {
+            continue;
+        }
+        let Some(base) = meta
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(|n| n.trim_end_matches("-metadata.json"))
+        else {
+            continue;
+        };
         if let Ok(reports) = BlintReports::load(base, dir) {
-            debug_eprintln!(debug, "Also loaded blint report ({base}) — blint_* tools enabled alongside atom");
-            return Some(BlintCtx { reports, artifact_path: base.to_string() });
+            debug_eprintln!(
+                debug,
+                "Also loaded blint report ({base}) — blint_* tools enabled alongside atom"
+            );
+            return Some(BlintCtx {
+                reports,
+                artifact_path: base.to_string(),
+            });
         }
     }
     None
@@ -1265,7 +1652,12 @@ fn scan_dir_for_blint(dir: &Path, debug: bool) -> Option<BlintCtx> {
 
 /// Try to load an existing golem report (from `reports_dir` or `source_dir`) or run golem
 /// to generate one into `reports_dir`.
-fn load_or_generate_golem(source_dir: &Path, reports_dir: &Path, headless: bool, debug: bool) -> Result<GolemCtx, String> {
+fn load_or_generate_golem(
+    source_dir: &Path,
+    reports_dir: &Path,
+    headless: bool,
+    debug: bool,
+) -> Result<GolemCtx, String> {
     let make = |report: golem::loader::LoadedReport| GolemCtx {
         report,
         source_root: source_dir.to_string_lossy().to_string(),
@@ -1273,9 +1665,17 @@ fn load_or_generate_golem(source_dir: &Path, reports_dir: &Path, headless: bool,
         dataflow_path: None,
     };
 
-    if let Some(dir) = locate_report_dir(golem::runner::GOLEM_REPORT_FILENAME, reports_dir, source_dir) {
+    if let Some(dir) = locate_report_dir(
+        golem::runner::GOLEM_REPORT_FILENAME,
+        reports_dir,
+        source_dir,
+    ) {
         let report_path = golem::golem_report_path(&dir);
-        debug_eprintln!(debug, "Loading existing golem report: {}", report_path.display());
+        debug_eprintln!(
+            debug,
+            "Loading existing golem report: {}",
+            report_path.display()
+        );
         return Ok(make(golem::loader::LoadedReport::from_file(&report_path)?));
     }
 
@@ -1291,7 +1691,10 @@ fn load_or_generate_golem(source_dir: &Path, reports_dir: &Path, headless: bool,
         eprint!("Running golem analysis... ");
         let _ = std::io::stderr().flush();
     } else {
-        debug_eprintln!(debug, "No golem report found. Running golem analysis (headless)...");
+        debug_eprintln!(
+            debug,
+            "No golem report found. Running golem analysis (headless)..."
+        );
     }
 
     let out_path = golem::run_golem(source_dir, reports_dir)?;
@@ -1303,7 +1706,12 @@ fn load_or_generate_golem(source_dir: &Path, reports_dir: &Path, headless: bool,
 
 /// Try to load existing dosai reports (from `reports_dir` or `source_dir`) or run dosai to
 /// generate them into `reports_dir`.
-fn load_or_generate_dosai(source_dir: &Path, reports_dir: &Path, headless: bool, debug: bool) -> Result<DosaiCtx, String> {
+fn load_or_generate_dosai(
+    source_dir: &Path,
+    reports_dir: &Path,
+    headless: bool,
+    debug: bool,
+) -> Result<DosaiCtx, String> {
     let make = |reports: dosai::loader::DosaiReports| DosaiCtx {
         dataflows: reports.dataflows,
         methods: reports.methods,
@@ -1311,8 +1719,16 @@ fn load_or_generate_dosai(source_dir: &Path, reports_dir: &Path, headless: bool,
         source_root: source_dir.to_string_lossy().to_string(),
     };
 
-    if let Some(dir) = locate_report_dir(dosai::runner::DOSAI_DATAFLOWS_FILENAME, reports_dir, source_dir) {
-        debug_eprintln!(debug, "Loading existing dosai reports from: {}", dir.display());
+    if let Some(dir) = locate_report_dir(
+        dosai::runner::DOSAI_DATAFLOWS_FILENAME,
+        reports_dir,
+        source_dir,
+    ) {
+        debug_eprintln!(
+            debug,
+            "Loading existing dosai reports from: {}",
+            dir.display()
+        );
         return Ok(make(dosai::loader::DosaiReports::load(&dir)?));
     }
 
@@ -1328,7 +1744,10 @@ fn load_or_generate_dosai(source_dir: &Path, reports_dir: &Path, headless: bool,
         eprint!("Running dosai analysis... ");
         let _ = std::io::stderr().flush();
     } else {
-        debug_eprintln!(debug, "No dosai reports found. Running dosai analysis (headless)...");
+        debug_eprintln!(
+            debug,
+            "No dosai reports found. Running dosai analysis (headless)..."
+        );
     }
 
     let outputs = dosai::run_dosai(source_dir, reports_dir)?;
@@ -1399,7 +1818,8 @@ No structured analysis data is available for this language. You must explore the
 {response_style}
 
 You are an authorized red-team review of the user's own code. Analyze it adversarially and directly: hunt for reachable sinks, missing authn/authz/RBAC, and supply-chain risk, and favor unknown vulnerabilities over known CVEs. Answer concisely with specific file:line references and a concrete exploit path.
-"#)
+"#
+    )
 }
 
 fn run_headless_agent(
@@ -1416,14 +1836,24 @@ fn run_headless_agent(
         std::process::exit(1);
     }
     let provider = agent::create_provider(&config).map_err(|e| format!("provider: {e}"))?;
-    let memory_index = crate::agent::memory::FactStore::open(source_root.as_deref())
-        .map(|s| s.index_markdown());
+    let memory_index =
+        crate::agent::memory::FactStore::open(source_root.as_deref()).map(|s| s.index_markdown());
     let atom_tags = fetch_atom_tags(&mut engine);
     let system_prompt = AgentCtx::build_system_prompt(
-        &summary.language, &summary.version, &summary.rows,
-        None, None, None, memory_index.as_deref(), atom_tags.as_deref(),
+        &summary.language,
+        &summary.version,
+        &summary.rows,
+        None,
+        None,
+        None,
+        memory_index.as_deref(),
+        atom_tags.as_deref(),
     );
-    let debug_logger = if config.debug { DebugLogger::new(source_root.as_deref()) } else { None };
+    let debug_logger = if config.debug {
+        DebugLogger::new(source_root.as_deref())
+    } else {
+        None
+    };
     let ctx = AgentCtx {
         provider,
         engine: Some(Arc::new(Mutex::new(engine))),
@@ -1454,11 +1884,17 @@ fn run_headless_agent(
         let total = findings.findings.len();
         let confirmed = findings.confirmed_count();
         let profile = ctx.run_profile.lock().unwrap();
-        let mode = if config.orchestrate { "orchestrate" } else { "single" };
+        let mode = if config.orchestrate {
+            "orchestrate"
+        } else {
+            "single"
+        };
         // Synthetic driver segments capture coordinator/flat-loop overhead and are
         // not real pipeline stages, so exclude them from `pipeline` and `stages`.
         let is_driver = |label: &str| matches!(label, "orchestrator" | "audit-driver" | "single");
-        let pipeline: Vec<String> = profile.segments.iter()
+        let pipeline: Vec<String> = profile
+            .segments
+            .iter()
             .filter(|s| !is_driver(&s.label))
             .map(|s| s.label.clone())
             .collect();
@@ -1484,8 +1920,8 @@ fn run_headless_agent(
             "profile": profile.to_json(),
         });
         drop(findings);
-        let output = serde_json::to_string_pretty(&json_obj)
-            .map_err(|e| format!("serialize JSON: {e}"))?;
+        let output =
+            serde_json::to_string_pretty(&json_obj).map_err(|e| format!("serialize JSON: {e}"))?;
         println!("{output}");
     } else {
         println!("\n{}", result);
@@ -1507,7 +1943,11 @@ fn run_headless_agent_non_atom(
         std::process::exit(1);
     }
     let provider = agent::create_provider(config).map_err(|e| format!("provider: {e}"))?;
-    let debug_logger = if config.debug { DebugLogger::new(Some(&source_root)) } else { None };
+    let debug_logger = if config.debug {
+        DebugLogger::new(Some(&source_root))
+    } else {
+        None
+    };
     let ctx = AgentCtx {
         provider,
         engine: None,
@@ -1564,7 +2004,9 @@ where
     loop {
         terminal.draw(|frame| ui::render(frame, app, theme))?;
 
-        if app.should_quit { return Ok(()); }
+        if app.should_quit {
+            return Ok(());
+        }
 
         // Poll background startup tasks and run deferred init when all done.
         if app.init_phase == InitPhase::Starting {
@@ -1585,10 +2027,13 @@ where
                 let (tx, rx) = std::sync::mpsc::channel::<Vec<model::StarterQuestion>>();
                 app.starter_rx = Some(rx);
                 app.starter_cancel = Some(cancel.clone());
-                app.starter_deadline = Some(std::time::Instant::now() + std::time::Duration::from_secs(12));
+                app.starter_deadline =
+                    Some(std::time::Instant::now() + std::time::Duration::from_secs(12));
                 thread::spawn(move || {
-                    let pairs = agent::refine_starter_questions(provider.as_ref(), &context, &cancel);
-                    let questions = pairs.into_iter()
+                    let pairs =
+                        agent::refine_starter_questions(provider.as_ref(), &context, &cancel);
+                    let questions = pairs
+                        .into_iter()
                         .map(|(label, command)| model::StarterQuestion { label, command })
                         .collect();
                     tx.send(questions).ok();
@@ -1609,8 +2054,13 @@ where
                     app.starter_deadline = None;
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => {
-                    if app.starter_deadline.is_some_and(|d| std::time::Instant::now() >= d) {
-                        if let Some(c) = app.starter_cancel.as_ref() { c.store(true, std::sync::atomic::Ordering::SeqCst); }
+                    if app
+                        .starter_deadline
+                        .is_some_and(|d| std::time::Instant::now() >= d)
+                    {
+                        if let Some(c) = app.starter_cancel.as_ref() {
+                            c.store(true, std::sync::atomic::Ordering::SeqCst);
+                        }
                         app.starter_rx = None;
                         app.starter_cancel = None;
                         app.starter_deadline = None;
@@ -1632,77 +2082,108 @@ where
         // Check if the agent just asked to start (execute() set agent_active but no rx yet).
         if app.agent_active && app.agent_rx.is_none() {
             // Recreate agent context if it was consumed by a previous run.
-            if agent_ctx.is_none() && config.enabled
-                && let Ok(provider) = agent::create_provider(&config) {
-                    let bom_summary = app.bom_store.as_ref().map(|s| s.summary());
-                    let bom_components_summary = app.bom_store.as_ref().and_then(|s| {
-                        if s.loaded && !s.components.is_empty() {
-                            let top: Vec<String> = s.components.iter().take(20).map(|r| {
-                                format!("  - {} {} ({}) {}", r.type_display(), r.name_display(), r.version_display(), r.purl_display())
-                            }).collect();
-                            Some(top.join("\n"))
-                        } else { None }
-                    });
-                    // Atom is primary when an engine is open: use the atom system prompt even
-                    // if a blint backend is also attached (the backend just adds blint_* tools).
-                    // Fall back to the backend prompt only in pure non-atom mode.
-                    let memory_index = crate::agent::memory::FactStore::open(source_root.as_deref())
-                        .map(|s| s.index_markdown());
-                    let memory_section = memory_index.as_deref().filter(|s| *s != "none yet").map(|idx| {
+            if agent_ctx.is_none()
+                && config.enabled
+                && let Ok(provider) = agent::create_provider(&config)
+            {
+                let bom_summary = app.bom_store.as_ref().map(|s| s.summary());
+                let bom_components_summary = app.bom_store.as_ref().and_then(|s| {
+                    if s.loaded && !s.components.is_empty() {
+                        let top: Vec<String> = s
+                            .components
+                            .iter()
+                            .take(20)
+                            .map(|r| {
+                                format!(
+                                    "  - {} {} ({}) {}",
+                                    r.type_display(),
+                                    r.name_display(),
+                                    r.version_display(),
+                                    r.purl_display()
+                                )
+                            })
+                            .collect();
+                        Some(top.join("\n"))
+                    } else {
+                        None
+                    }
+                });
+                // Atom is primary when an engine is open: use the atom system prompt even
+                // if a blint backend is also attached (the backend just adds blint_* tools).
+                // Fall back to the backend prompt only in pure non-atom mode.
+                let memory_index = crate::agent::memory::FactStore::open(source_root.as_deref())
+                    .map(|s| s.index_markdown());
+                let memory_section = memory_index.as_deref().filter(|s| *s != "none yet").map(|idx| {
                         format!(
                             "\n## Project memory (facts learned in previous sessions — HINTS, re-verify before reporting)\n\
                              {idx}\n\
                              Use the project_memory tool (action:\"recall\"/\"search\") to read a fact's full body.\n"
                         )
                     }).unwrap_or_default();
-                    let atom_tags = app.engine.as_ref().and_then(|e| {
-                        let mut guard = e.lock().unwrap();
-                        fetch_atom_tags(&mut guard)
-                    });
-                    let system_prompt = if let Some(sp) = &custom_system_prompt {
-                        format!("{sp}{memory_section}")
+                let atom_tags = app.engine.as_ref().and_then(|e| {
+                    let mut guard = e.lock().unwrap();
+                    fetch_atom_tags(&mut guard)
+                });
+                let system_prompt = if let Some(sp) = &custom_system_prompt {
+                    format!("{sp}{memory_section}")
+                } else {
+                    let console_history = app.build_console_history();
+                    match (&app.engine, &app.backend) {
+                        (None, Some(b)) => format!(
+                            "{}{memory_section}",
+                            b.system_prompt(
+                                &b.summary(),
+                                bom_summary.as_deref(),
+                                bom_components_summary.as_deref(),
+                                Some(&console_history),
+                            )
+                        ),
+                        _ => AgentCtx::build_system_prompt(
+                            &app.summary.language,
+                            &app.summary.version,
+                            &app.summary.rows,
+                            bom_summary.as_deref(),
+                            bom_components_summary.as_deref(),
+                            Some(&console_history),
+                            memory_index.as_deref(),
+                            atom_tags.as_deref(),
+                        ),
+                    }
+                };
+                let cancel = Arc::new(AtomicBool::new(false));
+                app.agent_cancel = Some(cancel.clone());
+                agent_ctx = Some(AgentCtx {
+                    provider,
+                    engine: app.engine.clone(),
+                    backend: app.backend.as_ref().map(|b| b.clone_box()),
+                    source_root: source_root.clone(),
+                    system_prompt,
+                    max_tokens: 8192,
+                    no_thinking: config.no_thinking,
+                    effort: config.effort.clone(),
+                    allowed_tools: None,
+                    orchestrate: config.orchestrate || app.orchestrate_once,
+                    cancel,
+                    debug_logger: if config.debug {
+                        DebugLogger::new(source_root.as_deref())
                     } else {
-                        let console_history = app.build_console_history();
-                        match (&app.engine, &app.backend) {
-                            (None, Some(b)) => format!("{}{memory_section}", b.system_prompt(
-                                &b.summary(), bom_summary.as_deref(),
-                                bom_components_summary.as_deref(), Some(&console_history),
-                            )),
-                            _ => AgentCtx::build_system_prompt(
-                                &app.summary.language, &app.summary.version, &app.summary.rows,
-                                bom_summary.as_deref(), bom_components_summary.as_deref(),
-                                Some(&console_history), memory_index.as_deref(), atom_tags.as_deref(),
-                            ),
-                        }
-                    };
-                    let cancel = Arc::new(AtomicBool::new(false));
-                    app.agent_cancel = Some(cancel.clone());
-                    agent_ctx = Some(AgentCtx {
-                        provider,
-                        engine: app.engine.clone(),
-                        backend: app.backend.as_ref().map(|b| b.clone_box()),
-                        source_root: source_root.clone(),
-                        system_prompt,
-                        max_tokens: 8192,
-                        no_thinking: config.no_thinking,
-                        effort: config.effort.clone(),
-                        allowed_tools: None,
-                        orchestrate: config.orchestrate || app.orchestrate_once,
-                        cancel,
-                        debug_logger: if config.debug { DebugLogger::new(source_root.as_deref()) } else { None },
-                        findings: Arc::new(Mutex::new(FindingSet::new())),
-            token_ledger: Arc::new(Mutex::new(TokenLedger::default())),
-            process_note: Arc::new(Mutex::new(ProcessNote::default())),
-            run_profile: Arc::new(Mutex::new(RunProfile::new())),
-            max_subagents: config.max_subagents,
-            turn_budget: config.turn_budget,
-            token_budget: config.token_budget,
-        });
-                }
+                        None
+                    },
+                    findings: Arc::new(Mutex::new(FindingSet::new())),
+                    token_ledger: Arc::new(Mutex::new(TokenLedger::default())),
+                    process_note: Arc::new(Mutex::new(ProcessNote::default())),
+                    run_profile: Arc::new(Mutex::new(RunProfile::new())),
+                    max_subagents: config.max_subagents,
+                    turn_budget: config.turn_budget,
+                    token_budget: config.token_budget,
+                });
+            }
             if let Some(ctx) = agent_ctx.take() {
                 // For /orchestrate and /audit, use the stashed objective as the
                 // question; otherwise use the raw query text.
-                let question = app.orchestrate_objective.take()
+                let question = app
+                    .orchestrate_objective
+                    .take()
                     .unwrap_or_else(|| app.agent_query_text.clone());
                 // Clear the one-shot flag now that it's been consumed.
                 app.orchestrate_once = false;
@@ -1712,7 +2193,10 @@ where
                     None => ctx.system_prompt.clone(),
                 };
                 let allowed_tools = app.agent_slash_tools.take();
-                let effort = app.agent_slash_effort.take().unwrap_or_else(|| ctx.effort.clone());
+                let effort = app
+                    .agent_slash_effort
+                    .take()
+                    .unwrap_or_else(|| ctx.effort.clone());
                 let history = app.agent_history.clone();
                 let (tx, rx) = std::sync::mpsc::channel::<agent::provider::AgentEvent>();
                 app.agent_rx = Some(rx);
@@ -1766,12 +2250,15 @@ where
                     let entry_idx = app.pending.as_ref().map(|p| p.entry_idx);
                     let (ok, status) = app.apply_flow_outcome(outcome);
                     if let Some(idx) = entry_idx
-                        && let Some(e) = app.repl.entries.get_mut(idx) {
-                            e.status = status.clone();
-                            e.ok = ok;
+                        && let Some(e) = app.repl.entries.get_mut(idx)
+                    {
+                        e.status = status.clone();
+                        e.ok = ok;
                     }
                     app.status = status;
-                    if ok { app.focus = Panel::Output; }
+                    if ok {
+                        app.focus = Panel::Output;
+                    }
                     app.flow_result_rx = None;
                     app.flow_cancel = None;
                     app.pending = None;
@@ -1813,7 +2300,8 @@ fn handle_key(app: &mut App, key: KeyEvent) {
     let code = key.code;
 
     // Agent view: c = cancel, arrow keys scroll.
-    if (app.agent_active || (!app.agent_transcript.is_empty() && app.output.is_none() && app.flows.is_none()))
+    if (app.agent_active
+        || (!app.agent_transcript.is_empty() && app.output.is_none() && app.flows.is_none()))
         && app.focus == Panel::Output
     {
         match code {
@@ -1826,7 +2314,12 @@ fn handle_key(app: &mut App, key: KeyEvent) {
             }
             KeyCode::Char('t') | KeyCode::Char('T') => {
                 app.agent_thinking_expanded = !app.agent_thinking_expanded;
-                app.status = if app.agent_thinking_expanded { "thinking: expanded" } else { "thinking: collapsed" }.into();
+                app.status = if app.agent_thinking_expanded {
+                    "thinking: expanded"
+                } else {
+                    "thinking: collapsed"
+                }
+                .into();
                 return;
             }
             KeyCode::Char('e') | KeyCode::Char('E') => {
@@ -1836,12 +2329,31 @@ fn handle_key(app: &mut App, key: KeyEvent) {
                 app.status = "agent view cleared".into();
                 return;
             }
-            KeyCode::Up | KeyCode::Char('k') => { app.agent_scroll_up(); return; }
-            KeyCode::Down | KeyCode::Char('j') => { app.agent_scroll_down(); return; }
-            KeyCode::PageUp | KeyCode::Char('b') => { app.agent_page_up(); return; }
-            KeyCode::PageDown | KeyCode::Char(' ') => { app.agent_page_down(); return; }
-            KeyCode::Home | KeyCode::Char('g') => { app.agent_scroll = 0; app.agent_auto_scroll = false; return; }
-            KeyCode::End | KeyCode::Char('G') => { app.agent_auto_scroll = true; return; }
+            KeyCode::Up | KeyCode::Char('k') => {
+                app.agent_scroll_up();
+                return;
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                app.agent_scroll_down();
+                return;
+            }
+            KeyCode::PageUp | KeyCode::Char('b') => {
+                app.agent_page_up();
+                return;
+            }
+            KeyCode::PageDown | KeyCode::Char(' ') => {
+                app.agent_page_down();
+                return;
+            }
+            KeyCode::Home | KeyCode::Char('g') => {
+                app.agent_scroll = 0;
+                app.agent_auto_scroll = false;
+                return;
+            }
+            KeyCode::End | KeyCode::Char('G') => {
+                app.agent_auto_scroll = true;
+                return;
+            }
             KeyCode::Esc => {
                 if app.flow_cancel.is_some() {
                     app.cancel_flow();
@@ -1873,10 +2385,15 @@ fn handle_key(app: &mut App, key: KeyEvent) {
             return;
         }
         match code {
-            KeyCode::Char('/') => { app.start_table_filter(); return; }
+            KeyCode::Char('/') => {
+                app.start_table_filter();
+                return;
+            }
             KeyCode::Char(d @ '1'..='9') => {
                 let col = d as usize - '1' as usize;
-                if col < app.table_columns() { app.sort_by_column(col); }
+                if col < app.table_columns() {
+                    app.sort_by_column(col);
+                }
                 return;
             }
             _ => {}
@@ -1898,8 +2415,14 @@ fn handle_key(app: &mut App, key: KeyEvent) {
 
     if app.focus == Panel::Output && app.detail.is_some() {
         match code {
-            KeyCode::Esc => { app.close_detail(); return; }
-            KeyCode::Right | KeyCode::Char('l') => { app.toggle_detail_focus(); return; }
+            KeyCode::Esc => {
+                app.close_detail();
+                return;
+            }
+            KeyCode::Right | KeyCode::Char('l') => {
+                app.toggle_detail_focus();
+                return;
+            }
             _ => {}
         }
     }
@@ -1926,22 +2449,34 @@ fn handle_key(app: &mut App, key: KeyEvent) {
         KeyCode::BackTab => app.focus = app.focus.prev(app.non_atom),
 
         KeyCode::Up | KeyCode::Char('k') => {
-            if let Some((s, _)) = app.focused_list() { s.up(); }
+            if let Some((s, _)) = app.focused_list() {
+                s.up();
+            }
         }
         KeyCode::Down | KeyCode::Char('j') => {
-            if let Some((s, len)) = app.focused_list() { s.down(len); }
+            if let Some((s, len)) = app.focused_list() {
+                s.down(len);
+            }
         }
         KeyCode::PageUp | KeyCode::Char('b') => {
-            if let Some((s, _)) = app.focused_list() { s.page_up(page); }
+            if let Some((s, _)) = app.focused_list() {
+                s.page_up(page);
+            }
         }
         KeyCode::PageDown | KeyCode::Char(' ') => {
-            if let Some((s, len)) = app.focused_list() { s.page_down(page, len); }
+            if let Some((s, len)) = app.focused_list() {
+                s.page_down(page, len);
+            }
         }
         KeyCode::Home | KeyCode::Char('g') => {
-            if let Some((s, _)) = app.focused_list() { s.home(); }
+            if let Some((s, _)) = app.focused_list() {
+                s.home();
+            }
         }
         KeyCode::End | KeyCode::Char('G') => {
-            if let Some((s, len)) = app.focused_list() { s.end(len); }
+            if let Some((s, len)) = app.focused_list() {
+                s.end(len);
+            }
         }
         KeyCode::Enter => app.on_enter(),
 
@@ -1960,8 +2495,8 @@ fn handle_repl_key(app: &mut App, key: KeyEvent) {
     let code = key.code;
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
 
-    let is_complete_trigger = (ctrl && matches!(code, KeyCode::Char(' ') | KeyCode::Char('@')))
-        || code == KeyCode::Null;
+    let is_complete_trigger =
+        (ctrl && matches!(code, KeyCode::Char(' ') | KeyCode::Char('@'))) || code == KeyCode::Null;
     if is_complete_trigger {
         app.request_completions();
         return;
@@ -2009,7 +2544,7 @@ fn handle_mouse(app: &mut App, m: crossterm::event::MouseEvent) {
     match m.kind {
         MouseEventKind::Down(MouseButton::Left) => app.on_click(m.column, m.row),
         MouseEventKind::ScrollDown => app.scroll_at(m.column, m.row, true),
-        MouseEventKind::ScrollUp   => app.scroll_at(m.column, m.row, false),
+        MouseEventKind::ScrollUp => app.scroll_at(m.column, m.row, false),
         _ => {}
     }
 }
@@ -2049,17 +2584,24 @@ fn try_complete_startup(app: &mut App, source_root: &Option<String>, reports_dir
         // Atom mode: spawn engine, open atom, load summary.
         let cmd = match &app.deferred_engine_cmd {
             Some(c) => PathBuf::from(c),
-            None => { app.init_phase = InitPhase::Ready; return; }
+            None => {
+                app.init_phase = InitPhase::Ready;
+                return;
+            }
         };
         let command = match Engine::resolve_command(cmd.to_str()) {
             Some(c) => c,
-            None => { app.status = "engine binary not found".into(); app.init_phase = InitPhase::Ready; return; }
+            None => {
+                app.status = "engine binary not found".into();
+                app.init_phase = InitPhase::Ready;
+                return;
+            }
         };
         match Engine::spawn(&command) {
             Ok(mut eng) => {
                 let open_args = match source_root {
                     Some(src) => json!({ "path": atom_path, "sourceRoot": src }),
-                    None      => json!({ "path": atom_path }),
+                    None => json!({ "path": atom_path }),
                 };
                 match eng.request::<OpenInfo>("open", open_args) {
                     Ok(_) => {
@@ -2074,13 +2616,18 @@ fn try_complete_startup(app: &mut App, source_root: &Option<String>, reports_dir
                                 let mut bom_store = bom::find_existing_boms(reports_dir);
                                 if !bom_store.loaded {
                                     let sp = source_root.as_ref().map(PathBuf::from);
-                                    bom_store = bom::find_existing_boms(sp.as_deref().unwrap_or(Path::new(".")));
+                                    bom_store = bom::find_existing_boms(
+                                        sp.as_deref().unwrap_or(Path::new(".")),
+                                    );
                                 }
                                 if bom_store.loaded {
                                     app.bom_store = Some(bom_store);
                                     app.status = format!(
                                         "BOM loaded ({} components) — type 'bom' to view",
-                                        app.bom_store.as_ref().map(|s| s.total_components).unwrap_or(0)
+                                        app.bom_store
+                                            .as_ref()
+                                            .map(|s| s.total_components)
+                                            .unwrap_or(0)
                                     );
                                 } else {
                                     app.status = "Atom ready. No BOM found.".into();
@@ -2088,13 +2635,22 @@ fn try_complete_startup(app: &mut App, source_root: &Option<String>, reports_dir
                                 app.generate_starter_questions();
                                 app.init_phase = InitPhase::Ready;
                             }
-                            Err(e) => { app.status = format!("engine summary failed: {e}"); app.init_phase = InitPhase::Ready; }
+                            Err(e) => {
+                                app.status = format!("engine summary failed: {e}");
+                                app.init_phase = InitPhase::Ready;
+                            }
                         }
                     }
-                    Err(e) => { app.status = format!("engine open failed: {e}"); app.init_phase = InitPhase::Ready; }
+                    Err(e) => {
+                        app.status = format!("engine open failed: {e}");
+                        app.init_phase = InitPhase::Ready;
+                    }
                 }
             }
-            Err(e) => { app.status = format!("engine spawn failed: {e}"); app.init_phase = InitPhase::Ready; }
+            Err(e) => {
+                app.status = format!("engine spawn failed: {e}");
+                app.init_phase = InitPhase::Ready;
+            }
         }
     } else {
         // Non-atom mode deferred init: load BOM / rusi (already generated by bg tasks).
@@ -2119,7 +2675,8 @@ fn try_complete_non_atom_startup(app: &mut App, source_root: &Option<String>, re
     let source_dir = Path::new(&app.atom_path);
     if app.backend.is_none() {
         // Try rusi (Rust)
-        if let Some(dir) = locate_report_dir(rusi::runner::RUSI_REPORT_FILENAME, reports_dir, source_dir)
+        if let Some(dir) =
+            locate_report_dir(rusi::runner::RUSI_REPORT_FILENAME, reports_dir, source_dir)
             && let Ok(report) = rusi::loader::LoadedReport::from_file(&rusi::rusi_report_path(&dir))
         {
             app.backend = Some(Box::new(RusiCtx {
@@ -2131,8 +2688,13 @@ fn try_complete_non_atom_startup(app: &mut App, source_root: &Option<String>, re
         }
         // Try golem (Go)
         if app.backend.is_none()
-            && let Some(dir) = locate_report_dir(golem::runner::GOLEM_REPORT_FILENAME, reports_dir, source_dir)
-            && let Ok(report) = golem::loader::LoadedReport::from_file(&golem::golem_report_path(&dir))
+            && let Some(dir) = locate_report_dir(
+                golem::runner::GOLEM_REPORT_FILENAME,
+                reports_dir,
+                source_dir,
+            )
+            && let Ok(report) =
+                golem::loader::LoadedReport::from_file(&golem::golem_report_path(&dir))
         {
             app.backend = Some(Box::new(GolemCtx {
                 report,
@@ -2143,7 +2705,11 @@ fn try_complete_non_atom_startup(app: &mut App, source_root: &Option<String>, re
         }
         // Try dosai (.NET)
         if app.backend.is_none()
-            && let Some(dir) = locate_report_dir(dosai::runner::DOSAI_DATAFLOWS_FILENAME, reports_dir, source_dir)
+            && let Some(dir) = locate_report_dir(
+                dosai::runner::DOSAI_DATAFLOWS_FILENAME,
+                reports_dir,
+                source_dir,
+            )
             && let Ok(reports) = dosai::loader::DosaiReports::load(&dir)
         {
             app.backend = Some(Box::new(DosaiCtx {
@@ -2161,7 +2727,11 @@ fn try_complete_non_atom_startup(app: &mut App, source_root: &Option<String>, re
         }
     }
 
-    let bom_size = app.bom_store.as_ref().map(|s| s.total_components).unwrap_or(0);
+    let bom_size = app
+        .bom_store
+        .as_ref()
+        .map(|s| s.total_components)
+        .unwrap_or(0);
     if bom_size > 0 {
         app.status = format!(
             "BOM loaded ({} components). AI agent is your primary interface.",
@@ -2264,7 +2834,9 @@ fn resolve_or_generate_atom(
             d = path.display()
         );
         if !bom::prompt_yes_no(&msg) {
-            eprintln!("Tip: install manually: npm install -g @cyclonedx/cdxgen @appthreat/atom @appthreat/atom-parsetools");
+            eprintln!(
+                "Tip: install manually: npm install -g @cyclonedx/cdxgen @appthreat/atom @appthreat/atom-parsetools"
+            );
             return Err("atom generation cancelled by user".into());
         }
         eprint!("Installing cdxgen, atom, and atom-parsetools... ");
@@ -2375,9 +2947,22 @@ fn run_audit_subcommand(
     let path = &path_buf;
 
     // Load config (orchestrate=false — the audit driver is code-driven, not LLM-driven).
-    let config = Config::load_with_base_url(provider, model, api_key, base_url, no_thinking, effort, false, None, turn_budget, token_budget);
+    let config = Config::load_with_base_url(
+        provider,
+        model,
+        api_key,
+        base_url,
+        no_thinking,
+        effort,
+        false,
+        None,
+        turn_budget,
+        token_budget,
+    );
     if !config.enabled {
-        return Err("AI agent is not enabled. Set ANTHROPIC_API_KEY or OPENAI_API_KEY to enable.".into());
+        return Err(
+            "AI agent is not enabled. Set ANTHROPIC_API_KEY or OPENAI_API_KEY to enable.".into(),
+        );
     }
     let mut config = config;
     config.debug = debug;
@@ -2396,18 +2981,18 @@ fn run_audit_subcommand(
 
     let open_args = match source {
         Some(src) => json!({ "path": atom_str, "sourceRoot": src }),
-        None      => json!({ "path": atom_str }),
+        None => json!({ "path": atom_str }),
     };
     let _open: OpenInfo = eng.request("open", open_args)?;
     let summary: Summary = eng.request("summary", json!({}))?;
     let atom_tags = fetch_atom_tags(&mut eng);
 
-    let source_root = source.map(|s| s.to_string()).or_else(|| {
-        atom_path.parent().map(|p| p.to_string_lossy().to_string())
-    });
+    let source_root = source
+        .map(|s| s.to_string())
+        .or_else(|| atom_path.parent().map(|p| p.to_string_lossy().to_string()));
 
-    let memory_index = agent::memory::FactStore::open(source_root.as_deref())
-        .map(|s| s.index_markdown());
+    let memory_index =
+        agent::memory::FactStore::open(source_root.as_deref()).map(|s| s.index_markdown());
     let memory_section = memory_index.as_deref().filter(|s| *s != "none yet").map(|idx| {
         format!(
             "\n## Project memory (facts learned in previous sessions — HINTS, re-verify before reporting)\n\
@@ -2416,12 +3001,22 @@ fn run_audit_subcommand(
         )
     }).unwrap_or_default();
     let system_prompt = AgentCtx::build_system_prompt(
-        &summary.language, &summary.version, &summary.rows,
-        None, None, None, memory_index.as_deref(), atom_tags.as_deref(),
+        &summary.language,
+        &summary.version,
+        &summary.rows,
+        None,
+        None,
+        None,
+        memory_index.as_deref(),
+        atom_tags.as_deref(),
     );
     let system_prompt = format!("{system_prompt}{memory_section}");
 
-    let debug_logger = if config.debug { DebugLogger::new(source_root.as_deref()) } else { None };
+    let debug_logger = if config.debug {
+        DebugLogger::new(source_root.as_deref())
+    } else {
+        None
+    };
 
     let ctx = AgentCtx {
         provider,
@@ -2449,7 +3044,10 @@ fn run_audit_subcommand(
         Some(d) => d.to_path_buf(),
         None => {
             let base = source.map(PathBuf::from).unwrap_or_else(|| {
-                atom_path.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| ".".into())
+                atom_path
+                    .parent()
+                    .map(|p| p.to_path_buf())
+                    .unwrap_or_else(|| ".".into())
             });
             base.join(".chen").join("chennai-reports")
         }
@@ -2469,13 +3067,23 @@ fn run_audit_subcommand(
     let stage_turn_budget = turn_budget.map(|t| t.min(u64::from(agent::HARD_TURN_CEILING)) as u32);
     let outcome = if skip_missing_roles {
         agent::audit::run_audit_skip_missing(
-            &ctx, objective, pipeline.map(|v| v.as_ref()), Some(&resolved_reports_dir), stage_turn_budget,
-            include_low_value, resume,
+            &ctx,
+            objective,
+            pipeline.map(|v| v.as_ref()),
+            Some(&resolved_reports_dir),
+            stage_turn_budget,
+            include_low_value,
+            resume,
         )
     } else {
         agent::audit::run_audit(
-            &ctx, objective, pipeline.map(|v| v.as_ref()), Some(&resolved_reports_dir), stage_turn_budget,
-            include_low_value, resume,
+            &ctx,
+            objective,
+            pipeline.map(|v| v.as_ref()),
+            Some(&resolved_reports_dir),
+            stage_turn_budget,
+            include_low_value,
+            resume,
         )
     };
 
@@ -2484,17 +3092,18 @@ fn run_audit_subcommand(
             if json {
                 // Emit chennai.audit.v1 JSON on stdout.
                 let findings = ctx.findings.lock().unwrap();
-                let mut json_obj = agent::audit::render_audit_json(
-                    &outcome,
-                    Some(&path.to_string_lossy()),
-                );
+                let mut json_obj =
+                    agent::audit::render_audit_json(&outcome, Some(&path.to_string_lossy()));
                 json_obj["findings"] = findings.render_json();
                 drop(findings); // Release before serializing (not strictly needed here but good practice).
                 let output = serde_json::to_string_pretty(&json_obj)
                     .map_err(|e| format!("serialize audit JSON: {e}"))?;
                 println!("{output}");
             }
-            eprintln!("[audit] Done. {} findings ({} confirmed).", outcome.total_findings, outcome.confirmed_findings);
+            eprintln!(
+                "[audit] Done. {} findings ({} confirmed).",
+                outcome.total_findings, outcome.confirmed_findings
+            );
             Ok(())
         }
         Err(e) => {
@@ -2508,8 +3117,9 @@ fn run_audit_subcommand(
 fn run_subcommand(cmd: &CliCommand) -> Result<(), Box<dyn std::error::Error>> {
     match cmd {
         CliCommand::Setup => {
-            let npm = bom::find_npm()
-                .ok_or_else::<Box<dyn std::error::Error>, _>(|| "npm not found on PATH. Install Node.js first.".into())?;
+            let npm = bom::find_npm().ok_or_else::<Box<dyn std::error::Error>, _>(|| {
+                "npm not found on PATH. Install Node.js first.".into()
+            })?;
             eprintln!("Using npm: {}", npm.display());
             eprintln!("Installing cdxgen, atom, and atom-parsetools...");
             let result = bom::auto_install_npm();
@@ -2522,7 +3132,12 @@ fn run_subcommand(cmd: &CliCommand) -> Result<(), Box<dyn std::error::Error>> {
                 Err(e) => Err(format!("npm install failed:\n{e}").into()),
             }
         }
-        CliCommand::DumpSystemPrompt { path, source, engine, output } => {
+        CliCommand::DumpSystemPrompt {
+            path,
+            source,
+            engine,
+            output,
+        } => {
             let prompt = if let Some(p) = path {
                 build_dump_prompt(p, source.as_deref(), engine.as_deref())?
             } else {
@@ -2592,7 +3207,9 @@ fn build_dump_prompt(
     engine_cmd: Option<&str>,
 ) -> Result<String, Box<dyn std::error::Error>> {
     // Detect language and route to the appropriate analysis mode.
-    let source_dir = source_root.map(PathBuf::from).unwrap_or_else(|| path.to_path_buf());
+    let source_dir = source_root
+        .map(PathBuf::from)
+        .unwrap_or_else(|| path.to_path_buf());
     let language = bom::detect_language(&source_dir);
     let is_non_atom = matches!(language.as_deref(), Some("rust" | "go" | "dotnet"));
 
@@ -2608,16 +3225,22 @@ fn build_dump_prompt(
     let mut eng = Engine::spawn(&command)?;
     let open_args = match source_root {
         Some(src) => json!({ "path": atom_str, "sourceRoot": src }),
-        None      => json!({ "path": atom_str }),
+        None => json!({ "path": atom_str }),
     };
     let _open: OpenInfo = eng.request("open", open_args)?;
     let summary: Summary = eng.request("summary", json!({}))?;
     let atom_tags = fetch_atom_tags(&mut eng);
-    let memory_index = crate::agent::memory::FactStore::open(source_root)
-        .map(|s| s.index_markdown());
+    let memory_index =
+        crate::agent::memory::FactStore::open(source_root).map(|s| s.index_markdown());
     let prompt = AgentCtx::build_system_prompt(
-        &summary.language, &summary.version, &summary.rows,
-        None, None, None, memory_index.as_deref(), atom_tags.as_deref(),
+        &summary.language,
+        &summary.version,
+        &summary.rows,
+        None,
+        None,
+        None,
+        memory_index.as_deref(),
+        atom_tags.as_deref(),
     );
     Ok(prompt)
 }
@@ -2629,9 +3252,10 @@ fn build_dump_prompt_non_atom(
 ) -> Result<String, Box<dyn std::error::Error>> {
     // Dump mode has no CLI reports-dir context, so use the default location.
     let reports_dir = source_dir.join(".chen").join("chennai-reports");
-    let memory_index = crate::agent::memory::FactStore::open(Some(source_dir.to_str().unwrap_or_default()))
-        .map(|s| s.index_markdown())
-        .filter(|s| s != "none yet");
+    let memory_index =
+        crate::agent::memory::FactStore::open(Some(source_dir.to_str().unwrap_or_default()))
+            .map(|s| s.index_markdown())
+            .filter(|s| s != "none yet");
     let memory_section = memory_index.as_ref().map(|idx| {
         format!(
             "\n## Project memory (facts learned in previous sessions — HINTS, re-verify before reporting)\n\
@@ -2644,27 +3268,39 @@ fn build_dump_prompt_non_atom(
             let rusi_ctx = load_or_generate_rusi(source_dir, &reports_dir, true, false)
                 .map_err(|e| format!("rusi: {e}"))?;
             let summary_text = rusi_ctx.summary();
-            let prompt = format!("{}{memory_section}", crate::rusi::build_rusi_system_prompt(&summary_text, None, None, None));
+            let prompt = format!(
+                "{}{memory_section}",
+                crate::rusi::build_rusi_system_prompt(&summary_text, None, None, None)
+            );
             Ok(prompt)
         }
         Some("go") => {
             let golem_ctx = load_or_generate_golem(source_dir, &reports_dir, true, false)
                 .map_err(|e| format!("golem: {e}"))?;
             let summary_text = golem_ctx.summary();
-            let prompt = format!("{}{memory_section}", crate::golem::build_golem_system_prompt(&summary_text, None, None, None));
+            let prompt = format!(
+                "{}{memory_section}",
+                crate::golem::build_golem_system_prompt(&summary_text, None, None, None)
+            );
             Ok(prompt)
         }
         Some("dotnet") => {
             let dosai_ctx = load_or_generate_dosai(source_dir, &reports_dir, true, false)
                 .map_err(|e| format!("dosai: {e}"))?;
             let summary_text = dosai_ctx.summary();
-            let prompt = format!("{}{memory_section}", crate::dosai::build_dosai_system_prompt(&summary_text, None, None, None));
+            let prompt = format!(
+                "{}{memory_section}",
+                crate::dosai::build_dosai_system_prompt(&summary_text, None, None, None)
+            );
             Ok(prompt)
         }
         _ => {
             let lang = language.as_deref().unwrap_or("unknown");
             let summary_text = format!("Language: {lang}\nNo structured analysis available.");
-            let prompt = format!("{}{memory_section}", build_agent_only_prompt(lang, &summary_text, "", None));
+            let prompt = format!(
+                "{}{memory_section}",
+                build_agent_only_prompt(lang, &summary_text, "", None)
+            );
             Ok(prompt)
         }
     }
@@ -2674,12 +3310,33 @@ fn build_dump_prompt_non_atom(
 fn build_template_prompt() -> String {
     use crate::model::SummaryRow;
     let rows = vec![
-        SummaryRow { label: "Files".into(), count: 0 },
-        SummaryRow { label: "Methods".into(), count: 0 },
-        SummaryRow { label: "Calls".into(), count: 0 },
-        SummaryRow { label: "Tags".into(), count: 0 },
+        SummaryRow {
+            label: "Files".into(),
+            count: 0,
+        },
+        SummaryRow {
+            label: "Methods".into(),
+            count: 0,
+        },
+        SummaryRow {
+            label: "Calls".into(),
+            count: 0,
+        },
+        SummaryRow {
+            label: "Tags".into(),
+            count: 0,
+        },
     ];
-    AgentCtx::build_system_prompt("<language>", "<version>", &rows, None, None, None, None, None)
+    AgentCtx::build_system_prompt(
+        "<language>",
+        "<version>",
+        &rows,
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
 }
 
 /// Check whether a file path matches known binary/artifact extensions.
@@ -2721,6 +3378,6 @@ fn has_binary_magic(path: &std::path::Path) -> bool {
             | b"\xce\xfa\xed\xfe"          // Mach-O 32-bit (little-endian)
             | b"\xcf\xfa\xed\xfe"          // Mach-O 64-bit (little-endian)
             | b"\xca\xfe\xba\xbe"          // Mach-O universal/fat
-            | b"\x00asm"                   // WebAssembly
+            | b"\x00asm" // WebAssembly
     ) || &magic[..2] == b"MZ" // PE/DOS executable
 }

@@ -529,7 +529,9 @@ pub struct IdentityMethod {
     pub extra: HashMap<String, serde_json::Value>,
 }
 
-fn deserialize_identity<'de, D>(deserializer: D) -> Result<Option<Vec<ComponentIdentityEvidence>>, D::Error>
+fn deserialize_identity<'de, D>(
+    deserializer: D,
+) -> Result<Option<Vec<ComponentIdentityEvidence>>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
@@ -538,13 +540,13 @@ where
     match v {
         None => Ok(None),
         Some(serde_json::Value::Array(arr)) => {
-            let ids: Vec<ComponentIdentityEvidence> = serde_json::from_value(serde_json::Value::Array(arr))
-                .map_err(D::Error::custom)?;
+            let ids: Vec<ComponentIdentityEvidence> =
+                serde_json::from_value(serde_json::Value::Array(arr)).map_err(D::Error::custom)?;
             Ok(Some(ids))
         }
         Some(obj) => {
-            let id: ComponentIdentityEvidence = serde_json::from_value(obj)
-                .map_err(D::Error::custom)?;
+            let id: ComponentIdentityEvidence =
+                serde_json::from_value(obj).map_err(D::Error::custom)?;
             Ok(Some(vec![id]))
         }
     }
@@ -780,7 +782,10 @@ mod tests {
         let components = bom.components.unwrap();
         assert_eq!(components.len(), 2);
         assert_eq!(components[0].name.as_deref(), Some("express"));
-        assert_eq!(components[0].purl.as_deref(), Some("pkg:npm/express@4.18.0"));
+        assert_eq!(
+            components[0].purl.as_deref(),
+            Some("pkg:npm/express@4.18.0")
+        );
 
         let deps = bom.dependencies.unwrap();
         assert_eq!(deps.len(), 2);
@@ -798,7 +803,10 @@ mod tests {
     fn component_extra_fields_preserved() {
         let json = r#"{"type":"library","name":"test","version":"1.0","customField":"value"}"#;
         let c: Component = serde_json::from_str(json).unwrap();
-        assert_eq!(c.extra.get("customField").and_then(|v| v.as_str()), Some("value"));
+        assert_eq!(
+            c.extra.get("customField").and_then(|v| v.as_str()),
+            Some("value")
+        );
     }
 
     #[test]

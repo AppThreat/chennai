@@ -113,7 +113,10 @@ impl ProcessNote {
     /// Returns an empty note when the file is missing or unreadable.
     pub fn load(source_root: Option<&str>) -> Self {
         let path = match source_root {
-            Some(s) => std::path::Path::new(s).join(".chen").join("agent-state").join("process_note.json"),
+            Some(s) => std::path::Path::new(s)
+                .join(".chen")
+                .join("agent-state")
+                .join("process_note.json"),
             None => return Self::default(),
         };
         let content = match std::fs::read_to_string(&path) {
@@ -124,12 +127,17 @@ impl ProcessNote {
     }
 
     /// Persist a FindingSet.
-    pub fn save_findings(source_root: Option<&str>, findings: &crate::agent::finding::FindingSet) -> Result<(), String> {
+    pub fn save_findings(
+        source_root: Option<&str>,
+        findings: &crate::agent::finding::FindingSet,
+    ) -> Result<(), String> {
         let base = source_root.ok_or("no source root configured")?;
         let dir = std::path::Path::new(base).join(".chen").join("agent-state");
         std::fs::create_dir_all(&dir).map_err(|e| format!("create agent-state dir: {e}"))?;
-        let json = serde_json::to_string_pretty(&findings.findings).map_err(|e| format!("serialize findings: {e}"))?;
-        std::fs::write(dir.join("findings.json"), json).map_err(|e| format!("write findings: {e}"))?;
+        let json = serde_json::to_string_pretty(&findings.findings)
+            .map_err(|e| format!("serialize findings: {e}"))?;
+        std::fs::write(dir.join("findings.json"), json)
+            .map_err(|e| format!("write findings: {e}"))?;
         Ok(())
     }
 }
@@ -149,7 +157,8 @@ mod tests {
     fn render_includes_non_empty_fields() {
         let mut note = ProcessNote::default();
         note.confirmed.push("SQL injection in search".into());
-        note.ruled_out.push("Path traversal in static assets".into());
+        note.ruled_out
+            .push("Path traversal in static assets".into());
         note.next_steps.push("Check auth middleware".into());
         let rendered = note.render();
         assert!(rendered.contains("Confirmed findings"));
@@ -179,7 +188,8 @@ mod tests {
     fn replace_overwrites_field() {
         let mut note = ProcessNote::default();
         note.append_to("confirmed", &["old".into()]).unwrap();
-        note.replace_field("confirmed", &["new1".into(), "new2".into()]).unwrap();
+        note.replace_field("confirmed", &["new1".into(), "new2".into()])
+            .unwrap();
         assert_eq!(note.confirmed, vec!["new1", "new2"]);
     }
 
@@ -228,14 +238,19 @@ mod tests {
     fn candidate_sinks_roundtrip_save_load_and_render() {
         let dir = tempfile::tempdir().unwrap();
         let mut note = ProcessNote::default();
-        note.candidate_sinks.push("commoncode/command.py:42 subprocess.Popen(shell=True)".into());
-        note.candidate_sinks.push("lib/exec.py:10 os.system(cmd)".into());
+        note.candidate_sinks
+            .push("commoncode/command.py:42 subprocess.Popen(shell=True)".into());
+        note.candidate_sinks
+            .push("lib/exec.py:10 os.system(cmd)".into());
         note.entrypoints.push("main".into());
         note.save(Some(dir.path().to_str().unwrap())).unwrap();
 
         let loaded = ProcessNote::load(Some(dir.path().to_str().unwrap()));
         assert_eq!(loaded.candidate_sinks.len(), 2);
-        assert_eq!(loaded.candidate_sinks[0], "commoncode/command.py:42 subprocess.Popen(shell=True)");
+        assert_eq!(
+            loaded.candidate_sinks[0],
+            "commoncode/command.py:42 subprocess.Popen(shell=True)"
+        );
         assert_eq!(loaded.candidate_sinks[1], "lib/exec.py:10 os.system(cmd)");
 
         // Renders only when non-empty.

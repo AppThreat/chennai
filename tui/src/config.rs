@@ -77,14 +77,40 @@ pub struct Config {
 impl Config {
     /// Load from the default config path, then apply env-var and CLI overrides.
     #[allow(dead_code)]
-    pub fn load(cli_provider: Option<&str>, cli_model: Option<&str>, cli_api_key: Option<&str>) -> Self {
-        Self::load_with_base_url(cli_provider, cli_model, cli_api_key, None, false, None, false, None, None, None)
+    pub fn load(
+        cli_provider: Option<&str>,
+        cli_model: Option<&str>,
+        cli_api_key: Option<&str>,
+    ) -> Self {
+        Self::load_with_base_url(
+            cli_provider,
+            cli_model,
+            cli_api_key,
+            None,
+            false,
+            None,
+            false,
+            None,
+            None,
+            None,
+        )
     }
 
     // One CLI parameter per user-facing flag; precedence resolution keeps them
     // separate rather than bundling into a struct that would just be unpacked here.
     #[allow(clippy::too_many_arguments)]
-    pub fn load_with_base_url(cli_provider: Option<&str>, cli_model: Option<&str>, cli_api_key: Option<&str>, cli_base_url: Option<&str>, cli_no_thinking: bool, cli_effort: Option<&str>, cli_orchestrate: bool, cli_max_subagents: Option<usize>, cli_turn_budget: Option<u64>, cli_token_budget: Option<u64>) -> Self {
+    pub fn load_with_base_url(
+        cli_provider: Option<&str>,
+        cli_model: Option<&str>,
+        cli_api_key: Option<&str>,
+        cli_base_url: Option<&str>,
+        cli_no_thinking: bool,
+        cli_effort: Option<&str>,
+        cli_orchestrate: bool,
+        cli_max_subagents: Option<usize>,
+        cli_turn_budget: Option<u64>,
+        cli_token_budget: Option<u64>,
+    ) -> Self {
         let file_cfg = Self::load_file();
 
         // Precedence for the provider: explicit choice (CLI flag or CHENNAI_PROVIDER) >
@@ -158,10 +184,28 @@ impl Config {
         // never turn it on — only the shape of a run, not its initiation.
         let orchestrate = cli_orchestrate
             || env_var("CHENNAI_ORCHESTRATE")
-                .map(|s| matches!(s.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+                .map(|s| {
+                    matches!(
+                        s.trim().to_ascii_lowercase().as_str(),
+                        "1" | "true" | "yes" | "on"
+                    )
+                })
                 .unwrap_or(false);
 
-        Config { provider, model, base_url, api_key, enabled, no_thinking: cli_no_thinking, effort, debug: false, orchestrate, max_subagents, turn_budget, token_budget }
+        Config {
+            provider,
+            model,
+            base_url,
+            api_key,
+            enabled,
+            no_thinking: cli_no_thinking,
+            effort,
+            debug: false,
+            orchestrate,
+            max_subagents,
+            turn_budget,
+            token_budget,
+        }
     }
 
     /// Read the config file at `~/.config/chennai/config.toml`.
@@ -178,7 +222,10 @@ impl Config {
         let home = std::env::var("HOME")
             .or_else(|_| std::env::var("USERPROFILE"))
             .unwrap_or_else(|_| ".".into());
-        PathBuf::from(home).join(".config").join("chennai").join("config.toml")
+        PathBuf::from(home)
+            .join(".config")
+            .join("chennai")
+            .join("config.toml")
     }
 
     /// Read the provider-specific API key from the expected environment variables.
@@ -212,10 +259,22 @@ mod tests {
 
     #[test]
     fn provider_kind_parsing() {
-        assert_eq!("anthropic".parse::<ProviderKind>().unwrap(), ProviderKind::Anthropic);
-        assert_eq!("Anthropic".parse::<ProviderKind>().unwrap(), ProviderKind::Anthropic);
-        assert_eq!("openai".parse::<ProviderKind>().unwrap(), ProviderKind::OpenAI);
-        assert_eq!("openai-compatible".parse::<ProviderKind>().unwrap(), ProviderKind::OpenAI);
+        assert_eq!(
+            "anthropic".parse::<ProviderKind>().unwrap(),
+            ProviderKind::Anthropic
+        );
+        assert_eq!(
+            "Anthropic".parse::<ProviderKind>().unwrap(),
+            ProviderKind::Anthropic
+        );
+        assert_eq!(
+            "openai".parse::<ProviderKind>().unwrap(),
+            ProviderKind::OpenAI
+        );
+        assert_eq!(
+            "openai-compatible".parse::<ProviderKind>().unwrap(),
+            ProviderKind::OpenAI
+        );
         assert!("unknown".parse::<ProviderKind>().is_err());
     }
 
@@ -235,7 +294,18 @@ mod tests {
     #[test]
     fn cli_effort_overrides_default() {
         let _guard = ENV_MUTEX.lock().unwrap();
-        let cfg = Config::load_with_base_url(None, None, None, None, false, Some("xhigh"), false, None, None, None);
+        let cfg = Config::load_with_base_url(
+            None,
+            None,
+            None,
+            None,
+            false,
+            Some("xhigh"),
+            false,
+            None,
+            None,
+            None,
+        );
         assert_eq!(cfg.effort, "xhigh");
     }
 
@@ -255,8 +325,12 @@ mod tests {
         assert!(!cfg.enabled);
         // Restore env vars.
         unsafe {
-            if let Some(k) = prev_anthropic { std::env::set_var("ANTHROPIC_API_KEY", k); }
-            if let Some(k) = prev_openai { std::env::set_var("OPENAI_API_KEY", k); }
+            if let Some(k) = prev_anthropic {
+                std::env::set_var("ANTHROPIC_API_KEY", k);
+            }
+            if let Some(k) = prev_openai {
+                std::env::set_var("OPENAI_API_KEY", k);
+            }
         }
     }
 
@@ -275,14 +349,25 @@ mod tests {
         }
 
         // Env vars apply when no CLI flags are given.
-        let cfg = Config::load_with_base_url(None, None, None, None, false, None, false, None, None, None);
+        let cfg = Config::load_with_base_url(
+            None, None, None, None, false, None, false, None, None, None,
+        );
         assert_eq!(cfg.provider, ProviderKind::OpenAI);
         assert_eq!(cfg.model, "gpt-4o");
         assert_eq!(cfg.base_url.as_deref(), Some("https://example.test/v1"));
 
         // CLI flags take precedence over env vars.
         let cfg = Config::load_with_base_url(
-            Some("anthropic"), Some("claude-x"), None, Some("https://cli.test"), false, None, false, None, None, None,
+            Some("anthropic"),
+            Some("claude-x"),
+            None,
+            Some("https://cli.test"),
+            false,
+            None,
+            false,
+            None,
+            None,
+            None,
         );
         assert_eq!(cfg.provider, ProviderKind::Anthropic);
         assert_eq!(cfg.model, "claude-x");
@@ -302,11 +387,15 @@ mod tests {
     fn key_from_env_checks_correct_var() {
         let _guard = ENV_MUTEX.lock().unwrap();
         let prev = std::env::var("ANTHROPIC_API_KEY").ok();
-        unsafe { std::env::remove_var("ANTHROPIC_API_KEY"); }
+        unsafe {
+            std::env::remove_var("ANTHROPIC_API_KEY");
+        }
 
         assert!(Config::key_from_env(&ProviderKind::Anthropic).is_none());
         // Set and test
-        unsafe { std::env::set_var("ANTHROPIC_API_KEY", "sk-test-xxx"); }
+        unsafe {
+            std::env::set_var("ANTHROPIC_API_KEY", "sk-test-xxx");
+        }
         let key = Config::key_from_env(&ProviderKind::Anthropic);
         assert_eq!(key.as_deref(), Some("sk-test-xxx"));
 
@@ -328,13 +417,27 @@ mod tests {
             std::env::set_var("ANTHROPIC_AUTH_TOKEN", "tok-xyz");
         }
         // With no ANTHROPIC_API_KEY, the auth-token variable is used.
-        assert_eq!(Config::key_from_env(&ProviderKind::Anthropic).as_deref(), Some("tok-xyz"));
+        assert_eq!(
+            Config::key_from_env(&ProviderKind::Anthropic).as_deref(),
+            Some("tok-xyz")
+        );
         // ANTHROPIC_API_KEY, when present, wins over ANTHROPIC_AUTH_TOKEN.
-        unsafe { std::env::set_var("ANTHROPIC_API_KEY", "sk-primary"); }
-        assert_eq!(Config::key_from_env(&ProviderKind::Anthropic).as_deref(), Some("sk-primary"));
         unsafe {
-            match prev_key { Some(v) => std::env::set_var("ANTHROPIC_API_KEY", v), None => std::env::remove_var("ANTHROPIC_API_KEY") }
-            match prev_tok { Some(v) => std::env::set_var("ANTHROPIC_AUTH_TOKEN", v), None => std::env::remove_var("ANTHROPIC_AUTH_TOKEN") }
+            std::env::set_var("ANTHROPIC_API_KEY", "sk-primary");
+        }
+        assert_eq!(
+            Config::key_from_env(&ProviderKind::Anthropic).as_deref(),
+            Some("sk-primary")
+        );
+        unsafe {
+            match prev_key {
+                Some(v) => std::env::set_var("ANTHROPIC_API_KEY", v),
+                None => std::env::remove_var("ANTHROPIC_API_KEY"),
+            }
+            match prev_tok {
+                Some(v) => std::env::set_var("ANTHROPIC_AUTH_TOKEN", v),
+                None => std::env::remove_var("ANTHROPIC_AUTH_TOKEN"),
+            }
         }
     }
 
@@ -348,15 +451,48 @@ mod tests {
             std::env::set_var("ANTHROPIC_BASE_URL", "https://gateway.test/anthropic");
         }
         // Anthropic provider honors ANTHROPIC_BASE_URL when CHENNAI_BASE_URL is unset.
-        let cfg = Config::load_with_base_url(Some("anthropic"), None, None, None, false, None, false, None, None, None);
-        assert_eq!(cfg.base_url.as_deref(), Some("https://gateway.test/anthropic"));
+        let cfg = Config::load_with_base_url(
+            Some("anthropic"),
+            None,
+            None,
+            None,
+            false,
+            None,
+            false,
+            None,
+            None,
+            None,
+        );
+        assert_eq!(
+            cfg.base_url.as_deref(),
+            Some("https://gateway.test/anthropic")
+        );
         // CHENNAI_BASE_URL takes precedence when both are set.
-        unsafe { std::env::set_var("CHENNAI_BASE_URL", "https://primary.test/v1"); }
-        let cfg = Config::load_with_base_url(Some("anthropic"), None, None, None, false, None, false, None, None, None);
+        unsafe {
+            std::env::set_var("CHENNAI_BASE_URL", "https://primary.test/v1");
+        }
+        let cfg = Config::load_with_base_url(
+            Some("anthropic"),
+            None,
+            None,
+            None,
+            false,
+            None,
+            false,
+            None,
+            None,
+            None,
+        );
         assert_eq!(cfg.base_url.as_deref(), Some("https://primary.test/v1"));
         unsafe {
-            match prev_chennai { Some(v) => std::env::set_var("CHENNAI_BASE_URL", v), None => std::env::remove_var("CHENNAI_BASE_URL") }
-            match prev_anthropic { Some(v) => std::env::set_var("ANTHROPIC_BASE_URL", v), None => std::env::remove_var("ANTHROPIC_BASE_URL") }
+            match prev_chennai {
+                Some(v) => std::env::set_var("CHENNAI_BASE_URL", v),
+                None => std::env::remove_var("CHENNAI_BASE_URL"),
+            }
+            match prev_anthropic {
+                Some(v) => std::env::set_var("ANTHROPIC_BASE_URL", v),
+                None => std::env::remove_var("ANTHROPIC_BASE_URL"),
+            }
         }
     }
 
@@ -370,21 +506,42 @@ mod tests {
             std::env::set_var("ANTHROPIC_AUTH_TOKEN", "tok-infer");
         }
         // No explicit provider, but an Anthropic auth token is set → anthropic.
-        let cfg = Config::load_with_base_url(None, None, None, None, false, None, false, None, None, None);
+        let cfg = Config::load_with_base_url(
+            None, None, None, None, false, None, false, None, None, None,
+        );
         assert_eq!(cfg.provider, ProviderKind::Anthropic);
         // An explicit CLI provider still wins over the inference.
-        let cfg = Config::load_with_base_url(Some("openai"), None, None, None, false, None, false, None, None, None);
+        let cfg = Config::load_with_base_url(
+            Some("openai"),
+            None,
+            None,
+            None,
+            false,
+            None,
+            false,
+            None,
+            None,
+            None,
+        );
         assert_eq!(cfg.provider, ProviderKind::OpenAI);
         unsafe {
-            match prev_prov { Some(v) => std::env::set_var("CHENNAI_PROVIDER", v), None => std::env::remove_var("CHENNAI_PROVIDER") }
-            match prev_tok { Some(v) => std::env::set_var("ANTHROPIC_AUTH_TOKEN", v), None => std::env::remove_var("ANTHROPIC_AUTH_TOKEN") }
+            match prev_prov {
+                Some(v) => std::env::set_var("CHENNAI_PROVIDER", v),
+                None => std::env::remove_var("CHENNAI_PROVIDER"),
+            }
+            match prev_tok {
+                Some(v) => std::env::set_var("ANTHROPIC_AUTH_TOKEN", v),
+                None => std::env::remove_var("ANTHROPIC_AUTH_TOKEN"),
+            }
         }
     }
 
     #[test]
     fn budget_defaults_match_expected() {
         let _guard = ENV_MUTEX.lock().unwrap();
-        let cfg = Config::load_with_base_url(None, None, None, None, false, None, false, None, None, None);
+        let cfg = Config::load_with_base_url(
+            None, None, None, None, false, None, false, None, None, None,
+        );
         assert_eq!(cfg.max_subagents, 8);
         assert_eq!(cfg.turn_budget, 80);
         assert_eq!(cfg.token_budget, 256_000);
@@ -393,40 +550,94 @@ mod tests {
     #[test]
     fn cli_max_subagents_overrides_default() {
         let _guard = ENV_MUTEX.lock().unwrap();
-        let cfg = Config::load_with_base_url(None, None, None, None, false, None, false, Some(12), None, None);
+        let cfg = Config::load_with_base_url(
+            None,
+            None,
+            None,
+            None,
+            false,
+            None,
+            false,
+            Some(12),
+            None,
+            None,
+        );
         assert_eq!(cfg.max_subagents, 12);
     }
 
     #[test]
     fn cli_turn_budget_overrides_default() {
         let _guard = ENV_MUTEX.lock().unwrap();
-        let cfg = Config::load_with_base_url(None, None, None, None, false, None, false, None, Some(200), None);
+        let cfg = Config::load_with_base_url(
+            None,
+            None,
+            None,
+            None,
+            false,
+            None,
+            false,
+            None,
+            Some(200),
+            None,
+        );
         assert_eq!(cfg.turn_budget, 200);
     }
 
     #[test]
     fn cli_token_budget_overrides_default() {
         let _guard = ENV_MUTEX.lock().unwrap();
-        let cfg = Config::load_with_base_url(None, None, None, None, false, None, false, None, None, Some(200_000));
+        let cfg = Config::load_with_base_url(
+            None,
+            None,
+            None,
+            None,
+            false,
+            None,
+            false,
+            None,
+            None,
+            Some(200_000),
+        );
         assert_eq!(cfg.token_budget, 200_000);
     }
 
     #[test]
     fn cli_token_budget_clamped_to_ceiling() {
         let _guard = ENV_MUTEX.lock().unwrap();
-        let cfg = Config::load_with_base_url(None, None, None, None, false, None, false, None, None, Some(3_000_000));
-        assert_eq!(cfg.token_budget, 256_000, "values above the ceiling must be clamped");
+        let cfg = Config::load_with_base_url(
+            None,
+            None,
+            None,
+            None,
+            false,
+            None,
+            false,
+            None,
+            None,
+            Some(3_000_000),
+        );
+        assert_eq!(
+            cfg.token_budget, 256_000,
+            "values above the ceiling must be clamped"
+        );
     }
 
     #[test]
     fn env_var_max_subagents_overrides_default() {
         let _guard = ENV_MUTEX.lock().unwrap();
         let prev = std::env::var("CHENNAI_MAX_SUBAGENTS").ok();
-        unsafe { std::env::set_var("CHENNAI_MAX_SUBAGENTS", "16"); }
-        let cfg = Config::load_with_base_url(None, None, None, None, false, None, false, None, None, None);
+        unsafe {
+            std::env::set_var("CHENNAI_MAX_SUBAGENTS", "16");
+        }
+        let cfg = Config::load_with_base_url(
+            None, None, None, None, false, None, false, None, None, None,
+        );
         assert_eq!(cfg.max_subagents, 16);
         unsafe {
-            match prev { Some(val) => std::env::set_var("CHENNAI_MAX_SUBAGENTS", val), None => std::env::remove_var("CHENNAI_MAX_SUBAGENTS") }
+            match prev {
+                Some(val) => std::env::set_var("CHENNAI_MAX_SUBAGENTS", val),
+                None => std::env::remove_var("CHENNAI_MAX_SUBAGENTS"),
+            }
         }
     }
 
@@ -434,11 +645,18 @@ mod tests {
     fn env_var_turn_budget_overrides_default() {
         let _guard = ENV_MUTEX.lock().unwrap();
         let prev = std::env::var("CHENNAI_TURN_BUDGET").ok();
-        unsafe { std::env::set_var("CHENNAI_TURN_BUDGET", "200"); }
-        let cfg = Config::load_with_base_url(None, None, None, None, false, None, false, None, None, None);
+        unsafe {
+            std::env::set_var("CHENNAI_TURN_BUDGET", "200");
+        }
+        let cfg = Config::load_with_base_url(
+            None, None, None, None, false, None, false, None, None, None,
+        );
         assert_eq!(cfg.turn_budget, 200);
         unsafe {
-            match prev { Some(val) => std::env::set_var("CHENNAI_TURN_BUDGET", val), None => std::env::remove_var("CHENNAI_TURN_BUDGET") }
+            match prev {
+                Some(val) => std::env::set_var("CHENNAI_TURN_BUDGET", val),
+                None => std::env::remove_var("CHENNAI_TURN_BUDGET"),
+            }
         }
     }
 
@@ -446,12 +664,28 @@ mod tests {
     fn cli_budget_overrides_env_var() {
         let _guard = ENV_MUTEX.lock().unwrap();
         let prev = std::env::var("CHENNAI_TOKEN_BUDGET").ok();
-        unsafe { std::env::set_var("CHENNAI_TOKEN_BUDGET", "5_000_000"); }
+        unsafe {
+            std::env::set_var("CHENNAI_TOKEN_BUDGET", "5_000_000");
+        }
         // CLI overrides env var — value is within the ceiling so it passes through.
-        let cfg = Config::load_with_base_url(None, None, None, None, false, None, false, None, None, Some(200_000));
+        let cfg = Config::load_with_base_url(
+            None,
+            None,
+            None,
+            None,
+            false,
+            None,
+            false,
+            None,
+            None,
+            Some(200_000),
+        );
         assert_eq!(cfg.token_budget, 200_000);
         unsafe {
-            match prev { Some(val) => std::env::set_var("CHENNAI_TOKEN_BUDGET", val), None => std::env::remove_var("CHENNAI_TOKEN_BUDGET") }
+            match prev {
+                Some(val) => std::env::set_var("CHENNAI_TOKEN_BUDGET", val),
+                None => std::env::remove_var("CHENNAI_TOKEN_BUDGET"),
+            }
         }
     }
 
@@ -460,21 +694,44 @@ mod tests {
         let _guard = ENV_MUTEX.lock().unwrap();
         let prev = std::env::var("CHENNAI_ORCHESTRATE").ok();
 
-        unsafe { std::env::set_var("CHENNAI_ORCHESTRATE", "true"); }
-        let cfg = Config::load_with_base_url(None, None, None, None, false, None, false, None, None, None);
-        assert!(cfg.orchestrate, "CHENNAI_ORCHESTRATE=true should enable orchestration");
-
-        unsafe { std::env::set_var("CHENNAI_ORCHESTRATE", "0"); }
-        let cfg = Config::load_with_base_url(None, None, None, None, false, None, false, None, None, None);
-        assert!(!cfg.orchestrate, "CHENNAI_ORCHESTRATE=0 should not enable orchestration");
-
-        // CLI flag wins regardless of env.
-        unsafe { std::env::set_var("CHENNAI_ORCHESTRATE", "0"); }
-        let cfg = Config::load_with_base_url(None, None, None, None, false, None, true, None, None, None);
-        assert!(cfg.orchestrate, "--orchestrate should enable even when env is off");
+        unsafe {
+            std::env::set_var("CHENNAI_ORCHESTRATE", "true");
+        }
+        let cfg = Config::load_with_base_url(
+            None, None, None, None, false, None, false, None, None, None,
+        );
+        assert!(
+            cfg.orchestrate,
+            "CHENNAI_ORCHESTRATE=true should enable orchestration"
+        );
 
         unsafe {
-            match prev { Some(val) => std::env::set_var("CHENNAI_ORCHESTRATE", val), None => std::env::remove_var("CHENNAI_ORCHESTRATE") }
+            std::env::set_var("CHENNAI_ORCHESTRATE", "0");
+        }
+        let cfg = Config::load_with_base_url(
+            None, None, None, None, false, None, false, None, None, None,
+        );
+        assert!(
+            !cfg.orchestrate,
+            "CHENNAI_ORCHESTRATE=0 should not enable orchestration"
+        );
+
+        // CLI flag wins regardless of env.
+        unsafe {
+            std::env::set_var("CHENNAI_ORCHESTRATE", "0");
+        }
+        let cfg =
+            Config::load_with_base_url(None, None, None, None, false, None, true, None, None, None);
+        assert!(
+            cfg.orchestrate,
+            "--orchestrate should enable even when env is off"
+        );
+
+        unsafe {
+            match prev {
+                Some(val) => std::env::set_var("CHENNAI_ORCHESTRATE", val),
+                None => std::env::remove_var("CHENNAI_ORCHESTRATE"),
+            }
         }
     }
 }

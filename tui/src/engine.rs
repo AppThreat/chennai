@@ -1,7 +1,7 @@
 //! Spawns and talks to the `chennai-engine` Scala process over stdio NDJSON.
 
 use serde::de::DeserializeOwned;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
@@ -42,20 +42,18 @@ impl Engine {
         }
         // Look relative to the TUI binary (npm/bundled layout: bin/chennai + bin/chennai-engine)
         if let Ok(exe) = std::env::current_exe()
-            && let Some(parent) = exe.parent() {
-                let sibling = parent.join("chennai-engine");
-                if sibling.exists() {
-                    return Some(sibling);
-                }
+            && let Some(parent) = exe.parent()
+        {
+            let sibling = parent.join("chennai-engine");
+            if sibling.exists() {
+                return Some(sibling);
+            }
         }
         let candidates = [
             "engine/target/universal/stage/bin/chennai-engine",
             "../engine/target/universal/stage/bin/chennai-engine",
         ];
-        candidates
-            .iter()
-            .map(PathBuf::from)
-            .find(|pb| pb.exists())
+        candidates.iter().map(PathBuf::from).find(|pb| pb.exists())
     }
 
     /// Spawn the engine in `--serve` mode.

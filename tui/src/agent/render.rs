@@ -51,7 +51,13 @@ fn md_cell(s: &str) -> String {
 fn markdown_table(columns: &[String], rows: &[Vec<String>]) -> String {
     let mut out = String::new();
     out.push_str("| ");
-    out.push_str(&columns.iter().map(|c| md_cell(c)).collect::<Vec<_>>().join(" | "));
+    out.push_str(
+        &columns
+            .iter()
+            .map(|c| md_cell(c))
+            .collect::<Vec<_>>()
+            .join(" | "),
+    );
     out.push_str(" |\n|");
     for _ in columns {
         out.push_str(" --- |");
@@ -59,7 +65,12 @@ fn markdown_table(columns: &[String], rows: &[Vec<String>]) -> String {
     out.push('\n');
     for row in rows {
         out.push_str("| ");
-        out.push_str(&row.iter().map(|c| md_cell(c)).collect::<Vec<_>>().join(" | "));
+        out.push_str(
+            &row.iter()
+                .map(|c| md_cell(c))
+                .collect::<Vec<_>>()
+                .join(" | "),
+        );
         out.push_str(" |\n");
     }
     out
@@ -119,7 +130,10 @@ fn render_table(data: &Value) -> Option<String> {
     } else {
         out.push_str(&markdown_table(&columns, &table_rows));
     }
-    let total = data.get("total").and_then(Value::as_i64).unwrap_or(table_rows.len() as i64);
+    let total = data
+        .get("total")
+        .and_then(Value::as_i64)
+        .unwrap_or(table_rows.len() as i64);
     if total > table_rows.len() as i64 {
         out.push_str(&format!(
             "\n_Showing {} of {} row(s). Use offset/limit to page._\n",
@@ -133,8 +147,14 @@ fn render_table(data: &Value) -> Option<String> {
 fn render_flows(data: &Value) -> Option<String> {
     let flows = data.get("flows")?.as_array()?;
     let mut out = String::new();
-    let title = data.get("title").and_then(Value::as_str).unwrap_or("Data flows");
-    let total = data.get("total").and_then(Value::as_i64).unwrap_or(flows.len() as i64);
+    let title = data
+        .get("title")
+        .and_then(Value::as_str)
+        .unwrap_or("Data flows");
+    let total = data
+        .get("total")
+        .and_then(Value::as_i64)
+        .unwrap_or(flows.len() as i64);
     let offset = data.get("offset").and_then(Value::as_i64).unwrap_or(0);
     let capped = data.get("capped").and_then(Value::as_bool).unwrap_or(false);
     let next_offset = data.get("nextOffset").and_then(Value::as_i64);
@@ -167,23 +187,39 @@ fn render_flows(data: &Value) -> Option<String> {
         out.push_str(&format!("\n### Flow {}: {} → {}\n", i + 1, source, sink));
 
         let mut tags = Vec::new();
-        if flow.get("mitigated").and_then(Value::as_bool).unwrap_or(false) {
+        if flow
+            .get("mitigated")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
             tags.push("mitigated/sanitized");
         }
-        if flow.get("hasPurl").and_then(Value::as_bool).unwrap_or(false) {
+        if flow
+            .get("hasPurl")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
             tags.push("attributable-to-dependency");
         }
         if !tags.is_empty() {
             out.push_str(&format!("_{}_\n", tags.join(", ")));
         }
 
-        let steps = flow.get("steps").and_then(Value::as_array).cloned().unwrap_or_default();
+        let steps = flow
+            .get("steps")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
         let step_rows: Vec<Vec<String>> = steps
             .iter()
             .map(|s| {
                 let file = s.get("file").and_then(Value::as_str).unwrap_or("");
                 let line = s.get("line").and_then(Value::as_i64).unwrap_or(0);
-                let loc = if file.is_empty() { String::new() } else { format!("{file}:{line}") };
+                let loc = if file.is_empty() {
+                    String::new()
+                } else {
+                    format!("{file}:{line}")
+                };
                 vec![
                     scalar_text(s.get("kind").unwrap_or(&Value::Null)),
                     scalar_text(s.get("method").unwrap_or(&Value::Null)),
@@ -210,7 +246,10 @@ fn render_flows(data: &Value) -> Option<String> {
 fn render_detail(data: &Value) -> Option<String> {
     // Only treat this as a detail payload if it has at least one of the known
     // detail sections; otherwise let the caller fall back to JSON.
-    if !["props", "childRows", "callTree", "code"].iter().any(|k| data.get(k).is_some()) {
+    if !["props", "childRows", "callTree", "code"]
+        .iter()
+        .any(|k| data.get(k).is_some())
+    {
         return None;
     }
     let mut out = String::new();
@@ -233,7 +272,10 @@ fn render_detail(data: &Value) -> Option<String> {
         && !child_rows.is_empty()
     {
         let title = data.get("childTitle").and_then(Value::as_str).unwrap_or("");
-        out.push_str(&format!("\n**{}**\n\n", if title.is_empty() { "Children" } else { title }));
+        out.push_str(&format!(
+            "\n**{}**\n\n",
+            if title.is_empty() { "Children" } else { title }
+        ));
         let rows: Vec<Vec<String>> = child_rows
             .iter()
             .map(|row| {
@@ -254,8 +296,15 @@ fn render_detail(data: &Value) -> Option<String> {
             let label = node.get("label").and_then(Value::as_str).unwrap_or("");
             let file = node.get("file").and_then(Value::as_str).unwrap_or("");
             let line = node.get("line").and_then(Value::as_str).unwrap_or("");
-            let loc = if file.is_empty() { String::new() } else { format!("  ({file}:{line})") };
-            out.push_str(&format!("{}- {label}{loc}\n", "  ".repeat(depth.saturating_sub(1))));
+            let loc = if file.is_empty() {
+                String::new()
+            } else {
+                format!("  ({file}:{line})")
+            };
+            out.push_str(&format!(
+                "{}- {label}{loc}\n",
+                "  ".repeat(depth.saturating_sub(1))
+            ));
         }
     }
 

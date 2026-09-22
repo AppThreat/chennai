@@ -10,11 +10,11 @@
 //!
 //!   recon → sink-hunter → taint-prover → auth-boundary → supply-chain → reporter
 
+use super::AgentCtx;
 use super::finding::{ProfileSegment, RunProfile};
 use super::orchestrator::{finalize_run_with_options, run_subagent};
 use super::process_note::ProcessNote;
 use super::roles::{discover_roles, is_valid_role_name, resolve_role};
-use super::AgentCtx;
 use std::path::Path;
 use std::sync::atomic::Ordering;
 use std::time::Instant;
@@ -80,7 +80,16 @@ pub fn run_audit(
     include_low_value: bool,
     resume: bool,
 ) -> Result<AuditOutcome, Box<dyn std::error::Error>> {
-    run_audit_impl(ctx, objective, pipeline, reports_dir, stage_turn_budget, false, include_low_value, resume)
+    run_audit_impl(
+        ctx,
+        objective,
+        pipeline,
+        reports_dir,
+        stage_turn_budget,
+        false,
+        include_low_value,
+        resume,
+    )
 }
 
 /// Run the deterministic audit with `--skip-missing-roles` tolerance: invalid or
@@ -94,7 +103,16 @@ pub fn run_audit_skip_missing(
     include_low_value: bool,
     resume: bool,
 ) -> Result<AuditOutcome, Box<dyn std::error::Error>> {
-    run_audit_impl(ctx, objective, pipeline, reports_dir, stage_turn_budget, true, include_low_value, resume)
+    run_audit_impl(
+        ctx,
+        objective,
+        pipeline,
+        reports_dir,
+        stage_turn_budget,
+        true,
+        include_low_value,
+        resume,
+    )
 }
 
 /// Resolve the effective pipeline from an optional override.
@@ -227,7 +245,9 @@ fn run_audit_impl(
     let objective_text = objective.unwrap_or("Perform a full security audit of this codebase.");
 
     if resume {
-        eprintln!("[audit] Note: profile totals reflect only stages run this session, not cross-session cumulative cost.");
+        eprintln!(
+            "[audit] Note: profile totals reflect only stages run this session, not cross-session cumulative cost."
+        );
     }
 
     for role_name in &pipeline_names {
@@ -340,7 +360,13 @@ fn run_audit_impl(
     // "audit-driver" segment (reconciles the profile TOTAL with the ledger), and
     // saves profile.json. All locks are scoped narrowly inside finalize_run to
     // avoid the std-Mutex non-reentrancy deadlock.
-    finalize_run_with_options(ctx, run_start, reports_dir, Some("audit-driver"), include_low_value);
+    finalize_run_with_options(
+        ctx,
+        run_start,
+        reports_dir,
+        Some("audit-driver"),
+        include_low_value,
+    );
 
     // Save audit progress one final time so it's up to date even if some stages
     // were truncated (truncated stages are NOT marked completed).
@@ -396,10 +422,7 @@ mod tests {
     impl MockProvider {
         fn new(turns: Vec<(&str, Vec<ContentBlock>)>) -> Self {
             MockProvider {
-                turns: turns
-                    .into_iter()
-                    .map(|(s, c)| (s.to_string(), c))
-                    .collect(),
+                turns: turns.into_iter().map(|(s, c)| (s.to_string(), c)).collect(),
                 index: std::sync::Mutex::new(0),
             }
         }
@@ -492,27 +515,46 @@ mod tests {
 
     #[test]
     fn pipeline_override_validates_and_rejects_bad_roles() {
-        let provider = MockProvider::new(vec![
-            ("end_turn", vec![ContentBlock::Text("done".into())]),
-        ]);
+        let provider =
+            MockProvider::new(vec![("end_turn", vec![ContentBlock::Text("done".into())])]);
         let ctx = make_ctx(Box::new(provider));
 
         // Invalid role name (uppercase not allowed).
-        let result = run_audit(&ctx, None, Some(&["RECON".to_string()]), None, None, false, false);
+        let result = run_audit(
+            &ctx,
+            None,
+            Some(&["RECON".to_string()]),
+            None,
+            None,
+            false,
+            false,
+        );
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("invalid role name"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("invalid role name")
+        );
 
         // Undiscovered role.
-        let result = run_audit(&ctx, None, Some(&["nonexistent-role".to_string()]), None, None, false, false);
+        let result = run_audit(
+            &ctx,
+            None,
+            Some(&["nonexistent-role".to_string()]),
+            None,
+            None,
+            false,
+            false,
+        );
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("unknown role"));
     }
 
     #[test]
     fn pipeline_override_skip_missing_roles() {
-        let provider = MockProvider::new(vec![
-            ("end_turn", vec![ContentBlock::Text("done".into())]),
-        ]);
+        let provider =
+            MockProvider::new(vec![("end_turn", vec![ContentBlock::Text("done".into())])]);
         let ctx = make_ctx(Box::new(provider));
 
         // With skip_missing, unknown roles are silently skipped.
@@ -533,7 +575,10 @@ mod tests {
         if let Err(e) = &result {
             // If it fails, it should be because of a different reason than the bad role.
             let msg = e.to_string();
-            assert!(!msg.contains("nonexistent"), "should have skipped the unknown role");
+            assert!(
+                !msg.contains("nonexistent"),
+                "should have skipped the unknown role"
+            );
         }
     }
 
@@ -543,9 +588,10 @@ mod tests {
 
     #[test]
     fn audit_finalize_reconciles_profile_with_ledger() {
-        let provider = MockProvider::new(vec![
-            ("end_turn", vec![ContentBlock::Text("Recon done.".into())]),
-        ]);
+        let provider = MockProvider::new(vec![(
+            "end_turn",
+            vec![ContentBlock::Text("Recon done.".into())],
+        )]);
         let mut ctx = make_ctx(Box::new(provider));
         let dir = tempfile::tempdir().unwrap();
         ctx.source_root = Some(dir.path().to_str().unwrap().to_string());
@@ -573,7 +619,11 @@ mod tests {
         );
 
         // profile.json should exist.
-        let profile_path = dir.path().join(".chen").join("agent-state").join("profile.json");
+        let profile_path = dir
+            .path()
+            .join(".chen")
+            .join("agent-state")
+            .join("profile.json");
         assert!(profile_path.exists(), "profile.json should be written");
     }
 
@@ -632,7 +682,11 @@ mod tests {
         // So the audit should actually succeed, having completed recon and then
         // had sink-hunter return early.
         // But if it does fail, state should still be on disk.
-        let note_path = dir.path().join(".chen").join("agent-state").join("process_note.json");
+        let note_path = dir
+            .path()
+            .join(".chen")
+            .join("agent-state")
+            .join("process_note.json");
         assert!(
             note_path.exists(),
             "process_note.json should be persisted even on error"
@@ -645,9 +699,10 @@ mod tests {
 
     #[test]
     fn headless_audit_smoke_test_writes_profile() {
-        let provider = MockProvider::new(vec![
-            ("end_turn", vec![ContentBlock::Text("Audit done.".into())]),
-        ]);
+        let provider = MockProvider::new(vec![(
+            "end_turn",
+            vec![ContentBlock::Text("Audit done.".into())],
+        )]);
         let mut ctx = make_ctx(Box::new(provider));
         let dir = tempfile::tempdir().unwrap();
         ctx.source_root = Some(dir.path().to_str().unwrap().to_string());
@@ -668,7 +723,11 @@ mod tests {
         assert_eq!(outcome.stages[0].role, "recon");
         assert!(outcome.stages[0].completed);
 
-        let profile_path = dir.path().join(".chen").join("agent-state").join("profile.json");
+        let profile_path = dir
+            .path()
+            .join(".chen")
+            .join("agent-state")
+            .join("profile.json");
         assert!(profile_path.exists(), "profile.json should be written");
     }
 
@@ -720,9 +779,10 @@ mod tests {
         };
         progress.save(Some(dir.path().to_str().unwrap())).unwrap();
 
-        let provider = MockProvider::new(vec![
-            ("end_turn", vec![ContentBlock::Text("Sink hunter done.".into())]),
-        ]);
+        let provider = MockProvider::new(vec![(
+            "end_turn",
+            vec![ContentBlock::Text("Sink hunter done.".into())],
+        )]);
         let mut ctx = make_ctx(Box::new(provider));
         ctx.source_root = Some(dir.path().to_str().unwrap().to_string());
 
@@ -788,20 +848,29 @@ mod tests {
 
         // Seed audit-progress with ALL stages completed.
         let mut progress = super::super::finding::AuditProgress::new();
-        progress.mark_completed("recon", Some(dir.path().to_str().unwrap())).unwrap();
-        progress.mark_completed("sink-hunter", Some(dir.path().to_str().unwrap())).unwrap();
-        progress.mark_completed("reporter", Some(dir.path().to_str().unwrap())).unwrap();
+        progress
+            .mark_completed("recon", Some(dir.path().to_str().unwrap()))
+            .unwrap();
+        progress
+            .mark_completed("sink-hunter", Some(dir.path().to_str().unwrap()))
+            .unwrap();
+        progress
+            .mark_completed("reporter", Some(dir.path().to_str().unwrap()))
+            .unwrap();
 
-        let provider = MockProvider::new(vec![
-            ("end_turn", vec![ContentBlock::Text("Done.".into())]),
-        ]);
+        let provider =
+            MockProvider::new(vec![("end_turn", vec![ContentBlock::Text("Done.".into())])]);
         let mut ctx = make_ctx(Box::new(provider));
         ctx.source_root = Some(dir.path().to_str().unwrap().to_string());
 
         let outcome = run_audit(
             &ctx,
             None,
-            Some(&["recon".to_string(), "sink-hunter".to_string(), "reporter".to_string()]),
+            Some(&[
+                "recon".to_string(),
+                "sink-hunter".to_string(),
+                "reporter".to_string(),
+            ]),
             Some(dir.path()),
             None,
             false,
@@ -811,7 +880,10 @@ mod tests {
 
         // All stages should be skipped, but the outcome should reflect the
         // restored finding.
-        assert_eq!(outcome.total_findings, 1, "restored findings should appear in outcome");
+        assert_eq!(
+            outcome.total_findings, 1,
+            "restored findings should appear in outcome"
+        );
         assert_eq!(outcome.confirmed_findings, 1);
     }
 
@@ -826,7 +898,10 @@ mod tests {
 
         let provider = MockProvider::new(vec![
             ("end_turn", vec![ContentBlock::Text("Recon ran.".into())]),
-            ("end_turn", vec![ContentBlock::Text("Sink hunter ran.".into())]),
+            (
+                "end_turn",
+                vec![ContentBlock::Text("Sink hunter ran.".into())],
+            ),
         ]);
         let mut ctx = make_ctx(Box::new(provider));
         ctx.source_root = Some(dir.path().to_str().unwrap().to_string());
@@ -846,7 +921,10 @@ mod tests {
         assert_eq!(outcome.stages.len(), 2);
         // Recon should have actually run (not skipped).
         assert_eq!(outcome.stages[0].role, "recon");
-        assert!(outcome.stages[0].tokens > 0, "recon should have run, not been skipped");
+        assert!(
+            outcome.stages[0].tokens > 0,
+            "recon should have run, not been skipped"
+        );
         assert!(!outcome.stages[0].summary.contains("skipped (resumed)"));
     }
 
@@ -862,21 +940,36 @@ mod tests {
         };
         stale.save(Some(sr)).unwrap();
 
-        let provider = MockProvider::new(vec![
-            ("end_turn", vec![ContentBlock::Text("Recon ran.".into())]),
-        ]);
+        let provider = MockProvider::new(vec![(
+            "end_turn",
+            vec![ContentBlock::Text("Recon ran.".into())],
+        )]);
         let mut ctx = make_ctx(Box::new(provider));
         ctx.source_root = Some(sr.to_string());
 
         // Fresh (non-resume) run of a single-stage pipeline.
-        run_audit(&ctx, None, Some(&["recon".to_string()]), Some(dir.path()), None, false, false)
-            .expect("fresh audit should succeed");
+        run_audit(
+            &ctx,
+            None,
+            Some(&["recon".to_string()]),
+            Some(dir.path()),
+            None,
+            false,
+            false,
+        )
+        .expect("fresh audit should succeed");
 
         // The persisted progress must reflect ONLY this run: recon, and none of
         // the stale entries.
         let saved = super::super::finding::AuditProgress::load(Some(sr));
         assert_eq!(saved.completed_stages, vec!["recon".to_string()]);
-        assert!(!saved.is_completed("reporter"), "stale 'reporter' must be gone");
-        assert!(!saved.is_completed("sink-hunter"), "stale 'sink-hunter' must be gone");
+        assert!(
+            !saved.is_completed("reporter"),
+            "stale 'reporter' must be gone"
+        );
+        assert!(
+            !saved.is_completed("sink-hunter"),
+            "stale 'sink-hunter' must be gone"
+        );
     }
 }

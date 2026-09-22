@@ -17,7 +17,10 @@ pub fn find_rusi() -> Result<PathBuf, String> {
         return Ok(path);
     }
 
-    Err("rusi CLI not found. Set RUSI_CMD or install cdxgen-plugins-bin which bundles rusi.".to_string())
+    Err(
+        "rusi CLI not found. Set RUSI_CMD or install cdxgen-plugins-bin which bundles rusi."
+            .to_string(),
+    )
 }
 
 pub fn rusi_report_path(source_dir: &Path) -> PathBuf {
@@ -79,7 +82,10 @@ pub fn run_rusi(source_dir: &Path, out_dir: &Path) -> Result<PathBuf, String> {
     if out_path.is_file() {
         Ok(out_path)
     } else {
-        Err(format!("rusi completed but output file {} was not created", out_path.display()))
+        Err(format!(
+            "rusi completed but output file {} was not created",
+            out_path.display()
+        ))
     }
 }
 

@@ -19,7 +19,10 @@ pub fn find_golem() -> Result<PathBuf, String> {
         return Ok(path);
     }
 
-    Err("golem CLI not found. Set GOLEM_CMD or install cdxgen-plugins-bin which bundles golem.".to_string())
+    Err(
+        "golem CLI not found. Set GOLEM_CMD or install cdxgen-plugins-bin which bundles golem."
+            .to_string(),
+    )
 }
 
 /// Path to the golem JSON report inside `source_dir`.
@@ -80,7 +83,10 @@ pub fn run_golem(source_dir: &Path, out_dir: &Path) -> Result<PathBuf, String> {
     if out_path.is_file() {
         Ok(out_path)
     } else {
-        Err(format!("golem completed but output file {} was not created", out_path.display()))
+        Err(format!(
+            "golem completed but output file {} was not created",
+            out_path.display()
+        ))
     }
 }
 

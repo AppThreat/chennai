@@ -15,7 +15,7 @@ use serde_json::Value;
 use ratatui::layout::Rect;
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::Instant;
 
@@ -60,9 +60,18 @@ pub enum AgentEntry {
     UserQuery(String),
     Thinking(String),
     Text(String),
-    ToolCall { _id: String, name: String, input: serde_json::Value, result: Option<String>, is_error: bool },
+    ToolCall {
+        _id: String,
+        name: String,
+        input: serde_json::Value,
+        result: Option<String>,
+        is_error: bool,
+    },
     Error(String),
-    Usage { input_tokens: u32, output_tokens: u32 },
+    Usage {
+        input_tokens: u32,
+        output_tokens: u32,
+    },
     StopReason(String),
     Done,
 }
@@ -366,7 +375,12 @@ pub struct App {
 
 impl App {
     #[allow(dead_code)]
-    pub fn new(engine: Option<Arc<Mutex<Engine>>>, atom_path: String, summary: Summary, source_root: Option<String>) -> Self {
+    pub fn new(
+        engine: Option<Arc<Mutex<Engine>>>,
+        atom_path: String,
+        summary: Summary,
+        source_root: Option<String>,
+    ) -> Self {
         App {
             engine,
             atom_path,
@@ -472,7 +486,11 @@ impl App {
                     return None;
                 }
                 // When the agent view is showing, navigate the agent transcript.
-                if self.agent_active || (!self.agent_transcript.is_empty() && self.output.is_none() && self.flows.is_none()) {
+                if self.agent_active
+                    || (!self.agent_transcript.is_empty()
+                        && self.output.is_none()
+                        && self.flows.is_none())
+                {
                     let len = self.agent_transcript.len().max(1);
                     Some((&mut self.output_state, len))
                 // When a flow result is showing, Output navigation drives the master flow list.
@@ -497,12 +515,19 @@ impl App {
             Panel::Summary => self.run_summary_row(self.summary_state.selected, true),
             Panel::Repl => self.submit_repl(),
             Panel::Output => {
-                if self.agent_active || (!self.agent_transcript.is_empty() && self.output.is_none() && self.flows.is_none()) {
+                if self.agent_active
+                    || (!self.agent_transcript.is_empty()
+                        && self.output.is_none()
+                        && self.flows.is_none())
+                {
                     // In agent view, Enter is a no-op (or could select a tool result).
                     return;
                 }
                 // Starter questions: execute the selected question on Enter.
-                if self.output.is_none() && self.flows.is_none() && !self.starter_questions.is_empty() {
+                if self.output.is_none()
+                    && self.flows.is_none()
+                    && !self.starter_questions.is_empty()
+                {
                     self.run_starter_question(self.output_state.selected);
                     return;
                 }
@@ -582,7 +607,8 @@ impl App {
         // Works whether or not the agent is enabled, and matches both `help` and `/help`.
         if t.eq_ignore_ascii_case("help") || t == "/help" {
             let backend_name = self.backend.as_ref().map(|b| b.backend_name());
-            self.repl.record(&t, help_text(self.agent_enabled, backend_name), true);
+            self.repl
+                .record(&t, help_text(self.agent_enabled, backend_name), true);
             self.status = "commands listed".into();
             return;
         }
@@ -591,7 +617,11 @@ impl App {
         // fresh session. The loaded atom/backend/engine and summary panel are kept intact.
         if t == "/clear" {
             if self.agent_active {
-                self.repl.record(&t, "agent is running — cancel it first ([c] or Esc)".into(), false);
+                self.repl.record(
+                    &t,
+                    "agent is running — cancel it first ([c] or Esc)".into(),
+                    false,
+                );
             } else {
                 self.clear_session();
                 self.status = "session cleared".into();
@@ -609,7 +639,8 @@ impl App {
             if cmd_word == "orchestrate" || cmd_word == "audit" {
                 if self.agent_enabled && !self.agent_active {
                     // Everything after the command name is the objective.
-                    let objective = cmd_parts.next()
+                    let objective = cmd_parts
+                        .next()
                         .map(|s| s.trim().to_string())
                         .filter(|s| !s.is_empty());
                     self.orchestrate_once = true;
@@ -620,11 +651,15 @@ impl App {
                     self.agent_query_text = t.clone();
 
                     // Discover and display the available roles.
-                    let base = self.source_root.as_ref()
+                    let base = self
+                        .source_root
+                        .as_ref()
                         .map(std::path::PathBuf::from)
                         .unwrap_or_else(|| std::path::PathBuf::from("."));
                     let role_names: Vec<String> = crate::agent::roles::discover_roles(&base)
-                        .keys().cloned().collect();
+                        .keys()
+                        .cloned()
+                        .collect();
                     let roles_display = role_names.join(", ");
                     self.repl.record(
                         &t,
@@ -650,9 +685,15 @@ impl App {
                     self.output = None;
                     self.flows = None;
                     self.detail = None;
-                    if let Some(c) = self.agent_cancel.as_ref() { c.store(false, AtomicOrdering::SeqCst) }
+                    if let Some(c) = self.agent_cancel.as_ref() {
+                        c.store(false, AtomicOrdering::SeqCst)
+                    }
                 } else if !self.agent_enabled {
-                    self.repl.record(&t, "AI agent not enabled; set ANTHROPIC_API_KEY or OPENAI_API_KEY".into(), false);
+                    self.repl.record(
+                        &t,
+                        "AI agent not enabled; set ANTHROPIC_API_KEY or OPENAI_API_KEY".into(),
+                        false,
+                    );
                 } else {
                     self.repl.record(&t, "agent already running".into(), false);
                 }
@@ -667,26 +708,33 @@ impl App {
                 self.agent_query_text = t.clone();
                 // Use a curated template (prompt body + tool allowlist + effort)
                 // for known slash commands; unknown ones fall back to free-text.
-                    match crate::agent::slash_command(&cmd) {
-                        Some(sc) => {
-                            self.agent_slash_prompt = Some(sc.body);
-                            // Map atom_* tool names to backend-specific equivalents.
-                            let backend_name = self.backend.as_ref().map(|b| b.backend_name()).unwrap_or("");
-                            self.agent_slash_tools = sc.tools.map(|tools| {
-                                if !backend_name.is_empty() {
-                                    tools.into_iter().map(|t| map_atom_to_backend_tool(&t, backend_name)).collect()
-                                } else {
-                                    tools
-                                }
-                            });
-                            self.agent_slash_effort = sc.effort;
-                        }
-                        None => {
-                            self.agent_slash_prompt = None;
-                            self.agent_slash_tools = None;
-                            self.agent_slash_effort = None;
-                        }
+                match crate::agent::slash_command(&cmd) {
+                    Some(sc) => {
+                        self.agent_slash_prompt = Some(sc.body);
+                        // Map atom_* tool names to backend-specific equivalents.
+                        let backend_name = self
+                            .backend
+                            .as_ref()
+                            .map(|b| b.backend_name())
+                            .unwrap_or("");
+                        self.agent_slash_tools = sc.tools.map(|tools| {
+                            if !backend_name.is_empty() {
+                                tools
+                                    .into_iter()
+                                    .map(|t| map_atom_to_backend_tool(&t, backend_name))
+                                    .collect()
+                            } else {
+                                tools
+                            }
+                        });
+                        self.agent_slash_effort = sc.effort;
                     }
+                    None => {
+                        self.agent_slash_prompt = None;
+                        self.agent_slash_tools = None;
+                        self.agent_slash_effort = None;
+                    }
+                }
                 // Signal to main that we want to start the agent.
                 // The actual thread is spawned in the event loop when it sees this flag.
                 self.agent_active = true;
@@ -702,10 +750,16 @@ impl App {
                 self.output = None;
                 self.flows = None;
                 self.detail = None;
-                if let Some(c) = self.agent_cancel.as_ref() { c.store(false, AtomicOrdering::SeqCst) }
+                if let Some(c) = self.agent_cancel.as_ref() {
+                    c.store(false, AtomicOrdering::SeqCst)
+                }
                 return;
             } else if !self.agent_enabled {
-                self.repl.record(&t, "AI agent not enabled; set ANTHROPIC_API_KEY or OPENAI_API_KEY".into(), false);
+                self.repl.record(
+                    &t,
+                    "AI agent not enabled; set ANTHROPIC_API_KEY or OPENAI_API_KEY".into(),
+                    false,
+                );
             } else {
                 self.repl.record(&t, "agent already running".into(), false);
             }
@@ -714,12 +768,24 @@ impl App {
 
         // BOM command: show the software bill of materials as a table.
         let lower = t.to_ascii_lowercase();
-        if lower == "bom" || lower == ":bom" || lower.starts_with("bom ") || lower.starts_with(":bom ") {
-            let filter = t.split_once(' ').map(|(_, rest)| rest.trim().to_string())
+        if lower == "bom"
+            || lower == ":bom"
+            || lower.starts_with("bom ")
+            || lower.starts_with(":bom ")
+        {
+            let filter = t
+                .split_once(' ')
+                .map(|(_, rest)| rest.trim().to_string())
                 .filter(|s| !s.is_empty());
             self.repl.record(&t, "BOM components loaded".into(), true);
             self.show_bom_table(filter.as_deref());
-            self.status = format!("BOM: {} components", self.bom_store.as_ref().map(|s| s.total_components).unwrap_or(0));
+            self.status = format!(
+                "BOM: {} components",
+                self.bom_store
+                    .as_ref()
+                    .map(|s| s.total_components)
+                    .unwrap_or(0)
+            );
             return;
         }
 
@@ -735,8 +801,16 @@ impl App {
                             if facts.is_empty() {
                                 ("no facts stored".into(), true)
                             } else {
-                                let lines: Vec<String> = facts.iter()
-                                    .map(|f| format!("{} ({}) — {}", f.name, f.fact_type.as_str(), f.description))
+                                let lines: Vec<String> = facts
+                                    .iter()
+                                    .map(|f| {
+                                        format!(
+                                            "{} ({}) — {}",
+                                            f.name,
+                                            f.fact_type.as_str(),
+                                            f.description
+                                        )
+                                    })
                                     .collect();
                                 (lines.join("\n"), true)
                             }
@@ -747,8 +821,16 @@ impl App {
                 ("prune", Some(s)) => {
                     let report = s.prune(&Default::default());
                     let parts = vec![
-                        if report.demoted > 0 { Some(format!("{} demoted", report.demoted)) } else { None },
-                        if report.evicted > 0 { Some(format!("{} evicted", report.evicted)) } else { None },
+                        if report.demoted > 0 {
+                            Some(format!("{} demoted", report.demoted))
+                        } else {
+                            None
+                        },
+                        if report.evicted > 0 {
+                            Some(format!("{} evicted", report.evicted))
+                        } else {
+                            None
+                        },
                     ];
                     let msg = parts.into_iter().flatten().collect::<Vec<_>>();
                     if msg.is_empty() {
@@ -768,14 +850,20 @@ impl App {
                         match s.load(name) {
                             Some(f) => {
                                 let content = crate::agent::memory::FactStore::format_fact_file(
-                                    &f.name, &f.description, f.fact_type,
-                                    f.grounded_by.as_deref(), f.confidence.as_deref(),
-                                    &f.source_refs, &f.created, &f.updated,
-                                    f.commit.as_deref(), &f.body,
+                                    &f.name,
+                                    &f.description,
+                                    f.fact_type,
+                                    f.grounded_by.as_deref(),
+                                    f.confidence.as_deref(),
+                                    &f.source_refs,
+                                    &f.created,
+                                    &f.updated,
+                                    f.commit.as_deref(),
+                                    &f.body,
                                 );
                                 (content, true)
                             }
-                            None => (format!("fact '{name}' not found"), false)
+                            None => (format!("fact '{name}' not found"), false),
                         }
                     } else {
                         match s.delete(name) {
@@ -785,12 +873,19 @@ impl App {
                     }
                 }
                 (sub, Some(s)) if sub == "save" || sub.starts_with("save ") => {
-                    let rest = if sub.starts_with("save ") { sub.strip_prefix("save ").unwrap_or("").trim() } else { "" };
-                    let (name, explicit_body) = rest.split_once(" -- ")
+                    let rest = if sub.starts_with("save ") {
+                        sub.strip_prefix("save ").unwrap_or("").trim()
+                    } else {
+                        ""
+                    };
+                    let (name, explicit_body) = rest
+                        .split_once(" -- ")
                         .map(|(n, b)| (n.trim(), Some(b.trim().to_string())))
                         .unwrap_or((rest, None));
                     let name = if name.is_empty() {
-                        chrono::Utc::now().format("memory-%Y-%m-%d-%H%M%S").to_string()
+                        chrono::Utc::now()
+                            .format("memory-%Y-%m-%d-%H%M%S")
+                            .to_string()
                     } else {
                         name.to_string()
                     };
@@ -819,7 +914,12 @@ impl App {
                 (sub, _) if sub == "save" || sub.starts_with("save ") => {
                     ("fact store not available".into(), false)
                 }
-                (sub, _) => (format!("unknown :memory subcommand '{sub}' — try list, show <name>, forget <name>, prune, save [<name>]"), false),
+                (sub, _) => (
+                    format!(
+                        "unknown :memory subcommand '{sub}' — try list, show <name>, forget <name>, prune, save [<name>]"
+                    ),
+                    false,
+                ),
             };
             self.repl.record(&t, status.clone(), ok);
             self.status = status;
@@ -841,7 +941,13 @@ impl App {
                 return;
             }
             if !self.is_known_tool(name) {
-                self.repl.record(&t, format!("unknown tool ':{name}' — type `:` then Ctrl-Space to list tools, or `help`"), false);
+                self.repl.record(
+                    &t,
+                    format!(
+                        "unknown tool ':{name}' — type `:` then Ctrl-Space to list tools, or `help`"
+                    ),
+                    false,
+                );
                 self.status = "unknown tool".into();
                 return;
             }
@@ -862,7 +968,11 @@ impl App {
                 process_note: None,
             };
             let res = crate::agent::dispatch_tool(&env, "repl", name, &input);
-            self.status = if res.is_error { format!(":{name} failed") } else { format!(":{name}") };
+            self.status = if res.is_error {
+                format!(":{name} failed")
+            } else {
+                format!(":{name}")
+            };
             self.repl.record(&t, res.content, !res.is_error);
             return;
         }
@@ -886,7 +996,9 @@ impl App {
             self.output = None;
             self.flows = None;
             self.detail = None;
-            if let Some(c) = self.agent_cancel.as_ref() { c.store(false, AtomicOrdering::SeqCst) }
+            if let Some(c) = self.agent_cancel.as_ref() {
+                c.store(false, AtomicOrdering::SeqCst)
+            }
             return;
         }
 
@@ -920,7 +1032,9 @@ impl App {
                     e.status = status.clone();
                     e.ok = ok;
                 }
-                if ok { self.focus = Panel::Output; }
+                if ok {
+                    self.focus = Panel::Output;
+                }
                 self.status = status;
                 return;
             }
@@ -933,7 +1047,9 @@ impl App {
             thread::spawn(move || {
                 let mut engine = engine_arc.lock().unwrap();
                 let result = engine.request::<crate::model::FlowSet>("flows", args);
-                if cancel_clone.load(AtomicOrdering::Relaxed) { return; }
+                if cancel_clone.load(AtomicOrdering::Relaxed) {
+                    return;
+                }
                 let _ = tx.send(match result {
                     Ok(fs) => FlowOutcome::Result(fs),
                     Err(e) => FlowOutcome::Error(format!("{e}")),
@@ -982,7 +1098,11 @@ impl App {
         if let Some(items) = self.tool_completions(&chars, cursor) {
             let n = items.len();
             self.repl.open_completion(items, start);
-            self.status = if n == 0 { "no completions".into() } else { format!("{n} completion(s)") };
+            self.status = if n == 0 {
+                "no completions".into()
+            } else {
+                format!("{n} completion(s)")
+            };
             return;
         }
 
@@ -1023,7 +1143,9 @@ impl App {
 
     /// Whether `name` is a tool a human can invoke with `:name` in the current mode.
     fn is_known_tool(&self, name: &str) -> bool {
-        self.active_tool_defs().iter().any(|d| d["name"].as_str() == Some(name))
+        self.active_tool_defs()
+            .iter()
+            .any(|d| d["name"].as_str() == Some(name))
     }
 
     /// The input-schema property keys for a given tool (for arg-key autocomplete).
@@ -1031,7 +1153,11 @@ impl App {
         self.active_tool_defs()
             .into_iter()
             .find(|d| d["name"].as_str() == Some(name))
-            .and_then(|d| d["input_schema"]["properties"].as_object().map(|o| o.keys().cloned().collect()))
+            .and_then(|d| {
+                d["input_schema"]["properties"]
+                    .as_object()
+                    .map(|o| o.keys().cloned().collect())
+            })
             .unwrap_or_default()
     }
 
@@ -1097,7 +1223,12 @@ impl App {
         };
         match result {
             Ok(table) => {
-                let status = format!("{}: showing {} of {} row(s)", table.title, table.rows.len(), table.total);
+                let status = format!(
+                    "{}: showing {} of {} row(s)",
+                    table.title,
+                    table.rows.len(),
+                    table.total
+                );
                 self.output = Some(table);
                 self.flows = None;
                 self.output_state = ListState::default();
@@ -1121,7 +1252,9 @@ impl App {
         let mut idx: Vec<usize> = (0..t.rows.len())
             .filter(|&i| {
                 needle.is_empty()
-                    || t.rows[i].iter().any(|c| c.v.to_lowercase().contains(&needle))
+                    || t.rows[i]
+                        .iter()
+                        .any(|c| c.v.to_lowercase().contains(&needle))
             })
             .collect();
 
@@ -1140,7 +1273,8 @@ impl App {
 
         self.table_visible = idx;
         // Keep the selection within the new visible range.
-        self.output_state.select(self.output_state.selected, self.table_visible.len());
+        self.output_state
+            .select(self.output_state.selected, self.table_visible.len());
     }
 
     pub fn start_table_filter(&mut self) {
@@ -1211,7 +1345,10 @@ impl App {
                 Some(b) => b,
                 None => return (false, "engine not available".into()),
             };
-            let preset = args.get("preset").and_then(Value::as_str).unwrap_or("dataflows");
+            let preset = args
+                .get("preset")
+                .and_then(Value::as_str)
+                .unwrap_or("dataflows");
             let (kind, t) = match preset {
                 "dataflows" => ("dataflow", "Data Flows"),
                 "reachables" => ("flows", "Reachable Flows"),
@@ -1224,7 +1361,12 @@ impl App {
         let rows: Vec<Vec<crate::model::Cell>> = result
             .lines()
             .filter(|l| !l.trim().is_empty())
-            .map(|l| vec![crate::model::Cell { v: l.to_string(), k: String::new() }])
+            .map(|l| {
+                vec![crate::model::Cell {
+                    v: l.to_string(),
+                    k: String::new(),
+                }]
+            })
             .collect();
         let total = rows.len() as i64;
         let status = format!("{}: {} items", title, total);
@@ -1242,8 +1384,6 @@ impl App {
         (true, status)
     }
 
-
-
     /// Recompute which flows are visible after applying the sub-flow / mitigation filters.
     fn recompute_flow_visible(&mut self) {
         self.flow_visible.clear();
@@ -1258,7 +1398,8 @@ impl App {
                 self.flow_visible.push(i);
             }
         }
-        self.flow_state.select(self.flow_state.selected, self.flow_visible.len());
+        self.flow_state
+            .select(self.flow_state.selected, self.flow_visible.len());
     }
 
     /// The flow currently selected in the master list, if any.
@@ -1277,7 +1418,11 @@ impl App {
         self.recompute_flow_visible();
         self.status = format!(
             "sub-flows {} — {} flow(s) shown",
-            if self.show_subflows { "shown" } else { "hidden" },
+            if self.show_subflows {
+                "shown"
+            } else {
+                "hidden"
+            },
             self.flow_visible.len()
         );
     }
@@ -1291,7 +1436,11 @@ impl App {
         self.recompute_flow_visible();
         self.status = format!(
             "mitigated flows {} — {} flow(s) shown",
-            if self.hide_mitigated { "hidden" } else { "shown" },
+            if self.hide_mitigated {
+                "hidden"
+            } else {
+                "shown"
+            },
             self.flow_visible.len()
         );
     }
@@ -1311,46 +1460,59 @@ impl App {
 
         // Within the summary data rows, select and detect double-click.
         if let Some(area) = self.summary_rows_area
-            && contains(&area, col, row) {
-                let idx = self.summary_state.scroll + (row - area.y) as usize;
-                if idx < self.summary.rows.len() {
-                    let now = Instant::now();
-                    let is_double = self
-                        .last_click
-                        .map(|(t, r)| r == idx && now.duration_since(t).as_millis() < DOUBLE_CLICK_MS)
-                        .unwrap_or(false);
-                    self.summary_state.select(idx, self.summary.rows.len());
-                    self.last_click = Some((now, idx));
-                    if is_double {
-                        self.run_summary_row(idx, true);
-                    }
+            && contains(&area, col, row)
+        {
+            let idx = self.summary_state.scroll + (row - area.y) as usize;
+            if idx < self.summary.rows.len() {
+                let now = Instant::now();
+                let is_double = self
+                    .last_click
+                    .map(|(t, r)| r == idx && now.duration_since(t).as_millis() < DOUBLE_CLICK_MS)
+                    .unwrap_or(false);
+                self.summary_state.select(idx, self.summary.rows.len());
+                self.last_click = Some((now, idx));
+                if is_double {
+                    self.run_summary_row(idx, true);
                 }
             }
+        }
 
         // Within the flow master list, select the clicked flow.
         if let Some(area) = self.flow_rows_area
-            && contains(&area, col, row) && !self.flow_visible.is_empty() {
-                let idx = self.flow_state.scroll + (row - area.y) as usize;
-                self.flow_state.select(idx, self.flow_visible.len());
-            }
+            && contains(&area, col, row)
+            && !self.flow_visible.is_empty()
+        {
+            let idx = self.flow_state.scroll + (row - area.y) as usize;
+            self.flow_state.select(idx, self.flow_visible.len());
+        }
 
         // Clicking an Output table column header sorts by that column.
-        if let Some(i) = self.table_header_cells.iter().position(|c| contains(c, col, row)) {
+        if let Some(i) = self
+            .table_header_cells
+            .iter()
+            .position(|c| contains(c, col, row))
+        {
             self.sort_by_column(i);
         }
 
         // Within the detail pane, clicking a collapsible group header toggles its expansion.
         if let Some(area) = self.flow_detail_area
             && contains(&area, col, row)
-                && let Some((_, key)) =
-                    self.flow_detail_groups.iter().find(|(y, _)| *y == row).cloned()
-                    && !self.expanded_lines.remove(&key) {
-                        self.expanded_lines.insert(key);
-                    }
+            && let Some((_, key)) = self
+                .flow_detail_groups
+                .iter()
+                .find(|(y, _)| *y == row)
+                .cloned()
+            && !self.expanded_lines.remove(&key)
+        {
+            self.expanded_lines.insert(key);
+        }
 
         // Starter questions in the empty Output panel (one line per question).
-        if self.output.is_none() && self.flows.is_none()
-            && !self.agent_active && self.agent_transcript.is_empty()
+        if self.output.is_none()
+            && self.flows.is_none()
+            && !self.agent_active
+            && self.agent_transcript.is_empty()
             && let Some(area) = self.starter_questions_area
             && contains(&area, col, row)
         {
@@ -1440,11 +1602,17 @@ impl App {
 
     pub fn detail_scroll_down(&mut self) {
         if self.detail_focused {
-            let child_len = self.detail.as_ref().map(|d| d.child_rows.len()).unwrap_or(0);
+            let child_len = self
+                .detail
+                .as_ref()
+                .map(|d| d.child_rows.len())
+                .unwrap_or(0);
             if self.detail_child_scroll + self.detail_child_visible < child_len {
                 self.detail_child_scroll += 1;
             } else {
-                let code_lines = self.detail.as_ref()
+                let code_lines = self
+                    .detail
+                    .as_ref()
                     .and_then(|d| d.code.as_ref())
                     .map(|c| c.lines().count())
                     .unwrap_or(0);
@@ -1470,71 +1638,95 @@ impl App {
     pub fn scroll_at(&mut self, col: u16, row: u16, down: bool) {
         // Agent transcript area (takes priority when showing).
         if let Some(area) = self.agent_transcript_area
-            && contains(&area, col, row) {
-                // Wheel/touchpad events move several lines per notch for responsiveness.
-                self.agent_scroll_lines(if down { 3 } else { -3 });
-                return;
-            }
+            && contains(&area, col, row)
+        {
+            // Wheel/touchpad events move several lines per notch for responsiveness.
+            self.agent_scroll_lines(if down { 3 } else { -3 });
+            return;
+        }
         // Node-detail child table.
         if let Some(area) = self.detail_child_area
-            && contains(&area, col, row) {
-                let len = self.detail.as_ref().map(|d| d.child_rows.len()).unwrap_or(0);
-                if down {
-                    if self.detail_child_scroll + self.detail_child_visible < len {
-                        self.detail_child_scroll += 1;
-                    }
-                } else {
-                    self.detail_child_scroll = self.detail_child_scroll.saturating_sub(1);
+            && contains(&area, col, row)
+        {
+            let len = self
+                .detail
+                .as_ref()
+                .map(|d| d.child_rows.len())
+                .unwrap_or(0);
+            if down {
+                if self.detail_child_scroll + self.detail_child_visible < len {
+                    self.detail_child_scroll += 1;
                 }
-                return;
+            } else {
+                self.detail_child_scroll = self.detail_child_scroll.saturating_sub(1);
             }
+            return;
+        }
         // Node-detail code pane.
         if let Some(area) = self.detail_code_area
-            && contains(&area, col, row) {
-                let total = self.detail.as_ref()
-                    .and_then(|d| d.code.as_ref())
-                    .map(|c| c.lines().count())
-                    .unwrap_or(0);
-                if down {
-                    if self.detail_code_scroll + self.detail_code_visible < total {
-                        self.detail_code_scroll += 1;
-                    }
-                } else {
-                    self.detail_code_scroll = self.detail_code_scroll.saturating_sub(1);
+            && contains(&area, col, row)
+        {
+            let total = self
+                .detail
+                .as_ref()
+                .and_then(|d| d.code.as_ref())
+                .map(|c| c.lines().count())
+                .unwrap_or(0);
+            if down {
+                if self.detail_code_scroll + self.detail_code_visible < total {
+                    self.detail_code_scroll += 1;
                 }
-                return;
+            } else {
+                self.detail_code_scroll = self.detail_code_scroll.saturating_sub(1);
             }
+            return;
+        }
         // Flow step detail pane.
         if let Some(area) = self.flow_detail_area
-            && contains(&area, col, row) {
-                if down {
-                    if self.flow_detail_scroll + self.flow_detail_visible < self.flow_detail_total {
-                        self.flow_detail_scroll += 1;
-                    }
-                } else {
-                    self.flow_detail_scroll = self.flow_detail_scroll.saturating_sub(1);
+            && contains(&area, col, row)
+        {
+            if down {
+                if self.flow_detail_scroll + self.flow_detail_visible < self.flow_detail_total {
+                    self.flow_detail_scroll += 1;
                 }
-                return;
+            } else {
+                self.flow_detail_scroll = self.flow_detail_scroll.saturating_sub(1);
             }
+            return;
+        }
         // Flow master list.
         if let Some(area) = self.flow_rows_area
-            && contains(&area, col, row) {
-                let len = self.flow_visible.len();
-                if down { self.flow_state.down(len); } else { self.flow_state.up(); }
-                return;
+            && contains(&area, col, row)
+        {
+            let len = self.flow_visible.len();
+            if down {
+                self.flow_state.down(len);
+            } else {
+                self.flow_state.up();
             }
+            return;
+        }
         // Summary rows.
         if let Some(area) = self.summary_rows_area
-            && contains(&area, col, row) {
-                let len = self.summary.rows.len();
-                if down { self.summary_state.down(len); } else { self.summary_state.up(); }
-                return;
+            && contains(&area, col, row)
+        {
+            let len = self.summary.rows.len();
+            if down {
+                self.summary_state.down(len);
+            } else {
+                self.summary_state.up();
             }
+            return;
+        }
         // Fall back: scroll whichever list has keyboard focus.
         if down {
-            if let Some((s, len)) = self.focused_list() { s.down(len); }
+            if let Some((s, len)) = self.focused_list() {
+                s.down(len);
+            }
         } else {
-            if let Some((s, _)) = self.focused_list() { s.up(); }
+            if let Some((s, _)) = self.focused_list() {
+                s.up();
+            }
         }
     }
 }
@@ -1548,7 +1740,11 @@ impl App {
     /// Only generates questions when the agent is available or in non-atom mode.
     pub fn generate_starter_questions(&mut self) {
         let mut questions: Vec<StarterQuestion> = Vec::new();
-        let bom_note = self.bom_store.as_ref().map(|s| s.total_components).filter(|&c| c > 0);
+        let bom_note = self
+            .bom_store
+            .as_ref()
+            .map(|s| s.total_components)
+            .filter(|&c| c > 0);
 
         if let Some(ref backend) = self.backend {
             let lang = self.project_language.as_deref().unwrap_or("the");
@@ -1590,7 +1786,9 @@ impl App {
                     }
                     questions.push(StarterQuestion {
                         label: "Explore call graph".into(),
-                        command: "Show me the call graph and function entry points in this project.".into(),
+                        command:
+                            "Show me the call graph and function entry points in this project."
+                                .into(),
                     });
                 }
                 "dosai" => {
@@ -1620,7 +1818,9 @@ impl App {
                     });
                     questions.push(StarterQuestion {
                         label: "Show findings".into(),
-                        command: "What security findings and capabilities were detected in this binary?".into(),
+                        command:
+                            "What security findings and capabilities were detected in this binary?"
+                                .into(),
                     });
                     if let Some(n) = bom_note {
                         questions.push(StarterQuestion {
@@ -1639,7 +1839,11 @@ impl App {
 
         // Atom mode with agent enabled: generate questions based on summary rows.
         if questions.is_empty() && !self.non_atom && self.agent_enabled {
-            let lang = if self.summary.language.is_empty() { "the" } else { &self.summary.language };
+            let lang = if self.summary.language.is_empty() {
+                "the"
+            } else {
+                &self.summary.language
+            };
             questions.push(StarterQuestion {
                 label: format!("Summarize this {lang} project"),
                 command: format!("Provide a high-level summary of this {lang} project — its main modules, classes, and architecture."),
@@ -1648,13 +1852,25 @@ impl App {
             for row in &self.summary.rows {
                 if row.count > 0 && matches!(row.label.as_str(), "classes" | "methods" | "files") {
                     questions.push(StarterQuestion {
-                        label: format!("List {label} ({count})", label = row.label.to_lowercase(), count = row.count),
-                        command: format!("Show me the {count} {label} in this project.", label = row.label.to_lowercase(), count = row.count),
+                        label: format!(
+                            "List {label} ({count})",
+                            label = row.label.to_lowercase(),
+                            count = row.count
+                        ),
+                        command: format!(
+                            "Show me the {count} {label} in this project.",
+                            label = row.label.to_lowercase(),
+                            count = row.count
+                        ),
                     });
-                    if questions.len() >= 3 { break; }
+                    if questions.len() >= 3 {
+                        break;
+                    }
                 }
             }
-            if questions.len() < 2 && let Some(n) = bom_note {
+            if questions.len() < 2
+                && let Some(n) = bom_note
+            {
                 questions.push(StarterQuestion {
                     label: format!("Explore {n} dependencies"),
                     command: format!("Explore the {n} dependencies in this project."),
@@ -1702,37 +1918,52 @@ impl App {
         let mut out = String::new();
         if let Some(ref backend) = self.backend {
             let lang = self.project_language.as_deref().unwrap_or("unknown");
-            out.push_str(&format!("Backend: {} | Language: {lang}\n", backend.backend_name()));
+            out.push_str(&format!(
+                "Backend: {} | Language: {lang}\n",
+                backend.backend_name()
+            ));
             out.push_str(&backend.summary());
             out.push('\n');
         } else {
-            let lang = if self.summary.language.is_empty() { "unknown" } else { &self.summary.language };
+            let lang = if self.summary.language.is_empty() {
+                "unknown"
+            } else {
+                &self.summary.language
+            };
             out.push_str(&format!("Language: {lang}\n"));
             for row in &self.summary.rows {
                 out.push_str(&format!("{}: {}\n", row.label, row.count));
             }
         }
         if let Some(ref store) = self.bom_store
-            && store.total_components > 0 {
-                out.push_str(&format!(
-                    "\nSBOM: {} components, {} dependencies, {} services\n",
-                    store.total_components, store.total_dependencies, store.total_services,
-                ));
-                let names: Vec<String> = store.components.iter().take(15)
-                    .map(|r| format!("{} {}", r.name_display(), r.version_display()))
-                    .collect();
-                if !names.is_empty() {
-                    out.push_str(&format!("Sample components: {}\n", names.join(", ")));
-                }
+            && store.total_components > 0
+        {
+            out.push_str(&format!(
+                "\nSBOM: {} components, {} dependencies, {} services\n",
+                store.total_components, store.total_dependencies, store.total_services,
+            ));
+            let names: Vec<String> = store
+                .components
+                .iter()
+                .take(15)
+                .map(|r| format!("{} {}", r.name_display(), r.version_display()))
+                .collect();
+            if !names.is_empty() {
+                out.push_str(&format!("Sample components: {}\n", names.join(", ")));
             }
+        }
         out
     }
 
     /// Replace the displayed starter questions with LLM-refined ones, but only while the
     /// empty-state is still showing (no agent run started, no output displacing it).
     pub fn apply_refined_starter_questions(&mut self, questions: Vec<StarterQuestion>) {
-        if questions.is_empty() { return; }
-        if self.agent_active || !self.agent_transcript.is_empty() { return; }
+        if questions.is_empty() {
+            return;
+        }
+        if self.agent_active || !self.agent_transcript.is_empty() {
+            return;
+        }
         self.starter_questions = questions;
     }
 
@@ -1765,7 +1996,9 @@ impl App {
     /// The actual thread spawning happens in `main.rs` event loop.
     #[allow(dead_code)]
     pub fn start_agent(&mut self) {
-        if self.agent_active { return; }
+        if self.agent_active {
+            return;
+        }
         let (_tx, rx) = mpsc::channel::<AgentEvent>();
         self.agent_rx = Some(rx);
         self.agent_active = true;
@@ -1806,11 +2039,26 @@ impl App {
         for idx in &store.filtered_component_indices {
             if let Some(row) = store.components.get(*idx) {
                 rows.push(vec![
-                    crate::model::Cell { v: row.type_display().to_string(), k: String::new() },
-                    crate::model::Cell { v: row.name_display().to_string(), k: String::new() },
-                    crate::model::Cell { v: row.version_display().to_string(), k: String::new() },
-                    crate::model::Cell { v: row.purl_display().to_string(), k: String::new() },
-                    crate::model::Cell { v: row.license_display().to_string(), k: String::new() },
+                    crate::model::Cell {
+                        v: row.type_display().to_string(),
+                        k: String::new(),
+                    },
+                    crate::model::Cell {
+                        v: row.name_display().to_string(),
+                        k: String::new(),
+                    },
+                    crate::model::Cell {
+                        v: row.version_display().to_string(),
+                        k: String::new(),
+                    },
+                    crate::model::Cell {
+                        v: row.purl_display().to_string(),
+                        k: String::new(),
+                    },
+                    crate::model::Cell {
+                        v: row.license_display().to_string(),
+                        k: String::new(),
+                    },
                 ]);
             }
         }
@@ -1838,8 +2086,10 @@ impl App {
         self.table_filter_edit = false;
         self.table_sort = None;
         self.recompute_table_view();
-        self.status = format!("BOM: {} components, {} dependencies, {} services",
-            store.total_components, store.total_dependencies, store.total_services);
+        self.status = format!(
+            "BOM: {} components, {} dependencies, {} services",
+            store.total_components, store.total_dependencies, store.total_services
+        );
         self.focus = Panel::Output;
     }
 
@@ -1874,8 +2124,9 @@ impl App {
         self.flow_result_rx = None;
         self.flow_cancel = None;
         if let Some(p) = self.pending.take()
-            && let Some(e) = self.repl.entries.get_mut(p.entry_idx) {
-                e.status = "cancelled".into();
+            && let Some(e) = self.repl.entries.get_mut(p.entry_idx)
+        {
+            e.status = "cancelled".into();
         }
     }
 
@@ -1927,28 +2178,50 @@ impl App {
                 self.flush_current_thinking();
                 self.agent_last_tool = Some(tool_label(&name).to_string());
                 self.agent_transcript.push(AgentEntry::ToolCall {
-                    _id: id, name, input, result: None, is_error: false,
+                    _id: id,
+                    name,
+                    input,
+                    result: None,
+                    is_error: false,
                 });
                 self.agent_pending_tool = None;
             }
-            AgentEvent::ToolResult { id, content, is_error } => {
+            AgentEvent::ToolResult {
+                id,
+                content,
+                is_error,
+            } => {
                 // Attach the result to the matching tool card (search from the end
                 // for the call with this id that has no result yet).
                 for entry in self.agent_transcript.iter_mut().rev() {
-                    if let AgentEntry::ToolCall { _id, result, is_error: e, .. } = entry
-                        && _id == &id && result.is_none() {
-                            *result = Some(content);
-                            *e = is_error;
-                            break;
-                        }
+                    if let AgentEntry::ToolCall {
+                        _id,
+                        result,
+                        is_error: e,
+                        ..
+                    } = entry
+                        && _id == &id
+                        && result.is_none()
+                    {
+                        *result = Some(content);
+                        *e = is_error;
+                        break;
+                    }
                 }
                 // A flow result may now be available for the master/detail view.
                 self.install_pending_flows();
             }
-            AgentEvent::Usage { input_tokens, output_tokens, .. } => {
+            AgentEvent::Usage {
+                input_tokens,
+                output_tokens,
+                ..
+            } => {
                 self.agent_total_in = self.agent_total_in.saturating_add(input_tokens);
                 self.agent_total_out = self.agent_total_out.saturating_add(output_tokens);
-                self.agent_transcript.push(AgentEntry::Usage { input_tokens, output_tokens });
+                self.agent_transcript.push(AgentEntry::Usage {
+                    input_tokens,
+                    output_tokens,
+                });
             }
             AgentEvent::StopReason(reason) => {
                 self.flush_current_text();
@@ -1992,7 +2265,8 @@ impl App {
             AgentEvent::Profile(line) => {
                 // Live profile updates from the orchestrator (per-sub-agent cost/timing).
                 // Display in the REPL transcript as informational entries.
-                self.agent_transcript.push(AgentEntry::Text(format!("\n{line}\n")));
+                self.agent_transcript
+                    .push(AgentEntry::Text(format!("\n{line}\n")));
             }
         }
         // When auto-scroll is on, the renderer pins the view to the bottom; the
@@ -2015,9 +2289,10 @@ impl App {
             return;
         }
         if let Some(AgentEntry::Thinking(last)) = self.agent_transcript.last()
-            && last == &t {
-                return; // Already synced via sync_thinking_to_transcript.
-            }
+            && last == &t
+        {
+            return; // Already synced via sync_thinking_to_transcript.
+        }
         self.agent_transcript.push(AgentEntry::Thinking(t));
     }
 
@@ -2035,7 +2310,8 @@ impl App {
                 }
             }
             _ => {
-                self.agent_transcript.push(AgentEntry::Thinking(thinking.clone()));
+                self.agent_transcript
+                    .push(AgentEntry::Thinking(thinking.clone()));
             }
         }
     }
@@ -2044,17 +2320,26 @@ impl App {
     /// result in `self.flows`, switching the output panel to the flow master/detail view.
     fn install_pending_flows(&mut self) {
         for entry in self.agent_transcript.iter().rev() {
-            if let AgentEntry::ToolCall { name, result, is_error, .. } = entry {
-                if *is_error { continue; }
+            if let AgentEntry::ToolCall {
+                name,
+                result,
+                is_error,
+                ..
+            } = entry
+            {
+                if *is_error {
+                    continue;
+                }
                 // Atom engine flow result — deserialize into FlowSet.
                 if name == "atom_flows" || name == "atom_flows_through" {
                     if let Some(res) = result
-                        && let Ok(fs) = serde_json::from_str::<FlowSet>(res) {
-                            self.flows = Some(fs);
-                            self.output = None;
-                            self.flow_state = ListState::default();
-                            self.flow_detail_scroll = 0;
-                        }
+                        && let Ok(fs) = serde_json::from_str::<FlowSet>(res)
+                    {
+                        self.flows = Some(fs);
+                        self.output = None;
+                        self.flow_state = ListState::default();
+                        self.flow_detail_scroll = 0;
+                    }
                     break;
                 }
                 // Backend tool results are already visible in the agent transcript.
@@ -2079,14 +2364,19 @@ impl App {
             body.push_str("## Agent Response\n\n");
             for entry in &self.agent_transcript {
                 match entry {
-                    AgentEntry::Text(t) => { body.push_str(t); body.push_str("\n\n"); }
+                    AgentEntry::Text(t) => {
+                        body.push_str(t);
+                        body.push_str("\n\n");
+                    }
                     AgentEntry::ToolCall { name, result, .. } => {
                         body.push_str(&format!("**`{}`**", name));
                         if let Some(r) = result {
                             body.push_str(&format!(":\n```\n{}\n```\n\n", r));
                         }
                     }
-                    AgentEntry::Error(msg) => { body.push_str(&format!("**Error:** {}\n\n", msg)); }
+                    AgentEntry::Error(msg) => {
+                        body.push_str(&format!("**Error:** {}\n\n", msg));
+                    }
                     _ => {}
                 }
             }
@@ -2095,9 +2385,23 @@ impl App {
             body.push_str(&format!("## {}\n\n", table.title));
             if !table.columns.is_empty() {
                 body.push_str(&format!("| {} |\n", table.columns.join(" | ")));
-                body.push_str(&format!("|{}|\n", table.columns.iter().map(|_| "---".to_string()).collect::<Vec<_>>().join("|")));
+                body.push_str(&format!(
+                    "|{}|\n",
+                    table
+                        .columns
+                        .iter()
+                        .map(|_| "---".to_string())
+                        .collect::<Vec<_>>()
+                        .join("|")
+                ));
                 for row in &table.rows {
-                    body.push_str(&format!("| {} |\n", row.iter().map(|c| c.v.clone()).collect::<Vec<_>>().join(" | ")));
+                    body.push_str(&format!(
+                        "| {} |\n",
+                        row.iter()
+                            .map(|c| c.v.clone())
+                            .collect::<Vec<_>>()
+                            .join(" | ")
+                    ));
                 }
                 body.push('\n');
             }
@@ -2107,7 +2411,10 @@ impl App {
             body.push_str(&format!("## {}\n\n", flows.title));
             body.push_str(&format!("_Total: {} flow(s)_\n\n", flows.total));
             for f in &flows.flows {
-                body.push_str(&format!("**Flow {}:** `{}` → `{}`\n\n", f.id, f.source, f.sink));
+                body.push_str(&format!(
+                    "**Flow {}:** `{}` → `{}`\n\n",
+                    f.id, f.source, f.sink
+                ));
                 for step in &f.steps {
                     body.push_str(&format!("  - `{}` {}\n", step.kind, step.label));
                 }
@@ -2134,7 +2441,10 @@ impl App {
 
         let mut content = String::new();
         content.push_str("# Chennai Report\n\n");
-        content.push_str(&format!("_Generated: {}_\n\n", chrono::Local::now().format("%Y-%m-%d %H:%M:%S")));
+        content.push_str(&format!(
+            "_Generated: {}_\n\n",
+            chrono::Local::now().format("%Y-%m-%d %H:%M:%S")
+        ));
 
         if !self.agent_transcript.is_empty() {
             // Agent transcript report.
@@ -2146,7 +2456,13 @@ impl App {
                         let preview: String = t.chars().take(200).collect();
                         content.push_str(&format!("> 💭 {}\n\n", preview));
                     }
-                    AgentEntry::ToolCall { name, input, result, is_error, .. } => {
+                    AgentEntry::ToolCall {
+                        name,
+                        input,
+                        result,
+                        is_error,
+                        ..
+                    } => {
                         let input_str = serde_json::to_string_pretty(input).unwrap_or_default();
                         content.push_str(&format!("### Tool Call: `{}`\n\n", name));
                         content.push_str(&format!("**Input:**\n```json\n{}\n```\n\n", input_str));
@@ -2158,8 +2474,14 @@ impl App {
                     AgentEntry::Error(msg) => {
                         content.push_str(&format!("**Error:** {}\n\n", msg));
                     }
-                    AgentEntry::Usage { input_tokens, output_tokens } => {
-                        content.push_str(&format!("_Usage: {} in / {} out_\n\n", input_tokens, output_tokens));
+                    AgentEntry::Usage {
+                        input_tokens,
+                        output_tokens,
+                    } => {
+                        content.push_str(&format!(
+                            "_Usage: {} in / {} out_\n\n",
+                            input_tokens, output_tokens
+                        ));
                     }
                     AgentEntry::StopReason(reason) => {
                         content.push_str(&format!("_Stop reason: {}_\n\n", reason));
@@ -2174,9 +2496,23 @@ impl App {
             content.push_str(&format!("## {}\n\n", table.title));
             if !table.columns.is_empty() {
                 content.push_str(&format!("| {} |\n", table.columns.join(" | ")));
-                content.push_str(&format!("|{}|\n", table.columns.iter().map(|_| "---".to_string()).collect::<Vec<_>>().join("|")));
+                content.push_str(&format!(
+                    "|{}|\n",
+                    table
+                        .columns
+                        .iter()
+                        .map(|_| "---".to_string())
+                        .collect::<Vec<_>>()
+                        .join("|")
+                ));
                 for row in &table.rows {
-                    content.push_str(&format!("| {} |\n", row.iter().map(|c| c.v.clone()).collect::<Vec<_>>().join(" | ")));
+                    content.push_str(&format!(
+                        "| {} |\n",
+                        row.iter()
+                            .map(|c| c.v.clone())
+                            .collect::<Vec<_>>()
+                            .join(" | ")
+                    ));
                 }
                 content.push('\n');
             }
@@ -2186,7 +2522,10 @@ impl App {
             content.push_str(&format!("## {}\n\n", flows.title));
             content.push_str(&format!("_Total: {} flow(s)_\n\n", flows.total));
             for f in &flows.flows {
-                content.push_str(&format!("### Flow {}: `{}` → `{}`\n\n", f.id, f.source, f.sink));
+                content.push_str(&format!(
+                    "### Flow {}: `{}` → `{}`\n\n",
+                    f.id, f.source, f.sink
+                ));
                 if f.mitigated {
                     content.push_str("> ✓ This flow has a sanitisation/validation step.\n\n");
                 }
@@ -2270,7 +2609,12 @@ impl App {
         // Attach a preview of the current output/flow result if it came from the last entry.
         if let Some(t) = &self.output {
             lines.push(String::new());
-            lines.push(format!("Current table — {} ({} / {} rows)", t.title, t.rows.len(), t.total));
+            lines.push(format!(
+                "Current table — {} ({} / {} rows)",
+                t.title,
+                t.rows.len(),
+                t.total
+            ));
             if !t.columns.is_empty() {
                 lines.push(format!("  Columns: {}", t.columns.join(", ")));
             }
@@ -2284,7 +2628,10 @@ impl App {
             }
         } else if let Some(fs) = &self.flows {
             lines.push(String::new());
-            lines.push(format!("Current flow result — {} ({} flow(s))", fs.title, fs.total));
+            lines.push(format!(
+                "Current flow result — {} ({} flow(s))",
+                fs.title, fs.total
+            ));
         }
 
         lines.join("\n")
@@ -2307,9 +2654,13 @@ pub fn help_text(agent_enabled: bool, backend_name: Option<&str>) -> String {
         s.push_str("  /trace                       Trace a data flow end to end\n");
     } else {
         s.push_str("  (AI agent disabled — set ANTHROPIC_API_KEY or OPENAI_API_KEY to enable\n");
-        s.push_str("   natural-language questions and /security-review, /code-review, /explain, /trace)\n");
+        s.push_str(
+            "   natural-language questions and /security-review, /code-review, /explain, /trace)\n",
+        );
     }
-    s.push_str("  /clear                       Clear the transcript & scrollback (keeps atom loaded)\n");
+    s.push_str(
+        "  /clear                       Clear the transcript & scrollback (keeps atom loaded)\n",
+    );
     s.push_str("  help                         Show this help\n");
 
     if backend_name.is_none() {
@@ -2322,7 +2673,9 @@ pub fn help_text(agent_enabled: bool, backend_name: Option<&str>) -> String {
         s.push_str("  atom.imports                 Imports\n");
         s.push_str("  atom.literal                 Literals\n");
         s.push_str("  atom.configFile              Config files\n");
-        s.push_str("  atom.tag.name(\"crypto.*\")    Nodes by tag pattern (framework.*, pkg.*, …)\n");
+        s.push_str(
+            "  atom.tag.name(\"crypto.*\")    Nodes by tag pattern (framework.*, pkg.*, …)\n",
+        );
         s.push_str("  <chen DSL expr>.toJson       Evaluate any chen expression\n");
 
         s.push_str("\nData-flow commands:\n");
@@ -2342,11 +2695,15 @@ pub fn help_text(agent_enabled: bool, backend_name: Option<&str>) -> String {
     s.push_str("\nRun a tool directly (:tool key=value … — Ctrl-Space to autocomplete):\n");
     match backend_name {
         Some(name) => {
-            s.push_str(&format!("  :{name}_…                     Backend tools for the loaded {name} project\n"));
+            s.push_str(&format!(
+                "  :{name}_…                     Backend tools for the loaded {name} project\n"
+            ));
             s.push_str(&format!("                               e.g. :{name}_summary   :{name}_query pattern=crypto\n"));
         }
         None => {
-            s.push_str("  :atom_reaches name=execQuery Prove reachability to a sink (data-flow path)\n");
+            s.push_str(
+                "  :atom_reaches name=execQuery Prove reachability to a sink (data-flow path)\n",
+            );
             s.push_str("  :atom_callgraph name=main    Call graph around a method\n");
             s.push_str("  :atom_callsites name=foo     Where a method is called\n");
             s.push_str("  :atom_controlflow name=foo   Control-flow of a method\n");
@@ -2379,7 +2736,9 @@ fn parse_tool_args(s: &str) -> Result<serde_json::Value, String> {
     let mut map = serde_json::Map::new();
     for tok in s.split_whitespace() {
         let Some((k, v)) = tok.split_once('=') else {
-            return Err(format!("bad arg '{tok}' — expected key=value, or pass a JSON object"));
+            return Err(format!(
+                "bad arg '{tok}' — expected key=value, or pass a JSON object"
+            ));
         };
         map.insert(k.to_string(), coerce_arg(v));
     }
@@ -2439,7 +2798,10 @@ pub fn parse_flow_command(input: &str) -> Option<serde_json::Value> {
     // (bounded) `take` budget — show every enumerated flow on one page rather than the engine's
     // smaller agent-oriented default. Explicit `limit=` still wins.
     if !args.contains_key("limit") {
-        let take = args.get("take").and_then(serde_json::Value::as_i64).unwrap_or(100);
+        let take = args
+            .get("take")
+            .and_then(serde_json::Value::as_i64)
+            .unwrap_or(100);
         args.insert("limit".into(), serde_json::Value::from(take));
     }
     Some(serde_json::Value::Object(args))
@@ -2450,7 +2812,10 @@ pub fn parse_flow_command(input: &str) -> Option<serde_json::Value> {
 /// hint to raise `take`.
 fn flow_status(fs: &crate::model::FlowSet) -> String {
     if fs.capped {
-        format!("{}: {}+ flow(s) (capped — raise take=N for more)", fs.title, fs.total)
+        format!(
+            "{}: {}+ flow(s) (capped — raise take=N for more)",
+            fs.title, fs.total
+        )
     } else {
         format!("{}: {} flow(s)", fs.title, fs.total)
     }
@@ -2473,7 +2838,8 @@ fn looks_like_dsl_or_command(t: &str) -> bool {
     }
     let lower = t.to_ascii_lowercase();
     // BOM command.
-    if lower == "bom" || lower.starts_with("bom ") || lower == ":bom" || lower.starts_with(":bom ") {
+    if lower == "bom" || lower.starts_with("bom ") || lower == ":bom" || lower.starts_with(":bom ")
+    {
         return true;
     }
     // Memory command (requires : prefix to avoid shadowing natural language).
@@ -2581,12 +2947,19 @@ mod tests {
     fn app_with_labels(labels: &[&str]) -> App {
         let rows = labels
             .iter()
-            .map(|l| SummaryRow { label: l.to_string(), count: 1 })
+            .map(|l| SummaryRow {
+                label: l.to_string(),
+                count: 1,
+            })
             .collect();
         App::new(
             None,
             "x.atom".into(),
-            Summary { language: "C".into(), version: "1".into(), rows },
+            Summary {
+                language: "C".into(),
+                version: "1".into(),
+                rows,
+            },
             None,
         )
     }
@@ -2598,7 +2971,10 @@ mod tests {
 
     #[test]
     fn list_state_selection_is_bounded() {
-        let mut s = ListState { visible: 3, ..Default::default() };
+        let mut s = ListState {
+            visible: 3,
+            ..Default::default()
+        };
         s.up();
         assert_eq!(s.selected, 0);
         for _ in 0..10 {
@@ -2609,7 +2985,10 @@ mod tests {
 
     #[test]
     fn list_state_scroll_follows_selection() {
-        let mut s = ListState { visible: 2, ..Default::default() };
+        let mut s = ListState {
+            visible: 2,
+            ..Default::default()
+        };
         for _ in 0..5 {
             s.down(10);
         }
@@ -2668,9 +3047,33 @@ mod tests {
     fn click_focuses_the_panel_under_the_cursor() {
         let mut app = app_with_labels(&["Files"]);
         app.panel_rects = vec![
-            (Panel::Summary, Rect { x: 0, y: 0, width: 80, height: 10 }),
-            (Panel::Repl, Rect { x: 0, y: 10, width: 80, height: 7 }),
-            (Panel::Output, Rect { x: 0, y: 17, width: 80, height: 10 }),
+            (
+                Panel::Summary,
+                Rect {
+                    x: 0,
+                    y: 0,
+                    width: 80,
+                    height: 10,
+                },
+            ),
+            (
+                Panel::Repl,
+                Rect {
+                    x: 0,
+                    y: 10,
+                    width: 80,
+                    height: 7,
+                },
+            ),
+            (
+                Panel::Output,
+                Rect {
+                    x: 0,
+                    y: 17,
+                    width: 80,
+                    height: 10,
+                },
+            ),
         ];
         app.on_click(5, 12); // inside the REPL panel
         assert_eq!(app.focus, Panel::Repl);
@@ -2682,7 +3085,12 @@ mod tests {
     fn double_click_in_summary_runs_row() {
         let mut app = app_with_labels(&["Files", "Methods"]);
         app.summary_state.visible = 10; // as render would set it
-        app.summary_rows_area = Some(Rect { x: 0, y: 2, width: 40, height: 10 });
+        app.summary_rows_area = Some(Rect {
+            x: 0,
+            y: 2,
+            width: 40,
+            height: 10,
+        });
         // First click selects row 1 (y = 2 + 1).
         app.on_click(5, 3);
         assert_eq!(app.summary_state.selected, 1);
@@ -2715,7 +3123,9 @@ mod tests {
         assert!(looks_like_dsl_or_command("cryptos"));
         // Presets with slicing args are still routed to the engine, not the agent.
         assert!(looks_like_dsl_or_command("reachables take=200 limit=20"));
-        assert!(looks_like_dsl_or_command("dataflows sinkTags=sql,code-execution"));
+        assert!(looks_like_dsl_or_command(
+            "dataflows sinkTags=sql,code-execution"
+        ));
     }
 
     #[test]
@@ -2736,14 +3146,18 @@ mod tests {
 
     #[test]
     fn parse_flow_command_parses_tag_overrides() {
-        let args = parse_flow_command("reachables sourceTags=framework-input sinkTags=sql|exec").unwrap();
+        let args =
+            parse_flow_command("reachables sourceTags=framework-input sinkTags=sql|exec").unwrap();
         assert_eq!(args["sourceTags"], "framework-input");
         assert_eq!(args["sinkTags"], "sql|exec");
     }
 
     #[test]
     fn parse_flow_command_is_case_insensitive_on_preset() {
-        assert_eq!(parse_flow_command("DataFlows").unwrap()["preset"], "dataflows");
+        assert_eq!(
+            parse_flow_command("DataFlows").unwrap()["preset"],
+            "dataflows"
+        );
     }
 
     #[test]
@@ -2763,7 +3177,10 @@ mod tests {
 
     #[test]
     fn flow_status_reports_capped() {
-        let mut fs = crate::model::FlowSet { total: 100, ..Default::default() };
+        let mut fs = crate::model::FlowSet {
+            total: 100,
+            ..Default::default()
+        };
         fs.title = "Data flows".into();
         fs.capped = true;
         assert!(flow_status(&fs).contains("100+"));
