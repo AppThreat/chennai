@@ -468,7 +468,7 @@ impl FactStore {
         let path = self.fact_path_unchecked(&slug);
         let content = std::fs::read_to_string(&path).ok()?;
         let yaml_str = Self::extract_frontmatter_yaml(&content)?;
-        let yaml: serde_yaml::Value = serde_yaml::from_str(&yaml_str).ok()?;
+        let yaml: serde_yaml_ng::Value = serde_yaml_ng::from_str(&yaml_str).ok()?;
         yaml.get("commit").and_then(|v| v.as_str()).map(|s| s.to_string())
     }
 
@@ -485,7 +485,7 @@ impl FactStore {
     fn parse_frontmatter_file(path: &Path) -> Option<FactMeta> {
         let content = std::fs::read_to_string(path).ok()?;
         let yaml_str = Self::extract_frontmatter_yaml(&content)?;
-        let fm: FactFrontmatter = serde_yaml::from_str(&yaml_str).ok()?;
+        let fm: FactFrontmatter = serde_yaml_ng::from_str(&yaml_str).ok()?;
         let fact_type = FactType::from_str(&fm.metadata.fact_type)?;
         Some(FactMeta {
             name: fm.name,
@@ -505,7 +505,7 @@ impl FactStore {
         let yaml_str = &rest[..closing];
         let body = rest[closing + 4..].trim().to_string();
 
-        let fm: FactFrontmatter = serde_yaml::from_str(yaml_str).ok()?;
+        let fm: FactFrontmatter = serde_yaml_ng::from_str(yaml_str).ok()?;
         let fact_type = FactType::from_str(&fm.metadata.fact_type)?;
 
         Some(Fact {
@@ -543,7 +543,7 @@ impl FactStore {
             updated: updated.to_string(),
             commit: commit.map(|s| s.to_string()),
         };
-        let yaml = serde_yaml::to_string(&fm).unwrap_or_default();
+        let yaml = serde_yaml_ng::to_string(&fm).unwrap_or_default();
         format!("---\n{yaml}---\n\n{body}\n")
     }
 }

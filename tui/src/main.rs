@@ -1535,6 +1535,10 @@ fn run_headless_agent_non_atom(
     Ok(())
 }
 
+// ratatui 0.30 gave `Backend` an associated `Error` type instead of always failing with
+// `io::Error`, so `terminal.draw(..)?` in a backend-generic function no longer converts on
+// its own. The bound says what was previously assumed: this runs on backends whose failures
+// are io errors, which is the crossterm backend `main` passes in.
 #[allow(clippy::too_many_arguments)]
 fn run_app<B: ratatui::backend::Backend>(
     terminal: &mut ratatui::Terminal<B>,
@@ -1545,7 +1549,10 @@ fn run_app<B: ratatui::backend::Backend>(
     source_root: Option<String>,
     reports_dir: PathBuf,
     custom_system_prompt: Option<String>,
-) -> io::Result<()> {
+) -> io::Result<()>
+where
+    io::Error: From<<B as ratatui::backend::Backend>::Error>,
+{
     // Share the cancel flag of the initial agent context with the app so the UI's
     // `c`/Esc cancel flips the same AtomicBool the first worker thread polls. Without
     // this, the first run's thread uses the ctx's Arc while `cancel_agent` flips the

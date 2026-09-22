@@ -1,0 +1,8 @@
+# Pin the toolchain so local builds, CI (actions-rust-lang/setup-rust-toolchain
+# reads this file) and the musl release builds all compile with the same rustc.
+# Before this, CI took whatever stable happened to be current on the runner,
+# which is how an edition-2024 crate ends up building differently from the
+# release artifact.
+[toolchain]
+channel = "1.98.1"
+components = ["rustfmt", "clippy"]
