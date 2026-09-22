@@ -1,9 +1,9 @@
 name                     := "chennai-engine"
 ThisBuild / organization := "io.appthreat"
 ThisBuild / version      := "1.0.3"
-ThisBuild / scalaVersion := "3.8.4"
+ThisBuild / scalaVersion := "3.9.0"
 
-val chenVersion   = "3.0.1"
+val chenVersion   = "4.0.0"
 val circeVersion  = "0.14.16"
 
 ThisBuild / resolvers ++= Seq(

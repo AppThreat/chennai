@@ -47,7 +47,10 @@ class QueryHandlerTests extends AnyWordSpec with Matchers:
 
     "aggregate distinct tag names with counts" in:
       val json = QueryHandler.query(cpg, "tagNames", None, 0, 100)
-      json.hcursor.downField("columns").as[List[String]].toOption shouldBe Some(List("Tag", "Count"))
+      json.hcursor.downField("columns").as[List[String]].toOption shouldBe Some(List(
+        "Tag",
+        "Count"
+      ))
       // MockCpg has no tags, so the vocabulary is empty but the shape is still valid.
       json.hcursor.get[Int]("total").toOption shouldBe Some(0)
 
