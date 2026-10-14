@@ -55,4 +55,20 @@ class FlowHandlerTests extends AnyWordSpec with Matchers:
 
     "reject a query with neither expr, preset, nor a source/sink pair" in:
       run("""{"source":"atom.tag.name(\"x\")"}""") shouldBe a[Left[?, ?]]
+
+  "FlowHandler.needsRepl" should:
+    def needsRepl(json: String) = FlowHandler.needsRepl(parser.parse(json).toOption.get.hcursor)
+
+    "send expressions and source/sink pairs to the REPL" in:
+      needsRepl("""{"expr":"atom.call.reachableByFlows(atom.parameter)"}""") shouldBe true
+      needsRepl("""{"source":"atom.parameter","sink":"atom.call"}""") shouldBe true
+      needsRepl("""{"preset":"other","source":"atom.parameter","sink":"atom.call"}""") shouldBe true
+
+    "compute the presets without it" in:
+      needsRepl("""{}""") shouldBe false
+      needsRepl("""{"preset":"reachables"}""") shouldBe false
+      needsRepl(
+        """{"preset":"cryptos","source":"atom.parameter","sink":"atom.call"}"""
+      ) shouldBe false
+      needsRepl("""{"source":"atom.parameter"}""") shouldBe false
 end FlowHandlerTests

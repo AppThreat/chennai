@@ -4,6 +4,8 @@
   "globs": [
     { "glob": "META-INF/services/org.slf4j.spi.SLF4JServiceProvider" },
     { "glob": "reference.conf" },
-    { "glob": "application.conf" }
+    { "glob": "application.conf" },
+    { "module": "java.base", "glob": "jdk/internal/icu/impl/data/*/nfc.nrm" },
+    { "module": "java.base", "glob": "jdk/internal/icu/impl/data/*/nfkc.nrm" }
   ]
 }

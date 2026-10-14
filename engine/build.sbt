@@ -56,8 +56,47 @@ lazy val engine = (project in file("."))
     cleanFiles ++= Seq(
       (Universal / UniversalPlugin.autoImport.stagingDirectory).value,
       (GraalVMNativeImage / target).value
-    )
+    ),
+    jvmEngineJars := Def.uncached {
+      val conv = fileConverter.value
+      val jars = scriptClasspathOrdering.value.map { case (ref, mapped) =>
+        conv.toPath(ref).toFile -> mapped.stripPrefix("lib/")
+      }
+      // Named by their content, so an engine unpacks a new copy only for a different build
+      val digest = java.security.MessageDigest.getInstance("SHA-256")
+      jars.foreach { case (jar, name) =>
+        digest.update(name.getBytes("UTF-8"))
+        digest.update(IO.readBytes(jar))
+      }
+      val id  = digest.digest().take(8).map(b => f"$b%02x").mkString
+      val out = target.value / "jvm-engine" / "chennai-jvm-engine.jar"
+      IO.createDirectory(out.getParentFile)
+      val zip = new java.util.zip.ZipOutputStream(new java.io.FileOutputStream(out))
+      try {
+        def add(path: String, bytes: Array[Byte]): Unit = {
+          zip.putNextEntry(new java.util.zip.ZipEntry(path))
+          zip.write(bytes)
+          zip.closeEntry()
+        }
+        jars.foreach { case (jar, name) => add(s"chennai/jvm-engine/lib/$name", IO.readBytes(jar)) }
+        add("chennai/jvm-engine/index.txt", (id +: jars.map(_._2)).mkString("", "\n", "\n").getBytes("UTF-8"))
+        add(
+          "META-INF/native-image/io.appthreat/chennai-jvm-engine/reachability-metadata.json",
+          """{"resources":[{"glob":"chennai/jvm-engine/**"}]}""".getBytes("UTF-8")
+        )
+      } finally zip.close()
+      out
+    },
+    GraalVMNativeImage / scriptClasspathOrdering := Def.uncached {
+      scriptClasspathOrdering.value :+
+        (fileConverter.value.toVirtualFile(jvmEngineJars.value.toPath) -> "lib/chennai-jvm-engine.jar")
+    }
   )
+
+// A native image cannot run the Scala REPL (it has no class files and cannot define classes at run
+// time), so it carries the engine's jars and runs eval, complete and expression flows on a JVM
+// (JvmEngine.scala). They are resources of one extra jar on the image's class path, not in the stage.
+lazy val jvmEngineJars = taskKey[File]("Packs the engine's jars as resources for the native image")
 
 // executeTests reads it through a dynamic task, which lintUnused cannot see
 Global / excludeLintKeys += testForkedParallel
@@ -74,5 +113,8 @@ graalVMNativeImageOptions := Seq(
   niOpt,
   s"-march=$niMarch",
   "--initialize-at-build-time=io.appthreat.*",
+  // Every charset, not only the standard six, as atom does: a JVM engine has them all, and the
+  // encoding of a source or BOM is known only at run time
+  "-H:+AddAllCharsets",
   "--no-fallback"
 ) ++ libcOptions
