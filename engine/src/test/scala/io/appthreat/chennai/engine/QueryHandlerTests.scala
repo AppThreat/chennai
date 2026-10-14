@@ -1,6 +1,7 @@
 package io.appthreat.chennai.engine
 
 import io.appthreat.chennai.engine.handlers.QueryHandler
+import io.shiftleft.codepropertygraph.generated.nodes.NewConfigFile
 import io.shiftleft.semanticcpg.testing.MockCpg
 import org.scalatest.matchers.should.Matchers
 import org.scalatest.wordspec.AnyWordSpec
@@ -50,6 +51,20 @@ class QueryHandlerTests extends AnyWordSpec with Matchers:
       json.hcursor.downField("columns").as[List[String]].toOption shouldBe Some(List("Tag", "Count"))
       // MockCpg has no tags, so the vocabulary is empty but the shape is still valid.
       json.hcursor.get[Int]("total").toOption shouldBe Some(0)
+
+    "filter config files by name, as the TUI's check for a CycloneDX config does" in:
+      val withConfigs =
+          MockCpg()
+              .withMetaData("JAVA", List("base"))
+              .withCustom { (graph, _) =>
+                  graph.addNode(NewConfigFile().name("app/bom.cdx.json").content("{}"))
+                  graph.addNode(NewConfigFile().name("app/pom.xml").content("<project/>"))
+              }
+              .cpg
+      def total(pattern: Option[String]) =
+          QueryHandler.query(withConfigs, "configFiles", pattern, 0, 1).hcursor.get[Int]("total")
+      total(Some(".*cdx\\.json")).toOption shouldBe Some(1)
+      total(None).toOption shouldBe Some(2)
 
     "reject unknown kinds" in:
       an[IllegalArgumentException] should be thrownBy QueryHandler.query(cpg, "bogus", None, 0, 10)

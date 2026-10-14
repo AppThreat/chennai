@@ -358,8 +358,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         let mut bom_tip = String::new();
         if !bom_store.loaded {
+            // A structured query, not an `eval`: it needs no REPL, so a native engine answers it
+            // without starting its JVM.
             let has_cdx_config = engine_arc.lock().unwrap()
-                .request::<serde_json::Value>("eval", json!({"expr": "atom.configFiles.name(\".*cdx\\\\.json\").toJson"}))
+                .request::<serde_json::Value>("query", json!({"kind": "configFiles", "pattern": ".*cdx\\.json", "limit": 1}))
                 .map(|r| r.get("total").and_then(|v| v.as_i64()).unwrap_or(0) > 0)
                 .unwrap_or(false);
 

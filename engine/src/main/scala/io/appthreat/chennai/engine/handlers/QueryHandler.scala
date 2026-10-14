@@ -131,7 +131,8 @@ object QueryHandler:
           }
 
       case "configFiles" =>
-          page("Config files", List("Name", "Size"))(cpg.configFile.iterator) { c =>
+          val pat = pattern.getOrElse(".*")
+          page("Config files", List("Name", "Size"))(cpg.configFile.name(pat).iterator) { c =>
               List(cell(c.name, Kind.Path), cell(c.content.length.toString, Kind.Num))
           }
 
