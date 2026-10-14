@@ -1,0 +1,26 @@
+tui/src/agent/tools.rs
+  s_44a14d2470128d::t_ebc846cfa48793 154
+engine/src/test/scala/io/appthreat/chennai/engine/QueryHandlerTests.scala
+  s_44a14d2470128d::t_4ae710b353b90a 55-68
+  s_44a14d2470128d::t_04bde0a2b4cfcc 4
+tui/src/main.rs
+  s_44a14d2470128d::t_7c1358e9275cc4 361-362,364
+engine/src/main/scala/io/appthreat/chennai/engine/handlers/QueryHandler.scala
+  s_44a14d2470128d::t_751566bc0633d8 134-135
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "7a0708fb82bcbdd72f5a96dc6f2e6361859e18ae",
+  "prompts": {},
+  "sessions": {
+    "s_44a14d2470128d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "feb7d11a-3362-4661-8cf7-d6fc317c8261",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Prabhu Subramanian <prabhu@appthreat.com>"
+    }
+  }
+}
