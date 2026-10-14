@@ -151,7 +151,7 @@ fn atom_query() -> Value {
                 },
                 "pattern": {
                     "type": "string",
-                    "description": "Optional tag name regex pattern (only used when kind is 'tags'). Example: 'framework.*', 'crypto.*'"
+                    "description": "Optional regex: a tag name pattern when kind is 'tags' (e.g. 'framework.*', 'crypto.*'), a file name pattern when kind is 'configFiles' (e.g. '.*pom\\.xml')"
                 },
                 "offset": {
                     "type": "integer",

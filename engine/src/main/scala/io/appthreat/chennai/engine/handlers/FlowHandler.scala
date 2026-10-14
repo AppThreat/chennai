@@ -494,4 +494,14 @@ object FlowHandler:
       case _ =>
           Left("flows requires 'expr', 'preset', or both 'source' and 'sink'")
   end flows
+
+  private val presets = Set("cryptos", "reachables", "dataflows")
+
+  /** Whether [[flows]] evaluates these arguments through the REPL bridge (an `expr`, or a `source`
+    * and a `sink`) rather than computing one of the presets itself.
+    */
+  def needsRepl(args: io.circe.HCursor): Boolean =
+    def arg(key: String) = args.get[String](key).toOption.map(_.trim).filter(_.nonEmpty)
+    arg("expr").isDefined ||
+    (!arg("preset").exists(presets.contains) && arg("source").isDefined && arg("sink").isDefined)
 end FlowHandler

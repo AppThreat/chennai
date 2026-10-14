@@ -8,7 +8,6 @@ import io.shiftleft.codepropertygraph.Cpg
 import java.io.{ByteArrayOutputStream, PrintStream}
 import java.nio.charset.StandardCharsets
 import java.util.concurrent.atomic.AtomicReference
-import scala.util.{Failure, Success, Try}
 
 /** Captures the JSON result of a REPL expression out-of-band, so the engine need not parse the
   * REPL's pretty-printed `val resN = ...` echo. The wrapped expression calls [[set]].
@@ -64,24 +63,35 @@ final class ReplBridge(cpg: Cpg):
     "val atom: _root_.io.shiftleft.codepropertygraph.Cpg = _root_.io.appthreat.chennai.engine.ReplContext.atom"
   ).mkString("\n")
 
-  private val driver: ChennaiReplDriver =
-    // `-Xrepl-interrupt-instrumentation:false` makes the REPL classloader delegate to our parent
-    // classloader instead of re-defining (instrumenting) app classes locally. Without it, chen's
-    // `Cpg` and our `ReplContext` would be duplicated in a separate classloader and the open atom
-    // would be invisible to evaluated code.
-    val settings = Array("-usejavacp", "-color:never", "-Xrepl-interrupt-instrumentation:false")
-    new ChennaiReplDriver(settings, out, Some(getClass.getClassLoader), predef)
+  private var state: State = scala.compiletime.uninitialized
 
-  // Initialised lazily on first use: booting the compiler is expensive and must not delay engine
-  // startup or non-REPL commands.
-  private var stateOpt: Option[State] = None
+  // Booted on first use: booting the compiler is expensive and must not delay engine startup or
+  // non-REPL commands. A failed boot (no compiler classpath, as in a native image) is kept and
+  // reported by every REPL command instead of being retried.
+  private lazy val driver: Either[String, ChennaiReplDriver] =
+      Guarded {
+          // `-Xrepl-interrupt-instrumentation:false` makes the REPL classloader delegate to our
+          // parent classloader instead of re-defining (instrumenting) app classes locally. Without
+          // it, chen's `Cpg` and our `ReplContext` would be duplicated in a separate classloader
+          // and the open atom would be invisible to evaluated code.
+          val settings =
+              Array("-usejavacp", "-color:never", "-Xrepl-interrupt-instrumentation:false")
+          val d = new ChennaiReplDriver(settings, out, Some(getClass.getClassLoader), predef)
+          state = d.initialState
+          d
+      }.left.map(err => s"the Scala REPL could not start: $err")
 
-  private def ensureState(): State =
-      stateOpt.getOrElse {
-          val st = driver.initialState
-          stateOpt = Some(st)
-          st
+  /** Run `code` in the REPL, keeping the state it leaves for the next evaluation. */
+  private def run(code: String): Either[String, Unit] =
+      driver.flatMap { d =>
+        outBuf.reset()
+        Guarded { state = d.run(code)(using state) }.left.map(err => s"repl error: $err")
       }
+
+  /** What the REPL printed for the last evaluation (its compile errors), or `fallback`. */
+  private def printed(fallback: String): String =
+    val msg = outBuf.toString(StandardCharsets.UTF_8).trim
+    if msg.nonEmpty then msg else fallback
 
   private val terminals = List(".toJsonPretty", ".toJson", ".toList", ".p", ".l")
 
@@ -104,39 +114,27 @@ final class ReplBridge(cpg: Cpg):
     */
   def eval(expr: String): Either[String, String] =
       synchronized {
-          Try {
-              val st = ensureState()
-              ReplSink.take() // clear any stale value
-              outBuf.reset()
-              val wrapped =
-                  s"_root_.io.appthreat.chennai.engine.ReplSink.set({ ${normalise(expr)} })"
-              stateOpt = Some(driver.run(wrapped)(using st))
-              ReplSink.take()
-          } match
-            case Success(Some(json)) => Right(json)
-            case Success(None) =>
-                val msg = outBuf.toString(StandardCharsets.UTF_8).trim
-                Left(if msg.nonEmpty then msg else "expression did not produce a result")
-            case Failure(ex) => Left(s"repl error: ${ex.getMessage}")
+          ReplSink.take() // clear any stale value
+          run(s"_root_.io.appthreat.chennai.engine.ReplSink.set({ ${normalise(expr)} })")
+              .flatMap(_ => ReplSink.take().toRight(printed("expression did not produce a result")))
       }
 
   /** Semantic completions for `line` at character offset `cursor`, using the compiler's completion
-    * engine (the same source chen 2.x's Tab completion used). Returns distinct member labels.
+    * engine (the same source chen 2.x's Tab completion used). Returns distinct member labels, or
+    * the reason the REPL could not start.
     */
-  def complete(line: String, cursor: Int): List[String] =
+  def complete(line: String, cursor: Int): Either[String, List[String]] =
       synchronized {
-          Try {
-              val st = ensureState()
-              val at = cursor.max(0).min(line.length)
-              driver
-                  .completionsAt(at, line, st)
-                  .map(_.label)
-                  // Keep public identifier members; drop operators (`!=`, `##`) and internal/
-                  // synthetic names beginning with `_` (`_argumentIn`, …).
-                  .filter(l => l.nonEmpty && l.head.isLetter)
-                  .distinct
-                  .sorted
-          }.getOrElse(Nil)
+          driver.map { d =>
+            val at = cursor.max(0).min(line.length)
+            Guarded(d.completionsAt(at, line, state)).getOrElse(Nil)
+                .map(_.label)
+                // Keep public identifier members; drop operators (`!=`, `##`) and internal/
+                // synthetic names beginning with `_` (`_argumentIn`, …).
+                .filter(l => l.nonEmpty && l.head.isLetter)
+                .distinct
+                .sorted
+          }
       }
 
   /** Strip any trailing render/collection terminal so the remaining expression yields an
@@ -156,20 +154,11 @@ final class ReplBridge(cpg: Cpg):
   /** Evaluate a data-flow expression and capture the resulting paths out-of-band. */
   def evalFlows(expr: String): Either[String, List[Path]] =
       synchronized {
-          Try {
-              val st = ensureState()
-              FlowSink.take() // clear any stale value
-              outBuf.reset()
-              val wrapped =
-                  s"_root_.io.appthreat.chennai.engine.FlowSink.set({ ${normaliseFlows(expr)} })"
-              stateOpt = Some(driver.run(wrapped)(using st))
-              FlowSink.take()
-          } match
-            case Success(Some(paths)) => Right(paths)
-            case Success(None) =>
-                val msg = outBuf.toString(StandardCharsets.UTF_8).trim
-                Left(if msg.nonEmpty then msg else "expression did not produce any flows")
-            case Failure(ex) => Left(s"repl error: ${ex.getMessage}")
+          FlowSink.take() // clear any stale value
+          run(s"_root_.io.appthreat.chennai.engine.FlowSink.set({ ${normaliseFlows(expr)} })")
+              .flatMap(_ =>
+                  FlowSink.take().toRight(printed("expression did not produce any flows"))
+              )
       }
 end ReplBridge
 

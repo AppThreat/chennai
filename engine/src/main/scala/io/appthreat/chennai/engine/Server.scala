@@ -16,19 +16,95 @@ import scala.util.{Failure, Success, Try}
 
 /** stdio NDJSON server: reads one request per line from `in`, writes one response per line to
   * `out`. Designed to be spawned as a child process by the Rust TUI.
+  *
+  * A native-image engine cannot run the REPL, so on its first REPL-backed command it hands the open
+  * atom to a [[JvmEngine]] and forwards every request to it from then on.
   */
-final class Server(session: AtomSession, in: BufferedReader, out: PrintStream):
+final class Server(
+  session: AtomSession,
+  in: BufferedReader,
+  out: PrintStream,
+  launcher: JvmEngine.Launcher = new JvmEngine.Launcher()
+):
+
+  private var jvmEngine: Option[JvmEngine] = None
+
+  /** The atom open in the JVM engine, to take back if it stops. */
+  private var handedOver: Option[Server.Atom] = None
 
   def run(): Unit =
-    var line = in.readLine()
-    while line != null do
-      if line.trim.nonEmpty then
-        val response = Request.fromLine(line) match
-          case Left(err)  => Response.error(0, err)
-          case Right(req) => dispatch(req)
-        out.println(response.noSpaces)
-        out.flush()
-      line = in.readLine()
+      try
+        var line = in.readLine()
+        while line != null do
+          if line.trim.nonEmpty then
+            out.println(respond(line).noSpaces)
+            out.flush()
+          line = in.readLine()
+      finally jvmEngine.foreach(_.stop())
+
+  private def respond(line: String): Json =
+      Request.fromLine(line) match
+        case Left(err) => Response.error(0, err)
+        case Right(req) =>
+            Guarded(route(req, line)).left.map(err =>
+                Response.error(req.id, s"${req.cmd} failed: $err")
+            ).merge
+
+  private def route(req: Request, line: String): Json =
+      jvmEngine match
+        case Some(engine) => forward(engine, req, line)
+        case None if JvmEngine.inNativeImage && needsRepl(req) && session.path.isDefined =>
+            handOver(req, line)
+        case None => dispatch(req)
+
+  private def needsRepl(req: Request): Boolean =
+      req.cmd match
+        case "eval" | "complete" => true
+        case "flows"             => FlowHandler.needsRepl(req.args.hcursor)
+        case _                   => false
+
+  private def handOver(req: Request, line: String): Json =
+      launcher.start() match
+        case Left(err) =>
+            Response.error(req.id, s"${req.cmd} needs a JVM in the native engine: $err")
+        case Right(engine) =>
+            val atom = Server.Atom(session.path.getOrElse(""), session.sourceRoot)
+            session.close()
+            engine.open(atom.path, atom.sourceRoot) match
+              case Right(()) =>
+                  jvmEngine = Some(engine)
+                  handedOver = Some(atom)
+                  forward(engine, req, line)
+              case Left(err) =>
+                  engine.stop()
+                  reopen(atom)
+                  Response.error(req.id, s"the JVM engine could not open the atom: $err")
+
+  private def forward(engine: JvmEngine, req: Request, line: String): Json =
+      engine.send(line) match
+        case Right(reply) =>
+            if JvmEngine.succeeded(reply) then
+              req.cmd match
+                case "open" =>
+                    val c = req.args.hcursor
+                    handedOver = c.get[String]("path").toOption.map(
+                      Server.Atom(_, c.get[String]("sourceRoot").toOption)
+                    )
+                case "close" => handedOver = None
+                case _       => ()
+            reply
+        case Left(err) =>
+            // Take the atom back, so the commands that do not need the REPL keep working.
+            jvmEngine = None
+            engine.stop()
+            handedOver.foreach(reopen)
+            handedOver = None
+            Response.error(req.id, s"the JVM engine stopped ($err)")
+
+  private def reopen(atom: Server.Atom): Unit =
+      session.open(atom.path, atom.sourceRoot).failed.foreach(ex =>
+          System.err.println(s"warning: could not reopen ${atom.path}: ${ex.getMessage}")
+      )
 
   private def dispatch(req: Request): Json =
       req.cmd match
@@ -95,11 +171,13 @@ final class Server(session: AtomSession, in: BufferedReader, out: PrintStream):
     session.replBridge match
       case None => Response.error(req.id, "no atom open; send 'open' first")
       case Some(bridge) =>
-          val items = bridge.complete(line, cursor)
-          Response.ok(
-            req.id,
-            Json.obj("completions" -> Json.arr(items.map(Json.fromString)*))
-          )
+          bridge.complete(line, cursor) match
+            case Right(items) =>
+                Response.ok(
+                  req.id,
+                  Json.obj("completions" -> Json.arr(items.map(Json.fromString)*))
+                )
+            case Left(err) => Response.error(req.id, err)
 
   private def handleEval(req: Request): Json =
     val expr = req.args.hcursor.get[String]("expr").toOption.map(_.trim).filter(_.nonEmpty)
@@ -168,3 +246,6 @@ final class Server(session: AtomSession, in: BufferedReader, out: PrintStream):
     import io.shiftleft.semanticcpg.language.*
     cpg.metaData.language.headOption.getOrElse("unknown")
 end Server
+
+object Server:
+  private final case class Atom(path: String, sourceRoot: Option[String])

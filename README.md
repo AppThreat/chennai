@@ -44,7 +44,7 @@ The right backend is selected automatically from the target: atom languages spaw
 - For Rust and Go analysis: the `rusi` / `golem` binaries, bundled with cdxgen-plugins-bin or built from source. Override resolution with `RUSI_CMD` / `GOLEM_CMD`.
 - For .NET analysis: the `dosai` binary (use the **full** release). Override with `DOSAI_CMD`. The data-flow report is the primary source; the optional methods report is best-effort and will be skipped if dosai cannot load a project's assemblies.
 - For binary / APK / IPA analysis: `blint` on PATH (`uv tool install blint` or `pip install blint[extended]`), plus LLVM for disassembly and the Android SDK for full APK depth. Override with `BLINT_CMD`.
-- Java 23 or newer if running the engine via the JAR fallback distribution (atom mode only).
+- Java 23 or newer if running the engine via the JAR fallback distribution (atom mode only). The native engine needs one too for free-form REPL queries, completions and data-flow expressions; everything else runs without Java.
 - At least 4GB of available memory for the TUI and engine together. Larger codebases may need more. The non-atom backends (rusi, golem, dosai, blint) do not require the Scala engine.
 
 ## Installation
@@ -385,6 +385,10 @@ Reports (`report.md`/`report.json`), the working note, and the reconciling run p
 - `ATOM_CMD`: Path to the atom CLI binary (e.g. `/path/to/atom/atom.sh`).
 - `RUSI_CMD`: Path to the rusi binary. Overrides PATH lookup.
 - `CHENNAI_DEBUG`: Set to any value to enable resolver diagnostics.
+- `CHENNAI_JAVA_HOME`: Java 23+ home the native engine uses for REPL queries. Otherwise it tries `JAVA_HOME`, `JDK_HOME`, `java` on PATH and the usual install folders.
+- `CHENNAI_JAVA_OPTS`: Extra JVM options for that Java process, such as `-Xmx8g`.
+- `CHENNAI_ENGINE_LIB`: Folder of engine jars (a stage's `lib`) for that Java process, instead of the copy the native engine unpacks.
+- `CHENNAI_CACHE_DIR`: Where the native engine unpacks its jars (default: the platform's cache folder, such as `~/.cache/chennai`).
 
 ### Platform support
 
@@ -407,6 +411,8 @@ chennai has two analysis paths depending on the project language.
 Two processes communicate over NDJSON on stdin/stdout.
 
 **Engine (chennai-engine):** The engine is a Scala 3 application built with the chen library. It reads atom files and runs queries against the atom file. It is distributed as a GraalVM native-image binary on supported platforms and as a JAR distribution elsewhere. The engine accepts NDJSON request lines on stdin and writes NDJSON response lines to stdout. Each request has an id, a command, and arguments. The engine opens an atom file on startup and keeps it in memory for the duration of the session.
+
+A native image cannot run the Scala compiler, so the native engine carries its own jars. The first free-form REPL query, completion or data-flow expression unpacks them into the cache, starts them on a Java 23+ runtime it finds on the machine, and hands the open atom to that process, which answers every request from then on. Without a Java runtime those commands report what is missing and the rest of the engine keeps working.
 
 **TUI (chennai):** The TUI is a Rust application using ratatui and crossterm. It spawns the engine as a child process, opens the atom file, and presents a three-panel interface: a summary panel with row counts, a REPL panel for input, and an output panel for results. The TUI auto-detects the engine binary location -- by default it looks for chennai-engine in the same directory, then checks the standard development build paths.
 
