@@ -1,0 +1,59 @@
+engine/src/main/scala/io/appthreat/chennai/engine/Guarded.scala
+  s_44a14d2470128d::t_169708c0270f9b 1-13,15-17
+  s_44a14d2470128d::t_f2bfa49628854a 14
+engine/src/main/scala/io/appthreat/chennai/engine/ReplBridge.scala
+  s_44a14d2470128d::t_f2bfa49628854a 87-88,129-136
+  s_44a14d2470128d::t_bdeb78833090b5 66-86,91-94
+  s_44a14d2470128d::t_b3c18abd511132 117-119,123-124,126,128,137
+  s_44a14d2470128d::t_f61bb18cbe7035 157-161
+  s_44a14d2470128d::t_781a43ef0e256f 95
+engine/src/main/scala/io/appthreat/chennai/engine/handlers/FlowHandler.scala
+  s_44a14d2470128d::t_3f5e20de088920 497-506
+engine/src/main/resources/META-INF/native-image/resource-config.json
+  s_44a14d2470128d::t_401dcede7a9fee 7-9
+README.md
+  s_44a14d2470128d::t_c8124d6cce8388 47,388-391,415
+  s_44a14d2470128d::t_2bf3659c2e5287 416
+engine/src/test/scala/io/appthreat/chennai/engine/FlowHandlerTests.scala
+  s_44a14d2470128d::t_f2bfa49628854a 70-72
+  s_44a14d2470128d::t_c513319a504d65 58-69,73
+engine/src/test/resources/chennai/jvm-engine/index.txt
+  s_44a14d2470128d::t_38288f5ceb6320 1-2
+engine/src/test/resources/chennai/jvm-engine/lib/fake.jar
+  s_44a14d2470128d::t_38288f5ceb6320 1
+engine/src/main/scala/io/appthreat/chennai/engine/JvmEngine.scala
+  s_44a14d2470128d::t_f2bfa49628854a 6-12,59-60,70-71,87-88,95-101,172-175,184-187,285-288,319-320
+  s_44a14d2470128d::t_c94e3563b52ac1 302-305,310
+  s_44a14d2470128d::t_5e26aaed414530 1-5,13-58,61-69,72-86,89-94,102-171,176-183,188-284,289-297,299-300,311-318,321-328
+  s_44a14d2470128d::t_3f788523034c37 298,301,306-309
+engine/src/main/scala/io/appthreat/chennai/engine/Server.scala
+  s_44a14d2470128d::t_20c2fc990ecf69 19-21,23-31,44-68,70,72,74-89,92-103,107
+  s_44a14d2470128d::t_6e7161ec91812b 174-180
+  s_44a14d2470128d::t_5394caaf700ed0 69
+  s_44a14d2470128d::t_bedd4d57281ccd 32-33,71,73,90-91,104-106,249-251
+  s_44a14d2470128d::t_f2bfa49628854a 36-43
+engine/src/test/scala/io/appthreat/chennai/engine/JvmEngineTests.scala
+  s_44a14d2470128d::t_1880d087f0df8e 88-97
+  s_44a14d2470128d::t_45ba5f23ad90ef 1-57,61-87,98-110
+  s_44a14d2470128d::t_f2bfa49628854a 58-60
+engine/build.sbt
+  s_44a14d2470128d::t_6de37aed7e9696 59-93,96-99
+  s_44a14d2470128d::t_01dcfb6b225409 116-118
+  s_44a14d2470128d::t_322d527ebed3e0 100
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "0950769d12db9bda9aac9ef31120eeb469a5a436",
+  "prompts": {},
+  "sessions": {
+    "s_44a14d2470128d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "feb7d11a-3362-4661-8cf7-d6fc317c8261",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Prabhu Subramanian <prabhu@appthreat.com>"
+    }
+  }
+}
