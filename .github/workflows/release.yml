@@ -62,7 +62,7 @@ jobs:
           cache: false
       - uses: oras-project/setup-oras@38de303aac69abb66f3e6255b7198bff35f323e3  # v2
       - name: Run Scala tests
-        run: (cd engine && sbt -batch test)
+        run: (cd engine && sbt --server -batch testFull)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Run Rust tests
@@ -73,7 +73,7 @@ jobs:
           tar -xJf upx-5.0.1-amd64_linux.tar.xz
           chmod +x upx-5.0.1-amd64_linux/upx
           sudo cp upx-5.0.1-amd64_linux/upx /usr/local/bin/
-          (cd engine && sbt -batch stage)
+          (cd engine && sbt --server -batch stage)
           bash ci/native-image.sh
           mv engine/target/graalvm-native-image/chennai-engine chennai-engine-amd64
           upx -9 --lzma chennai-engine-amd64
@@ -149,7 +149,7 @@ jobs:
           cache: false
       - uses: oras-project/setup-oras@38de303aac69abb66f3e6255b7198bff35f323e3  # v2
       - name: Run Scala tests
-        run: (cd engine && sbt -batch test)
+        run: (cd engine && sbt --server -batch testFull)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Run Rust tests
@@ -160,7 +160,7 @@ jobs:
           tar -xJf upx-5.0.1-arm64_linux.tar.xz
           chmod +x upx-5.0.1-arm64_linux/upx
           sudo cp upx-5.0.1-arm64_linux/upx /usr/local/bin/
-          (cd engine && sbt -batch stage)
+          (cd engine && sbt --server -batch stage)
           bash ci/native-image.sh
           mv engine/target/graalvm-native-image/chennai-engine chennai-engine-arm64
           upx -9 --lzma chennai-engine-arm64
@@ -311,7 +311,7 @@ jobs:
           cache: false
       - uses: oras-project/setup-oras@38de303aac69abb66f3e6255b7198bff35f323e3  # v2
       - name: Run Scala tests
-        run: (cd engine && sbt -batch test)
+        run: (cd engine && sbt --server -batch testFull)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Run Rust tests
@@ -319,7 +319,7 @@ jobs:
       - name: Build engine native image + TUI
         run: |
           brew install coreutils
-          (cd engine && sbt -batch stage)
+          (cd engine && sbt --server -batch stage)
           bash ci/native-image.sh
           mv engine/target/graalvm-native-image/chennai-engine chennai-engine-darwin-arm64
           ./chennai-engine-darwin-arm64 --help
@@ -399,7 +399,7 @@ jobs:
         shell: pwsh
         run: |
           cd engine
-          sbt -batch test
+          sbt --server -batch testFull
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Run Rust tests
@@ -414,8 +414,8 @@ jobs:
           Invoke-WebRequest -Uri https://github.com/upx/upx/releases/download/v5.0.1/upx-5.0.1-win64.zip -UseBasicParsing -OutFile upx-5.0.1-win64.zip
           Expand-Archive -Path upx-5.0.1-win64.zip -DestinationPath . -Force
           cd engine
-          sbt -batch stage
-          sbt "GraalVMNativeImage / packageBin"
+          sbt --server -batch stage
+          sbt --server "GraalVMNativeImage / packageBin"
           cd ..
           Move-Item engine/target/graalvm-native-image/chennai-engine.exe chennai-engine-win-amd64.exe -ErrorAction Stop
           .\upx-5.0.1-win64\upx.exe -9 --lzma chennai-engine-win-amd64.exe
@@ -504,7 +504,7 @@ jobs:
           path: wrapper/nodejs/downloaded-binaries
 
       - name: Build engine JAR stage (for chennai-jar fallback)
-        run: (cd engine && sbt -batch stage)
+        run: (cd engine && sbt --server -batch stage)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Assemble platform packages

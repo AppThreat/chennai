@@ -620,7 +620,7 @@ effort = "high"
 ### Prerequisites
 
 - Rust toolchain (edition 2024)
-- Scala 3.8.4 and sbt (for atom mode engine development)
+- Scala 3.10.0 and sbt 2 (for atom mode engine development)
 - GraalVM Community Edition 25 for native-image builds (optional for development)
 - Rusi binary (for Rust mode development, optional)
 
