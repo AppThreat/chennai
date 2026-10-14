@@ -20,7 +20,7 @@ CONFIG_DIR="${REPO_ROOT}/engine/src/main/resources/META-INF/native-image"
 cd "${REPO_ROOT}/engine"
 
 echo "=== Building engine stage ==="
-sbt clean stage
+sbt "clean; stage"
 
 ENGINE_SCRIPT="${REPO_ROOT}/engine/target/universal/stage/bin/chennai-engine"
 if [ ! -f "$ENGINE_SCRIPT" ]; then
