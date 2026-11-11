@@ -128,7 +128,7 @@ Install or update the required analysis tools (cdxgen, atom, atom-parsetools) vi
 chennai setup
 ```
 
-This runs `npm install -g --ignore-scripts @cyclonedx/cdxgen @appthreat/atom @appthreat/atom-parsetools`.
+This runs `npm install -g --ignore-scripts @cdxgen/cdxgen @appthreat/atom @appthreat/atom-parsetools`.
 
 ### `dump-system-prompt`
 
@@ -196,7 +196,7 @@ chennai integrates with [cdxgen](https://github.com/AppThreat/cdxgen) to automat
 #### Installing cdxgen
 
 ```
-npm install -g @cyclonedx/cdxgen
+npm install -g @cdxgen/cdxgen
 ```
 
 cdxgen will be auto-detected in PATH. You can also set the `CDXGEN_CMD` environment variable to point to a custom location. Once installed, chennai will automatically generate BOMs on startup when a source directory is available.
