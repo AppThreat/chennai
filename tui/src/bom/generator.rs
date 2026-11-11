@@ -226,7 +226,7 @@ pub fn generate_bom(
 
     if !status.success() {
         return Err(format!(
-            "cdxgen exited with status {}. Ensure the tool is properly installed with: npm install -g @cyclonedx/cdxgen",
+            "cdxgen exited with status {}. Ensure the tool is properly installed with: npm install -g @cdxgen/cdxgen",
             status
         ));
     }
@@ -323,7 +323,7 @@ pub fn find_cdxgen() -> Result<PathBuf, String> {
             }
     }
 
-    Err("cdxgen not found. Install it with: npm install -g @cyclonedx/cdxgen".to_string())
+    Err("cdxgen not found. Install it with: npm install -g @cdxgen/cdxgen".to_string())
 }
 
 /// Simple `which` replacement that checks PATH.

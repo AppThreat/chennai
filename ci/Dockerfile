@@ -45,7 +45,7 @@ RUN set -eux \
 #   cdxgen via npm (no optionals), atom + atom-parsetools via npm (need optionals),
 #   atom-tools + appthreat-vulnerability-db via pip/uv.
 RUN set -eux \
-    && npm install -g --ignore-scripts --omit=optional @cyclonedx/cdxgen \
+    && npm install -g --ignore-scripts --omit=optional @cdxgen/cdxgen \
     && npm install -g --ignore-scripts @appthreat/atom @appthreat/atom-parsetools \
     && uv pip install --system --no-cache atom-tools "appthreat-vulnerability-db[all]" \
     && cdxgen --version && atom --help >/dev/null && atom-tools --version && vdb --help >/dev/null

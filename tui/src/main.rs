@@ -400,7 +400,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
                 if !generated {
-                    bom_tip = "No SBOM found. Generate one with: cdxgen -o sbom-<lang>-<lifecycle>.cdx.json <source_dir> (npm install -g @cyclonedx/cdxgen)".into();
+                    bom_tip = "No SBOM found. Generate one with: cdxgen -o sbom-<lang>-<lifecycle>.cdx.json <source_dir> (npm install -g @cdxgen/cdxgen)".into();
                     debug_eprintln!(config.debug, "Tip: {bom_tip}");
                 }
             }
@@ -535,7 +535,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 d = path.display()
             );
             if !bom::prompt_yes_no(&msg) {
-                eprintln!("Tip: install manually: npm install -g @cyclonedx/cdxgen @appthreat/atom @appthreat/atom-parsetools");
+                eprintln!("Tip: install manually: npm install -g @cdxgen/cdxgen @appthreat/atom @appthreat/atom-parsetools");
                 return Err("atom generation cancelled by user".into());
             }
             eprint!("Installing cdxgen, atom, and atom-parsetools... ");
@@ -2259,7 +2259,7 @@ fn resolve_or_generate_atom(
             d = path.display()
         );
         if !bom::prompt_yes_no(&msg) {
-            eprintln!("Tip: install manually: npm install -g @cyclonedx/cdxgen @appthreat/atom @appthreat/atom-parsetools");
+            eprintln!("Tip: install manually: npm install -g @cdxgen/cdxgen @appthreat/atom @appthreat/atom-parsetools");
             return Err("atom generation cancelled by user".into());
         }
         eprint!("Installing cdxgen, atom, and atom-parsetools... ");
@@ -2275,7 +2275,7 @@ fn resolve_or_generate_atom(
             "cdxgen"
         };
         eprintln!(
-            "Tip: {missing} not found. Install with: npm install -g @cyclonedx/cdxgen @appthreat/atom @appthreat/atom-parsetools"
+            "Tip: {missing} not found. Install with: npm install -g @cdxgen/cdxgen @appthreat/atom @appthreat/atom-parsetools"
         );
         return Err(format!(
             "no .atom file in {} and {missing} is required for generation",

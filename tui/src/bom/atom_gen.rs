@@ -163,7 +163,7 @@ pub fn find_npm() -> Option<PathBuf> {
 
 /// Automatically install the required npm packages globally.
 ///
-/// Runs `npm install -g --ignore-scripts @cyclonedx/cdxgen @appthreat/atom @appthreat/atom-parsetools`.
+/// Runs `npm install -g --ignore-scripts @cdxgen/cdxgen @appthreat/atom @appthreat/atom-parsetools`.
 pub fn auto_install_npm() -> Result<(), String> {
     let npm = find_npm().ok_or_else(|| "npm not found on PATH".to_string())?;
     let status = std::process::Command::new(&npm)
@@ -171,7 +171,7 @@ pub fn auto_install_npm() -> Result<(), String> {
             "install",
             "-g",
             "--ignore-scripts",
-            "@cyclonedx/cdxgen",
+            "@cdxgen/cdxgen",
             "@appthreat/atom",
             "@appthreat/atom-parsetools",
         ])
